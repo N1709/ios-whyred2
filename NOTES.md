@@ -45,7 +45,7 @@
   - `993d2ed`: Configured LK zImage magic at word 9 and DTB offset at word 11.
   - `7583bcd`: Mapped MSM8937 DRAM at `0x20000000` and corrected BGR24 panel color order.
 - **Next Concrete Action:**
-  - Mark Phase 1 complete and advance to Phase 2 (GICv2 Interrupt Architecture & Timers).
+  - Execute Phase 2 (`/gsd-execute-phase 2`): Build GICv2 distributor/CPU interface driver and ARM generic timer tick loop in `shim/`, assemble `shim/out/shim-boot.img`, boot test on physical Redmi 4X via `fastboot boot`, and verify live on-screen timer ticks at 100 Hz.
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
