@@ -2,25 +2,50 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-10-21: Phase 1 (Bare-Metal Shim & 4K MMU) EXECUTED & VERIFIED <<<
+### >>> UPDATE 2026-10-21: Phase 1 (Bare-Metal Shim & 4K MMU) CONFIRMED ON PHYSICAL HARDWARE <<<
 
 - **Goal:** Port Apple iOS 16.7.16 (`20H392`) to Xiaomi Redmi 4X (`santoni`, 3/32 GB variant, MSM8937 / Snapdragon 435).
-- **Phase 1 Execution Completed & Verified:**
-  - **Wave 1 (01-01):** Build pipeline and 24-bit console blitter (`BOOT-01`, `BOOT-03`).
-    - `1dc5114`: Freestanding LLVM/Clang build script with zero ABS64 relocation gate; cleaned `shim.c` of Topaz Gold and UFS legacy code.
-    - `52311fa`: 720x1280 24-bit RGB (`r8g8b8`) simplefb blitter at `0x90001000` with byte-aligned writes to avoid Device memory alignment traps; verified with `out/host.ppm` (2,764,816 bytes).
-  - **Wave 2 (01-02):** Cortex-A53 4K Stage-1 MMU & Mach-O segment loader (`BOOT-02`, `BOOT-04`).
-    - `b99eb2e`: Cortex-A53 Stage-1 MMU driver (`PG_SHIFT=12`, `TCR_EL1.TG0=0b00`, 36-bit IPS) mapping physical RAM as `Device-nGnRnE` by default to prevent Qualcomm XPU carve-out faults.
-    - `d8cafc7`: Mach-O segment unroller with 4 KiB `boot_args` alignment, 24-bit video geometry, `#if !__STDC_HOSTED__` EL1 guards, verified via host unit test `shim/loader_test.c`.
-  - **Wave 3 (01-03):** Android boot image v0 packaging (`BOOT-05`).
-    - `ab377be`: Standalone Python 3 Android boot image v0 packing tool (`tools/mkbootimg.py`) with 2048-byte page alignment and SHA-1 digests.
-    - `9309e31`: Wired `mkbootimg.py` into `shim/build.sh`, assembling `shim/out/shim-boot.img` (172,032 bytes) verified byte-exact via `tools/unpack_bootv2.py`.
-  - **Status:** All automated checks passed (score: 9/9 must-haves verified). Physical device boot test checklist documented in `01-UAT.md`.
-- **Physical Device Bring-up Action:**
-  - Boot Redmi 4X into fastboot mode (`adb reboot bootloader`).
-  - Run: `fastboot boot shim/out/shim-boot.img`
-  - Verify red splash screen, console output (`SHIM: santoni bare-metal shim`, `MIDR: el1=0x410FD034`, `MMFR0: tg16=0`, `MMU: rc=0`).
-  - Run `/gsd-verify-work 1` to conclude UAT and advance to Phase 2 (GICv2 & Timers).
+- **Physical Device Bring-up Confirmed (2026-10-21):**
+  - Image: `shim/out/shim-boot.img` booted on physical device via `fastboot boot`.
+  - Display: Solid RED splash screen with clean white diagnostic text (720x1280 24-bit BGR continuous splash at `0x90001000`).
+  - Telemetry observed on panel:
+    ```text
+    SHIM     santoni phase 1
+    DTB      at=23400000 magic=DoodFEED
+    IMAGE    lo=20080000 hi=200AB000
+    MMU      rc=00000000 l3=00000001
+    TTBR0    pa=20095000 pa_hi=00000000
+    SCTLR0   0000000000C00B00
+    SCTLR1   0000000000C01805
+    TCR      00000001809C351C
+    PARANGE  mmfr0=00000002 tg16=00000000
+    PAR img  FF00000020081B80
+    PAR fb   4400000090002B00
+    PAR ram  0000000080000B00
+    FILL us  off=00043B65 on=0000241F
+    MEM us   off=000056B4 on=000003A1
+    PSCI     ver=00010000 smccc=FFFFFFFF
+    RESET    in 40s
+    ```
+  - **Hardware Facts Established:**
+    1. Qualcomm LK loads 64-bit kernel at `0x20080000` (GiB 0 DRAM) and passes appended DTB at `0x23400000`.
+    2. LK appended DTB requires word 9 (0x24) = `0x016f2818` (zImage magic), word 10 (0x28) = `0x0` (start), word 11 (0x2c) = `_end` (DTB offset).
+    3. Cortex-A53 supports 36-bit physical addressing (`ID_AA64MMFR0_EL1.PARange = 2`) with 4KB pages native (`tg16 = 0`).
+    4. Stage-1 MMU + I/D caches give a ~30x memory speedup (`FILL: 277ms -> 9.2ms`, `MEM: 22.2ms -> 0.93ms`).
+    5. Continuous splash simplefb format is BGR24 (`b8g8r8`).
+    6. Qualcomm TrustZone firmware supports PSCI 1.0 (`PSCI_VERSION = 0x00010000`).
+- **Commits Added:**
+  - `1dc5114`: Freestanding LLVM/Clang build script with zero ABS64 relocation gate.
+  - `52311fa`: 720x1280 24-bit simplefb blitter at `0x90001000`.
+  - `b99eb2e`: Cortex-A53 Stage-1 MMU driver with 4KB granule and 36-bit IPS.
+  - `d8cafc7`: Mach-O segment unroller with 4 KiB `boot_args` alignment.
+  - `ab377be`: Standalone Python 3 Android boot image v0 packing tool (`tools/mkbootimg.py`).
+  - `9309e31`: Wired `mkbootimg.py` into build pipeline.
+  - `d0e8796`: Appended Santoni DTB table from device.
+  - `993d2ed`: Configured LK zImage magic at word 9 and DTB offset at word 11.
+  - `7583bcd`: Mapped MSM8937 DRAM at `0x20000000` and corrected BGR24 panel color order.
+- **Next Concrete Action:**
+  - Mark Phase 1 complete and advance to Phase 2 (GICv2 Interrupt Architecture & Timers).
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
