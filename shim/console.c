@@ -76,6 +76,13 @@ void con_skip(void)
 	row++;
 }
 
+void con_rewind(int n)
+{
+	row -= n;
+	if (row < 0)
+		row = 0;
+}
+
 void con_str(const char *label, const char *s)
 {
 	put_str(0, label, YELLOW);

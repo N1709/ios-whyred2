@@ -13,6 +13,7 @@ volatile uint8_t *con_fb = NULL;
 
 void con_clear(uint32_t bg) { (void)bg; }
 void con_skip(void) {}
+void con_rewind(int n) { (void)n; }
 void con_str(const char *label, const char *s) { (void)label; (void)s; }
 void con_hex(const char *label, uint64_t v) { (void)label; (void)v; }
 void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint32_t vb)

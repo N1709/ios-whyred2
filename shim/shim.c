@@ -10,6 +10,11 @@
 #include "console.h"
 #include "mmu.h"
 #include "loader.h"
+#include "gic.h"
+#include "timer.h"
+
+static volatile uint32_t irq_count;
+static volatile uint32_t last_intid;
 
 #define IMEM_RESTART_REASON	0x0c12565cUL	/* qcom,msm-imem@c125000 restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
@@ -87,6 +92,15 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 void exc_handler(uint64_t slot, uint64_t *regs)
 {
 	if (slot == 5) {	/* IRQ from current EL, SPx */
+		uint32_t iar = gic_ack();
+		uint32_t intid = iar & 0x3ff;
+		if (intid < 1020) {
+			irq_count++;
+			last_intid = intid;
+			/* Rearm timer for next 100 Hz tick (192,000 ticks at 19.2 MHz) */
+			timer_arm_ticks(192000);
+			gic_eoi(iar);
+		}
 		return;
 	}
 	con_clear(BLUE);
@@ -195,7 +209,7 @@ void shim_main(uint64_t dtb)
 	if (rc)
 		con_clear(RED);
 
-	con_str("SHIM", "santoni phase 1");
+	con_str("SHIM", "santoni phase 2");
 	con_skip();
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(rd32(dtb)) : 0);
 	con_hex2("IMAGE", "lo=", mi.img_lo, "hi=", mi.img_hi);
@@ -216,6 +230,23 @@ void shim_main(uint64_t dtb)
 
 	stage = "psci";
 	con_hex2("PSCI", "ver=", smc(PSCI_VERSION, 0, 0, 0), "smccc=", smc(SMCCC_VERSION, 0, 0, 0));
+	con_skip();
+
+	stage = "gic & timer";
+	gic_dist_init();
+	gic_cpu_init();
+	gic_enable_int(20);
+	gic_enable_int(27);
+	timer_arm_ticks(192000);
+	__asm__ volatile("msr daifclr, #2" ::: "memory");
+
+	con_hex2("GIC", "dist=", rd32(GICD_BASE + GICD_CTLR), "cpu=", rd32(GICC_BASE + GICC_CTLR));
+	for (int i = 0; i < 50; i++) {
+		con_hex2("TIMER", "ticks=", irq_count, "intid=", last_intid);
+		delay_ms(100);
+		if (i < 49)
+			con_rewind(1);
+	}
 	con_skip();
 
 	stage = "done";

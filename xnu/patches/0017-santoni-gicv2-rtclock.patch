@@ -1,0 +1,185 @@
+diff --git a/pexpert/arm/pe_fiq.c b/pexpert/arm/pe_fiq.c
+--- a/pexpert/arm/pe_fiq.c
++++ b/pexpert/arm/pe_fiq.c
+@@ -3,6 +3,13 @@
+  */
+ 
+ #include <stdint.h>
++#include <libkern/section_keywords.h>
+ #include <arm64/proc_reg.h>
+ #include <kern/clock.h>
+ #include <mach/mach_time.h>
+@@ -15,6 +22,12 @@
+ #if HAS_GIC_V3
+ #define GICR_WAKE_TIMEOUT_NS (1000000000ULL) // timeout for redistributor wakeup (default 1s)
+ MACHINE_TIMEOUT(gicr_wake_timeout_ns, "gicr-wake-timeout", GICR_WAKE_TIMEOUT_NS, MACHINE_TIMEOUT_UNIT_NSEC, NULL);
++
++#if defined(SWEET)
++/* Phone default; QEMU virt wires the architected virtual timer to INTID 27. */
++SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
++SECURITY_READ_ONLY_LATE(vm_offset_t) gicc_base = 0;
++#endif
+ 
+ static vm_offset_t gicd_base;
+ static vm_offset_t gicr_base;
+@@ -95,6 +108,24 @@
+ 		if (prop_size < 4 * sizeof(uint64_t)) {
+ 			panic("%s: incorrect reg property size in GIC DT node; expecting 32 bytes but got %u bytes", __func__, prop_size);
+ 		}
++
++#if defined(SWEET)
++		/* Read only on the boot CPU, before the GIC and RO-late lockdown. */
++		void const *timer_prop;
++		unsigned int timer_size;
++		if (SecureDTGetProperty(entry, "virtual-timer-intid", &timer_prop, &timer_size) == kSuccess) {
++			if (timer_size != sizeof(uint32_t)) {
++				panic("%s: invalid virtual-timer-intid size %u", __func__, timer_size);
++			}
++			uint32_t intid = *(const uint32_t *)timer_prop;
++			if (intid < 16 || intid >= 32) {
++				panic("%s: virtual timer INTID %u is not a PPI", __func__, intid);
++			}
++			sweet_vtimer_intid = intid;
++		}
++		kprintf("SANTONI GIC: virtual timer INTID %u\n", sweet_vtimer_intid);
++#endif
+ 
+ 		vm_offset_t soc_base_phys = pe_arm_get_soc_base_phys();
+ 
+@@ -104,6 +135,9 @@
+ 		vm_offset_t gicr_phys = soc_base_phys + reg_prop[2];
+ 		gicd_base = ml_io_map(gicd_phys, reg_prop[1]);
+ 		gicr_base = ml_io_map(gicr_phys, reg_prop[3]);
++#if defined(SWEET)
++		gicc_base = gicr_base;
++#endif
+ 	}
+ 
+ 	if (gicd_base == 0 || gicr_base == 0) {
+@@ -141,48 +175,58 @@
+ 		}
+ 	}
+ 
++#if defined(SWEET)
++	/*
++	 * Qualcomm MSM8937 (santoni) QGIC2: Cortex-A53 lacks GICv3 system registers.
++	 * Configure memory-mapped Distributor (0x0b000000) and CPU Interface (0x0b002000).
++	 */
++	uint32_t typer = *(volatile uint32_t *)(gicd_base + 0x004);
++	uint32_t it_lines = (typer & 0x1f) + 1;
++
++	for (uint32_t i = 0; i < it_lines; i++) {
++		*(volatile uint32_t *)(gicd_base + 0x080 + (i * 4)) = 0xffffffff;
++	}
++	for (uint32_t i = 1; i < it_lines; i++) {
++		*(volatile uint32_t *)(gicd_base + 0x180 + (i * 4)) = 0xffffffff;
++		*(volatile uint32_t *)(gicd_base + 0x280 + (i * 4)) = 0xffffffff;
++	}
++	for (uint32_t i = 0; i < it_lines * 8; i++) {
++		*(volatile uint32_t *)(gicd_base + 0x400 + (i * 4)) = 0xa0a0a0a0;
++	}
++	for (uint32_t i = 8; i < it_lines * 8; i++) {
++		*(volatile uint32_t *)(gicd_base + 0x800 + (i * 4)) = 0x01010101;
++	}
++	*(volatile uint32_t *)(gicd_base + 0x100 + (sweet_vtimer_intid / 32) * 4) = (1U << (sweet_vtimer_intid % 32));
++
++	*(volatile uint32_t *)(gicc_base + 0x004) = 0xff;
++	*(volatile uint32_t *)(gicc_base + 0x008) = 0x00;
++	*(volatile uint32_t *)(gicc_base + 0x000) = 0x01;
++	*(volatile uint32_t *)(gicd_base + 0x000) = 0x01;
++	__builtin_arm_isb(ISB_SY);
++#else
+ 	// Configure timers and legacy FIQ to be group 0
+ 	gicr_write32(GICR_IGROUPR0, 0x81FFFFFF);
+ 
+ 	// Enable PPI 27
+ 	gicr_write32(GICR_ISENABLER0, (1 << 27));
+ 
+ 	// Enable system register access
+ 	uint64_t icc_sre = __builtin_arm_rsr64("ICC_SRE_EL1");
+ 	icc_sre |= ICC_SRE_ENABLE;
+ 	__builtin_arm_wsr64("ICC_SRE_EL1", icc_sre);
+ 	__builtin_arm_isb(ISB_SY);
+ 
+-	// Set priority masks and binary point for group 0
+ 	__builtin_arm_wsr64("ICC_BPR0_EL1", 0);
+ 	__builtin_arm_wsr64("ICC_PMR_EL1", 0xFF);
+ 
+ 	// Set EOI mode of this processor
+ 	uint64_t icc_ctlr = __builtin_arm_rsr64("ICC_CTLR_EL1");
+ 	icc_ctlr &= ~ICC_CTLR_EOIMODE;
+ 	__builtin_arm_wsr64("ICC_CTLR_EL1", icc_ctlr);
+ 
+ 	// Enable the forwarding of the vtimer interrupt
+ 	uint32_t gicd_ctlr = gicd_read32(GICD_CTLR);
+ 	gicd_ctlr |= GICD_CTLR_ENABLEGRP0;
+ 	gicd_write32(GICD_CTLR, gicd_ctlr);
+ 	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
+ 	__builtin_arm_isb(ISB_SY);
+-#endif /* SWEET */
++#endif /* SWEET */
+ }
+ #else
+ void
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1856,19 +1856,19 @@
+ #if defined(SWEET)
+ 	/*
+-	 * sweet: TrustZone owns GIC Group 0, so the timer and IPIs that other
+-	 * ARM64 targets take as FIQs arrive here as Group 1 IRQs.
++	 * santoni: Cortex-A53 lacks GICv3 system registers.
++	 * Read/write memory-mapped CPU Interface (GICC_IAR / GICC_EOIR).
+ 	 */
+-	uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+-	uint32_t intid = (uint32_t)(iar & 0xFFFFFF);
++	uint32_t iar = *(volatile uint32_t *)(gicc_base + 0x00c);
++	uint32_t intid = iar & 0x3ff;
+ 
+ 	if (intid >= 1020 && intid <= 1023) {
+ 		return; /* spurious */
+ 	}
+-	if (intid == SWEET_VTIMER_INTID) {
++	if (intid == sweet_vtimer_intid) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_TIMER);
+ 		cdp->cpu_decrementer = -1; /* Large */
+ 		INTERRUPT_MASKED_DEBUG_START(rtclock_intr, DBG_INTR_TYPE_TIMER);
+ 		rtclock_intr(TRUE);
+ 		INTERRUPT_MASKED_DEBUG_END();
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		*(volatile uint32_t *)(gicc_base + 0x010) = iar;
+ 	} else if (intid < 16) {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_IPI);
+ 		/* Ack before handling so an IPI raised meanwhile is not lost */
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		*(volatile uint32_t *)(gicc_base + 0x010) = iar;
+ 		__builtin_arm_isb(ISB_SY);
+ 		cpu_signal_handler();
+ 	} else {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 		if (cdp->interrupt_handler) {
+ 			cdp->interrupt_handler(cdp->interrupt_target,
+ 			    cdp->interrupt_refCon,
+ 			    cdp->interrupt_nub,
+ 			    intid);
+ 		}
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++		*(volatile uint32_t *)(gicc_base + 0x010) = iar;
+ 	}
+ 	__builtin_arm_isb(ISB_SY);
+ #else
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
+--- a/pexpert/pexpert/arm/protos.h
++++ b/pexpert/pexpert/arm/protos.h
+@@ -36,6 +36,10 @@
+ int uart_getc(void);
+ 
+ void pe_init_fiq(void);
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern uint32_t sweet_vtimer_intid;
++extern vm_offset_t gicc_base;
++#endif
+ 
+ #ifdef PRIVATE
+ /**
