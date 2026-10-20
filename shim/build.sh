@@ -38,20 +38,25 @@ if [ -n "${1:-}" ]; then
 	truncate -s $(( (size + 0xfff) & ~0xfff )) out/Image
 	cat "$1" >> out/Image
 	python3 -c 'import os,struct,sys; f=open(sys.argv[1],"r+b"); f.seek(16); f.write(struct.pack("<Q", os.path.getsize(sys.argv[1])))' out/Image
-	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
-else
-	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
 
-# Packaging: wrap in boot.img v0 if pack tool exists (created in Wave 3)
-if [ -f ../tools/mkbootimg.py ]; then
-	python3 ../tools/mkbootimg.py --kernel out/Image --ramdisk out/ramdisk.bin --output out/shim-boot.img --base 0x80000000 --pagesize 2048 --header_version 0 --cmdline "console=null"
+if command -v cpio >/dev/null 2>&1; then
+	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 else
-	echo "Notice: ../tools/mkbootimg.py not yet present (created in Wave 3). Skipping boot.img packaging."
+	python3 -c 'import gzip; h=b"07070100000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\0\0\0\0"; open("out/ramdisk.bin","wb").write(gzip.compress(h + b"\0"*(512-len(h)), compresslevel=9))'
 fi
+
+# Packaging: wrap in boot.img v0 using tools/mkbootimg.py
+python3 ../tools/mkbootimg.py \
+	--kernel out/Image \
+	--ramdisk out/ramdisk.bin \
+	--output out/shim-boot.img \
+	--base 0x80000000 \
+	--pagesize 2048 \
+	--header_version 0 \
+	--cmdline "console=null"
 
 # Host render of the console layout
 $HOST_CC -O2 -Wall -I. -o out/host_test console.c host_test.c && ./out/host_test
 
-ls -l out/Image
-[ -f out/shim-boot.img ] && ls -l out/shim-boot.img || true
+ls -l out/Image out/shim-boot.img
