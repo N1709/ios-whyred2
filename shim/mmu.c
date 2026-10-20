@@ -57,8 +57,8 @@
 
 extern char _head[], _end[];
 
-/* 1 L1 (root) + 1 L2 + 2 L3 tables, 4 KiB aligned */
-static uint64_t pt_pool[4 * NENT] __attribute__((aligned(4096)));
+/* 1 L1 (root) + 2 L2 (GiB 0 & GiB 2) + 2 L3 tables, 4 KiB aligned */
+static uint64_t pt_pool[6 * NENT] __attribute__((aligned(4096)));
 
 static void dcache_inval_range(uintptr_t start, uintptr_t end)
 {
@@ -81,8 +81,9 @@ int mmu_enable(struct mmu_info *info)
 	uintptr_t img_hi = ((uintptr_t)_end + PG_SIZE - 1) & ~(PG_SIZE - 1);
 	uintptr_t pool = (uintptr_t)pt_pool;
 
-	uint64_t *l1 = (uint64_t *)pool;
-	uint64_t *l2 = (uint64_t *)(pool + PG_SIZE);
+	uint64_t *l1   = (uint64_t *)(pool + 0 * PG_SIZE);
+	uint64_t *l2_0 = (uint64_t *)(pool + 1 * PG_SIZE);
+	uint64_t *l2_2 = (uint64_t *)(pool + 2 * PG_SIZE);
 	int n_l3 = 0;
 
 	info->img_lo = img_lo;
@@ -91,49 +92,74 @@ int mmu_enable(struct mmu_info *info)
 
 	/* Level 1: covers 64 GiB (first 64 entries used with 36-bit VA) */
 	zero_table(l1);
-	/* Entry 0: 0x00000000 - 0x3FFFFFFF (1 GiB, MMIO & GIC) */
-	l1[0] = 0x00000000UL | DEV_FLAGS | D_BLOCK;
+	/* Entry 0: 0x00000000 - 0x3FFFFFFF (1 GiB, MMIO & DRAM Bank 0) -> L2 table */
+	l1[0] = (uintptr_t)l2_0 | D_TABLE;
 	/* Entry 1: 0x40000000 - 0x7FFFFFFF (1 GiB, MMIO) */
 	l1[1] = 0x40000000UL | DEV_FLAGS | D_BLOCK;
-	/* Entry 2: 0x80000000 - 0xBFFFFFFF (1 GiB, DRAM Bank 0) -> L2 table */
-	l1[2] = (uintptr_t)l2 | D_TABLE;
-	/* Entry 3: 0xC0000000 - 0xFFFFFFFF (1 GiB, DRAM Bank 1) */
+	/* Entry 2: 0x80000000 - 0xBFFFFFFF (1 GiB, DRAM Bank 1 / Framebuffer) -> L2 table */
+	l1[2] = (uintptr_t)l2_2 | D_TABLE;
+	/* Entry 3: 0xC0000000 - 0xFFFFFFFF (1 GiB, DRAM Bank 2) */
 	l1[3] = 0xC0000000UL | DEV_FLAGS | D_BLOCK;
-	/* Entry 4: 0x100000000 - 0x13FFFFFFF (1 GiB, DRAM Bank 2) */
+	/* Entry 4: 0x100000000 - 0x13FFFFFFF (1 GiB, DRAM Bank 3) */
 	l1[4] = 0x100000000UL | DEV_FLAGS | D_BLOCK;
 
-	/* Level 2: 512 x 2 MiB blocks covering 0x80000000 - 0xBFFFFFFF */
-	zero_table(l2);
+	/* Level 2 (GiB 0): 512 x 2 MiB blocks covering 0x00000000 - 0x3FFFFFFF */
+	zero_table(l2_0);
+	for (uint64_t i = 0; i < NENT; i++) {
+		uint64_t pa = i << L2_BLK_SHIFT;
+		/* Lower 512 MiB is MMIO / GIC; upper 512 MiB (0x20000000 - 0x3FFFFFFF) is DRAM */
+		uint64_t flags = (pa < 0x20000000UL) ? DEV_FLAGS : WB_FLAGS;
+		l2_0[i] = pa | flags | D_BLOCK;
+	}
+
+	/* Level 2 (GiB 2): 512 x 2 MiB blocks covering 0x80000000 - 0xBFFFFFFF */
+	zero_table(l2_2);
 	for (uint64_t i = 0; i < NENT; i++) {
 		uint64_t pa = 0x80000000UL + (i << L2_BLK_SHIFT);
-		l2[i] = pa | DEV_FLAGS | D_BLOCK;
+		l2_2[i] = pa | DEV_FLAGS | D_BLOCK;
 	}
 
 	/* Framebuffer blocks: 0x90000000 and 0x90200000 (covers 4 MiB continuous splash) */
 	uint64_t fb_idx = (0x90000000UL - 0x80000000UL) >> L2_BLK_SHIFT;
-	l2[fb_idx]     = 0x90000000UL | NC_FLAGS | D_BLOCK;
-	l2[fb_idx + 1] = 0x90200000UL | NC_FLAGS | D_BLOCK;
+	l2_2[fb_idx]     = 0x90000000UL | NC_FLAGS | D_BLOCK;
+	l2_2[fb_idx + 1] = 0x90200000UL | NC_FLAGS | D_BLOCK;
 
-	/* Verify image is in DRAM Bank 0 */
-	if (img_lo < 0x80000000UL || img_hi > 0xC0000000UL)
-		return -1;
-
-	uint64_t blk_first = (img_lo - 0x80000000UL) >> L2_BLK_SHIFT;
-	uint64_t blk_last  = (img_hi - 1 - 0x80000000UL) >> L2_BLK_SHIFT;
-
-	if (blk_last - blk_first > 1)
-		return -2;	/* pool only allocates up to 2 L3 tables */
-
-	for (uint64_t blk = blk_first; blk <= blk_last; blk++) {
-		uint64_t *l3 = (uint64_t *)(pool + (2 + n_l3++) * PG_SIZE);
-		uint64_t base = 0x80000000UL + (blk << L2_BLK_SHIFT);
-		zero_table(l3);
-		for (int i = 0; i < NENT; i++) {
-			uint64_t pa = base + ((uint64_t)i << PG_SHIFT);
-			int ours = pa >= img_lo && pa < img_hi;
-			l3[i] = pa | (ours ? WB_FLAGS : DEV_FLAGS) | D_PAGE;
+	/* Map shim image with 4 KiB L3 table */
+	if (img_lo >= 0x20000000UL && img_hi <= 0x40000000UL) {
+		/* Image placed in GiB 0 DRAM by Qualcomm LK (santoni default) */
+		uint64_t blk_first = img_lo >> L2_BLK_SHIFT;
+		uint64_t blk_last  = (img_hi - 1) >> L2_BLK_SHIFT;
+		if (blk_last - blk_first > 1)
+			return -2;
+		for (uint64_t blk = blk_first; blk <= blk_last; blk++) {
+			uint64_t *l3 = (uint64_t *)(pool + (3 + n_l3++) * PG_SIZE);
+			uint64_t base = blk << L2_BLK_SHIFT;
+			zero_table(l3);
+			for (int i = 0; i < NENT; i++) {
+				uint64_t pa = base + ((uint64_t)i << PG_SHIFT);
+				l3[i] = pa | WB_FLAGS | D_PAGE;
+			}
+			l2_0[blk] = (uintptr_t)l3 | D_TABLE;
 		}
-		l2[blk] = (uintptr_t)l3 | D_TABLE;
+	} else if (img_lo >= 0x80000000UL && img_hi <= 0xC0000000UL) {
+		/* Image placed in GiB 2 DRAM */
+		uint64_t blk_first = (img_lo - 0x80000000UL) >> L2_BLK_SHIFT;
+		uint64_t blk_last  = (img_hi - 1 - 0x80000000UL) >> L2_BLK_SHIFT;
+		if (blk_last - blk_first > 1)
+			return -2;
+		for (uint64_t blk = blk_first; blk <= blk_last; blk++) {
+			uint64_t *l3 = (uint64_t *)(pool + (3 + n_l3++) * PG_SIZE);
+			uint64_t base = 0x80000000UL + (blk << L2_BLK_SHIFT);
+			zero_table(l3);
+			for (int i = 0; i < NENT; i++) {
+				uint64_t pa = base + ((uint64_t)i << PG_SHIFT);
+				int ours = pa >= img_lo && pa < img_hi;
+				l3[i] = pa | (ours ? WB_FLAGS : DEV_FLAGS) | D_PAGE;
+			}
+			l2_2[blk] = (uintptr_t)l3 | D_TABLE;
+		}
+	} else {
+		return -1;
 	}
 	info->n_l3 = n_l3;
 

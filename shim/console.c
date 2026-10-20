@@ -21,9 +21,10 @@ static inline void put_pixel24(int x, int y, uint32_t c)
 	if (x < 0 || x >= FB_W || y < 0 || y >= FB_H)
 		return;
 	volatile uint8_t *p = con_fb + (y * FB_STRIDE) + (x * 3);
-	p[0] = (uint8_t)((c >> 16) & 0xff);
-	p[1] = (uint8_t)((c >> 8) & 0xff);
-	p[2] = (uint8_t)(c & 0xff);
+	/* Santoni physical continuous splash framebuffer is BGR24 (b8g8r8) */
+	p[0] = (uint8_t)(c & 0xff);		/* blue */
+	p[1] = (uint8_t)((c >> 8) & 0xff);	/* green */
+	p[2] = (uint8_t)((c >> 16) & 0xff);	/* red */
 }
 
 void con_clear(uint32_t bg)
