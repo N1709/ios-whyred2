@@ -5,7 +5,7 @@
 - The user switches agents frequently. Update the active handoff in `NOTES.md`
   after each milestone and before stopping. Record commits, CI run IDs, exact
   build/boot results and unfinished work. Distinguish observations from guesses.
-- Commit completed changes. Use `gh` for GitHub Actions kernel builds and logs.
+- Commit completed changes. All new commits must include the trailer `Co-Authored-By: Gemini <noreply@google.com>`. Use `gh` for GitHub Actions kernel builds and logs.
   Local single-file cross-compiles are useful before spending a CI run.
 - Device bring-up uses temporary `fastboot boot` images. Preserve the Android
   installation and partition backups. The user approved (2026-10-15) using
