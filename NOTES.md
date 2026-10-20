@@ -2,23 +2,25 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### >>> UPDATE 2026-10-21: Phase 1 (Bare-Metal Shim & 4K MMU) Planned & Verified <<<
+### >>> UPDATE 2026-10-21: Phase 1 (Bare-Metal Shim & 4K MMU) EXECUTED & VERIFIED <<<
 
 - **Goal:** Port Apple iOS 16.7.16 (`20H392`) to Xiaomi Redmi 4X (`santoni`, 3/32 GB variant, MSM8937 / Snapdragon 435).
-- **Core Architecture & Blockers Identified:**
-  1. Cortex-A53 lacks 16 KiB translation granule (`TGran16 == 0`); shim and XNU must be patched for 4 KiB page size (`PAGE_SHIFT = 12`).
-  2. GICv3 system registers replaced with memory-mapped ARM GICv2 (`0x0b000000`, `0x0b002000`).
-  3. Storage is eMMC 5.1 via Qualcomm SDHCI MSM v4 (`0x07824900`); early bring-up uses RAM disk (`rd=md0`).
-  4. Framebuffer is 720x1280 at `0x90001000`.
-- **Phase 1 Planning Completed & Verified:**
-  - `01-RESEARCH.md`: Freestanding LLVM compilation (`-fno-jump-tables -mstrict-align`), 4 KiB Level 1/2/3 MMU walk, continuous splash 24-bit simplefb (`0x90001000`, stride 2160), Mach-O segment loader, Android boot image v0.
-  - `01-PATTERNS.md`: Mapped files (`build.sh`, `console.c`, `mmu.c`, `loader.c`, `mkbootimg.py`).
-  - `01-VALIDATION.md`: Automated host test suite + device visual checklist via `fastboot boot`.
-  - `01-01-PLAN.md` (Wave 1): Freestanding build script, santoni memory map, 720x1280 24-bit console blitter (`BOOT-01`, `BOOT-03`).
-  - `01-02-PLAN.md` (Wave 2): Cortex-A53 Stage-1 MMU driver (4 KiB granule, 36-bit IPS), Mach-O segment loader with `__STDC_HOSTED__` EL1 guards and `loader_test.c` (`BOOT-02`, `BOOT-04`).
-  - `01-03-PLAN.md` (Wave 3): Android boot image header v0 packing tool (`tools/mkbootimg.py`), `shim-boot.img` packaging, and physical device test checklist (`BOOT-05`).
-  - **Plan Checker Status:** `VERIFICATION PASSED` (0 blockers, 0 warnings).
-- **Next Concrete Action:** Run `/gsd-execute-phase 1` to build and test Phase 1 on hardware.
+- **Phase 1 Execution Completed & Verified:**
+  - **Wave 1 (01-01):** Build pipeline and 24-bit console blitter (`BOOT-01`, `BOOT-03`).
+    - `1dc5114`: Freestanding LLVM/Clang build script with zero ABS64 relocation gate; cleaned `shim.c` of Topaz Gold and UFS legacy code.
+    - `52311fa`: 720x1280 24-bit RGB (`r8g8b8`) simplefb blitter at `0x90001000` with byte-aligned writes to avoid Device memory alignment traps; verified with `out/host.ppm` (2,764,816 bytes).
+  - **Wave 2 (01-02):** Cortex-A53 4K Stage-1 MMU & Mach-O segment loader (`BOOT-02`, `BOOT-04`).
+    - `b99eb2e`: Cortex-A53 Stage-1 MMU driver (`PG_SHIFT=12`, `TCR_EL1.TG0=0b00`, 36-bit IPS) mapping physical RAM as `Device-nGnRnE` by default to prevent Qualcomm XPU carve-out faults.
+    - `d8cafc7`: Mach-O segment unroller with 4 KiB `boot_args` alignment, 24-bit video geometry, `#if !__STDC_HOSTED__` EL1 guards, verified via host unit test `shim/loader_test.c`.
+  - **Wave 3 (01-03):** Android boot image v0 packaging (`BOOT-05`).
+    - `ab377be`: Standalone Python 3 Android boot image v0 packing tool (`tools/mkbootimg.py`) with 2048-byte page alignment and SHA-1 digests.
+    - `9309e31`: Wired `mkbootimg.py` into `shim/build.sh`, assembling `shim/out/shim-boot.img` (172,032 bytes) verified byte-exact via `tools/unpack_bootv2.py`.
+  - **Status:** All automated checks passed (score: 9/9 must-haves verified). Physical device boot test checklist documented in `01-UAT.md`.
+- **Physical Device Bring-up Action:**
+  - Boot Redmi 4X into fastboot mode (`adb reboot bootloader`).
+  - Run: `fastboot boot shim/out/shim-boot.img`
+  - Verify red splash screen, console output (`SHIM: santoni bare-metal shim`, `MIDR: el1=0x410FD034`, `MMFR0: tg16=0`, `MMU: rc=0`).
+  - Run `/gsd-verify-work 1` to conclude UAT and advance to Phase 2 (GICv2 & Timers).
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
