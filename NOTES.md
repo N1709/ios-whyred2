@@ -2,6 +2,24 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> UPDATE 2026-10-21: Phase 1 (Bare-Metal Shim & 4K MMU) Planned & Verified <<<
+
+- **Goal:** Port Apple iOS 16.7.16 (`20H392`) to Xiaomi Redmi 4X (`santoni`, 3/32 GB variant, MSM8937 / Snapdragon 435).
+- **Core Architecture & Blockers Identified:**
+  1. Cortex-A53 lacks 16 KiB translation granule (`TGran16 == 0`); shim and XNU must be patched for 4 KiB page size (`PAGE_SHIFT = 12`).
+  2. GICv3 system registers replaced with memory-mapped ARM GICv2 (`0x0b000000`, `0x0b002000`).
+  3. Storage is eMMC 5.1 via Qualcomm SDHCI MSM v4 (`0x07824900`); early bring-up uses RAM disk (`rd=md0`).
+  4. Framebuffer is 720x1280 at `0x90001000`.
+- **Phase 1 Planning Completed & Verified:**
+  - `01-RESEARCH.md`: Freestanding LLVM compilation (`-fno-jump-tables -mstrict-align`), 4 KiB Level 1/2/3 MMU walk, continuous splash 24-bit simplefb (`0x90001000`, stride 2160), Mach-O segment loader, Android boot image v0.
+  - `01-PATTERNS.md`: Mapped files (`build.sh`, `console.c`, `mmu.c`, `loader.c`, `mkbootimg.py`).
+  - `01-VALIDATION.md`: Automated host test suite + device visual checklist via `fastboot boot`.
+  - `01-01-PLAN.md` (Wave 1): Freestanding build script, santoni memory map, 720x1280 24-bit console blitter (`BOOT-01`, `BOOT-03`).
+  - `01-02-PLAN.md` (Wave 2): Cortex-A53 Stage-1 MMU driver (4 KiB granule, 36-bit IPS), Mach-O segment loader with `__STDC_HOSTED__` EL1 guards and `loader_test.c` (`BOOT-02`, `BOOT-04`).
+  - `01-03-PLAN.md` (Wave 3): Android boot image header v0 packing tool (`tools/mkbootimg.py`), `shim-boot.img` packaging, and physical device test checklist (`BOOT-05`).
+  - **Plan Checker Status:** `VERIFICATION PASSED` (0 blockers, 0 warnings).
+- **Next Concrete Action:** Run `/gsd-execute-phase 1` to build and test Phase 1 on hardware.
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **LIVE LOG over USB (0077, boot 0077s): no more recovery round-trips.** Boot an image with `sweetusb=2`, run `tools/sweet-usbnet.sh logs/live-NAME.txt` on the PC: it waits for the phone's CDC-ECM interface, sets 192.168.7.1/24 (sudo) and prints/saves the kernel console the phone streams every 100 ms as UDP to 192.168.7.1:5140 (starts with the last 64 KiB). `ping 192.168.7.2` checks the link. Current image: `shim/out/shim-boot-0077s.img` (kernel 0077, ADT sweet-0069hi, cpus=6, sweetfb_noconsole=1, sweetfb_hz=30, sweetusb=2). The recovery pull (`tools/sweet-log-pull.sh`) is still the way after a panic/hang before USB comes up.

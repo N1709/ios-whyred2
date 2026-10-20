@@ -2,6 +2,8 @@
 backup/
 dtb/
 recovery/
+resources/
+.planning/
 # third-party/Apple sources fetched for reading
 research/
 shim/out/
