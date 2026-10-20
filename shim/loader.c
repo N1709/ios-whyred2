@@ -1,11 +1,11 @@
 /*
- * Milestone 4: act as iBoot for xnu.
+ * Milestone 4: act as iBoot for xnu on Cortex-A53 (MSM8937 / santoni).
  *
  * mkpayload.py already resolved the kernel's chained fixups and built the
- * ADT, so this only has to: find the payload in the ABL ramdisk, copy the
- * segments to phys_base + (vmaddr - virt_base), place the ADT and
- * boot_args behind the kernel, and jump to the entry point with the MMU
- * and caches off, x0 = boot_args (physical).
+ * ADT, so this only has to: find the payload in the ABL ramdisk (or embedded),
+ * copy the segments to phys_base + (vmaddr - virt_base), place the ADT and
+ * boot_args behind the kernel with 4 KiB page alignment, and jump to the entry
+ * point with the MMU and caches off, x0 = boot_args (physical).
  */
 #include <stdint.h>
 #include "console.h"
@@ -13,7 +13,7 @@
 #include "loader.h"
 
 #define BOOT_LINE_LENGTH	608
-#define PAGE_16K		0x4000UL
+#define PAGE_4K			0x1000UL
 
 struct payload_seg {
 	uint64_t vmaddr, vmsize, file_off, file_size;
@@ -85,10 +85,8 @@ const char *loader_boot(uintptr_t dtb)
 	uintptr_t emb = ((uintptr_t)_end + 0xfff) & ~0xfffUL;
 
 	/*
-	 * topaz: the ABL only passes the vendor_boot ramdisk for a v4 boot
-	 * image, so the payload rides behind the shim in the kernel Image.
-	 * Its exact size is unknown here; the kernel memory check below only
-	 * needs an upper bound, and the Image is far below phys_base.
+	 * Payload can ride either behind the shim in the kernel Image (embedded),
+	 * or inside the ABL-passed initrd via /chosen.
 	 */
 	if (magic_ok((const char *)emb)) {
 		rd_start = emb;
@@ -101,12 +99,6 @@ const char *loader_boot(uintptr_t dtb)
 		con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
 	}
 
-	/*
-	 * Boot image v4 (topaz ABL ignores v1/v2): ABL concatenates the
-	 * vendor_boot ramdisk(s) and ours, so the payload is somewhere inside
-	 * the initrd and not necessarily 8-byte aligned. Find it and move it
-	 * down to an aligned address; the vendor ramdisk below it is unused.
-	 */
 	uintptr_t hit = 0;
 	for (uintptr_t a = rd_start; a + 8 <= rd_end; a++)
 		if (magic_ok((const char *)a)) {
@@ -148,13 +140,13 @@ const char *loader_boot(uintptr_t dtb)
 	}
 	con_hex2("SEGS", "n=", p->nsegs, "end=", p->kernel_end + pa_of_va_base);
 
-	/* ADT, then boot_args, behind the kernel; everything below topOfKernelData is ours. */
+	/* ADT, then boot_args, behind the kernel; 4 KiB page aligned for Cortex-A53 */
 	uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
 	copy64(adt_pa, rd_start + p->adt_off, p->adt_size);
-	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_16K - 1) & ~(PAGE_16K - 1);
-	uintptr_t top = ba_pa + PAGE_16K;
+	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_4K - 1) & ~(PAGE_4K - 1);
+	uintptr_t top = ba_pa + PAGE_4K;
 
-	zero64(ba_pa, PAGE_16K);
+	zero64(ba_pa, PAGE_4K);
 	volatile struct boot_args *ba = (volatile struct boot_args *)ba_pa;
 	ba->Revision = 2;
 	ba->Version = 2;
@@ -167,7 +159,7 @@ const char *loader_boot(uintptr_t dtb)
 	ba->Video.v_rowBytes = FB_STRIDE;
 	ba->Video.v_width = FB_W;
 	ba->Video.v_height = FB_H;
-	ba->Video.v_depth = 32;
+	ba->Video.v_depth = 24;
 	ba->deviceTreeP = adt_pa - pa_of_va_base;	/* xnu reads it with the MMU on: a VA */
 	ba->deviceTreeLength = (uint32_t)p->adt_size;
 	for (int i = 0; i < BOOT_LINE_LENGTH; i++)
@@ -179,8 +171,13 @@ const char *loader_boot(uintptr_t dtb)
 	con_hex("JUMP", entry_pa);
 	con_str("XNU", "jumping (fbcon clears screen)");
 
+#if !__STDC_HOSTED__
 	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 	((xnu_entry_t)entry_pa)(ba_pa);
 	return "xnu returned";
+#else
+	(void)entry_pa;
+	return "ok";
+#endif
 }
