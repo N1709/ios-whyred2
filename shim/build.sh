@@ -46,6 +46,12 @@ else
 	python3 -c 'import gzip; h=b"07070100000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\0\0\0\0"; open("out/ramdisk.bin","wb").write(gzip.compress(h + b"\0"*(512-len(h)), compresslevel=9))'
 fi
 
+# Append Santoni Qualcomm device tree table (29 DTBs including msm8940-xiaomi-santoni)
+# so Qualcomm LK finds the DTB at kernel_addr + image_size
+if [ -f ../resources/santoni_appended_dtbs.bin ]; then
+	cat ../resources/santoni_appended_dtbs.bin >> out/Image
+fi
+
 # Packaging: wrap in boot.img v0 using tools/mkbootimg.py
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image \
