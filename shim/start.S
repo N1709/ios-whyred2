@@ -1,26 +1,33 @@
 /*
- * sweet boot shim entry: arm64 Linux Image header so Qualcomm ABL treats
- * us like a kernel. ABL enters at EL1, MMU/D-cache off, x0 = DTB pointer.
+ * santoni boot shim entry: arm64 Linux Image header so Qualcomm LK/ABL treats
+ * us like a kernel. Qualcomm LK enters at EL1 AArch64, MMU/D-cache off, x0 = DTB pointer.
+ *
+ * NOTE for Qualcomm LK: LK dev_tree_get_entry() inspects word 9 (offset 0x24) for
+ * the zImage magic (0x016f2818), word 10 (offset 0x28) for start (0x0), and
+ * word 11 (offset 0x2c) for the appended DTB offset (_end).
+ * Both reside within the ARM64 Linux header's reserved fields (res2/res3).
  */
 	.section .text.head, "ax"
 	.globl _head
 _head:
-	b	_start			/* code0 */
-	.long	0			/* code1 */
-	.quad	0			/* text_offset */
-	.quad	_end			/* image_size (linked at 0) */
-	.quad	0xa			/* flags: LE, 4K pages, place anywhere */
-	.quad	0			/* res2 */
-	.quad	0			/* res3 */
-	.quad	0			/* res4 */
-	.ascii	"ARM\x64"		/* magic */
-	.long	0			/* res5 (PE offset) */
+	b	_start			/* code0 (offset 0x00) */
+	.long	0			/* code1 (offset 0x04) */
+	.quad	0			/* text_offset (offset 0x08) */
+	.quad	_end			/* image_size (offset 0x10, linked at 0) */
+	.quad	0xa			/* flags: LE, 4K pages, place anywhere (offset 0x18) */
+	.long	0			/* res2_low: offset 0x20 (word 8) */
+	.long	0x016f2818		/* zImage magic: offset 0x24 (word 9) for Qualcomm LK */
+	.long	0			/* zImage start: offset 0x28 (word 10) for Qualcomm LK */
+	.long	_end			/* DTB offset / zImage end: offset 0x2c (word 11) for Qualcomm LK */
+	.quad	0			/* res4 (offset 0x30) */
+	.ascii	"ARM\x64"		/* magic (offset 0x38) */
+	.long	0			/* res5 (PE offset) (offset 0x3c) */
 
 	.text
 	.globl _start
 _start:
 	msr	daifset, #0xf
-	mov	x19, x0			/* DTB pointer from ABL */
+	mov	x19, x0			/* DTB pointer from ABL/LK */
 	msr	spsel, #1
 	adr	x1, _stack_top
 	mov	sp, x1
