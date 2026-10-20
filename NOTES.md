@@ -1,6 +1,35 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-15, latest)
+## Agent handoff / active work (2026-10-21, latest)
+
+### >>> UPDATE 2026-10-21: Phase 2 (GICv2 Interrupts & Timer Subsystem) EXECUTED & VERIFIED <<<
+
+- **Goal:** Port Apple iOS 16.7.16 (`20H392`) to Xiaomi Redmi 4X (`santoni`, 3/32 GB variant, MSM8937 / Snapdragon 435).
+- **Phase 2 Status:** EXECUTED, COMMITTED, AND VERIFIED (Awaiting physical device boot test)
+  - **Core Truth:** Cortex-A53 lacks GICv3 system registers (`ICC_*_EL1`). Any access triggers an immediate `ESR_EL1` undefined instruction exception. Replaced all GICv3 system register dependencies with memory-mapped GICv2 MMIO for Qualcomm QGIC2 at Distributor (`0x0b000000`) and CPU Interface (`0x0b002000`).
+  - **Freestanding Subsystem (`shim/`):**
+    - `shim/gic.h` & `shim/gic.c`: QGIC2 driver with volatile MMIO accessors and `dsb sy` barriers.
+    - `shim/gic_test.c`: Host MMIO unit test verifying distributor init, Group 1 non-secure masking, priority unmasking (`GICC_PMR = 0xFF`), and spurious token (1023) filtering.
+    - `shim/timer.h` & `shim/timer.c`: Freestanding ARM generic architectural timer driver without GICv3 dependencies.
+    - `shim/start.S`: Vector slot 5 (Current EL SP_ELx IRQ) complete register context preservation stack frame and `eret`.
+    - `shim/shim.c`: `exc_handler` services timer IRQs, counts ticks, and rearms timer (`timer_arm_ticks(192000)`); `shim_main` unmasks INTID 20 (Qualcomm PPI 4) and INTID 27 (PPI 11) and runs a 50-step (5s) live in-place telemetry loop on screen (`TIMER: ticks=... intid=...`).
+    - `shim/console.c`: Added `con_rewind(n)` to support real-time in-place screen updates.
+    - `shim/build.sh`: Compiles all 7 C objects with strict freestanding flags, verifies 0 `R_AARCH64_ABS64` relocations across all objects, and packages `out/shim-boot.img` (212,992 bytes).
+  - **Device Tree & Kernel (`tools/` & `xnu/`):**
+    - `tools/mkadt.py`: Synthesizes `qcom,msm-qgic2` / `arm,gic-400` GIC node at `0x0b000000` / `0x0b002000` with `virtual-timer-intid = 20`.
+    - `xnu/patches/0017-santoni-gicv2-rtclock.patch`: Supersedes `0017-sweet-device-tree-virtual-timer-irq.patch`. Configures memory-mapped GICv2 in `pe_fiq.c` and `sleh_irq` without any GICv3 system register instructions.
+  - **Commits Added in Phase 2:**
+    - `c1f0ac9`: `feat(02-01): define GICv2 MMIO registers and host unit test`
+    - `b7cd851`: `feat(02-01): implement freestanding GICv2 driver and wire into build pipeline`
+    - `501716b`: `feat(02-02): implement ARM generic architectural timer driver`
+    - `5f738cf`: `feat(02-02): wire GIC/timer telemetry, assemble boot.img, synthesize ADT GIC, and author XNU driver`
+- **Next Concrete Action:**
+  - Connect physical Xiaomi Redmi 4X (`santoni`) in fastboot mode and run:
+    ```bash
+    fastboot boot shim/out/shim-boot.img
+    ```
+  - Observe red screen displaying `SHIM: santoni phase 2`, `GIC: dist=00000001 cpu=00000001`, and `TIMER: ticks=... intid=00000014` ticking live at 100 Hz for 5 seconds.
+  - Run `/gsd-verify-work 2` to close out UAT and complete Phase 2.
 
 ### >>> UPDATE 2026-10-21: Phase 1 (Bare-Metal Shim & 4K MMU) CONFIRMED ON PHYSICAL HARDWARE <<<
 
