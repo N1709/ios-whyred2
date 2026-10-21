@@ -70,7 +70,7 @@ python3 tools/check_patch.py "$P144" -q \
 echo "ok   0144 allows pageSize 14, skips 16 KiB hashing, disables CS enforcement"
 
 echo "== STOR-06: SDHCI consensus fixes (CMD12-after-BLK_CNT_EN, DATA_INHIBIT, ==="
-echo "==          recover, R2 reversal, SEC_COUNT fence, idempotent probe,      =="
+echo "==          recover, R2 CRC strip, SEC_COUNT fence, idempotent probe,     =="
 echo "==          HC-mode takeover from LK's legacy MCI mode)                  =="
 python3 tools/check_patch.py "$P142" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,' \
@@ -95,6 +95,24 @@ python3 tools/check_patch.py "$P143" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:uint32_t on = 0;' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:uint32_t on = 1;'
 echo "ok   0143 defaults the console log OFF (sweetlog=1 enables it)"
+
+echo "== STOR-07: addressed commands carry LK's RCA, R2 is CRC-stripped, and  =="
+echo "==          the RCA ladder diagnoses itself (VENDOR_SPEC, CMD5, CMD0)   =="
+python3 tools/check_patch.py "$P142" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SANTONI_CARD_RCA' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_send_status(uint32_t rca, uint32_t *r1)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_cmd(13, rca << 16, 0,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_response128(10, se.rca << 16, cid)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_response128(9, se.rca << 16, csd)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:out[i] = (lo << 8) | (hi >> 24);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_sleep_awake(uint32_t rca, uint32_t *r1)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_restore_state(uint32_t *r1)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CMD0 did not complete either: no SDCLK' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:sdhci_cmd(13, 0, 0,' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:sdhci_read_response128(10, cid)' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:card is not in transfer state'
+echo "ok   0142 addresses CMD13/CMD9/CMD10 with the RCA and keeps a logged ladder"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).

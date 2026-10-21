@@ -1,6 +1,81 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Audit (2026-10-21, latest): 0142/0143 symbols + SDHCI registers, 3 findings
+## Hardware result + RCA audit (2026-10-22, latest): CMD13 arg was 0, card RCA is 2
+
+- **Hardware observation (Gemini, commit 98c5c3d, non-destructive `rd=md0`
+  boot):** SDCC1 takeover worked (MCI_VERSION 0x1000004d, GENERICS 0x24100041,
+  HC mode latched, HOST_VERSION 0x4d02, CLOCK_CONTROL 0x0003, PRESENT_STATE
+  0x01F80000, POWER_CONTROL 0x0B, card-clock gate reopened to 0x0007), then
+  `command 13 timed out` -> `eMMC probe failed (60)`. PID 1 kept running.
+- **Root cause (confirmed from source, not inferred):** the driver sent CMD13
+  (and would have sent CMD9/CMD10 the same way) with `arg = 0`. Addresses are
+  not optional: Qualcomm LK/ABL *assign* RCA 2 in CMD3
+  (`bootloader_lk include/mmc.h`: `#define MMC_RCA 2`,
+  `mmc_boot_send_relative_address()` -> `MMC_RCA << 16`) and address every
+  later command with `rca << 16` (`mmc_boot_get_card_status(MMC_RCA << 16)`,
+  `mmc_boot_send_csd`, CMD10). Linux's opcode table agrees:
+  `include/linux/mmc/mmc.h` marks CMD3/5/7/9/10/13 `ac [31:16] RCA`.
+  A card whose RCA is 2 ignores a command whose RCA field is 0, and this core
+  reports that as the software deadline expiring - exactly the log line seen.
+- **Verdict on the VENDOR_SPEC hypothesis (0xa9c at core+0x10c): not the
+  cause, and it cannot be, as framed.** Bits 9:8 select the clock that feeds
+  the HC block (2 = free-running MCLK, *not* the card clock or a pad power
+  gate), and `CLOCK_CONTROL 0x0003` (INT_EN|INT_STABLE) already proves the
+  internal clock is up and stable. Linux writes the POR value *before* it
+  enables HC mode and before any clock programming; it is not a fix for an
+  addressed command that was addressed to nobody. It survives in the driver
+  only as a logged fallback rung, never as the first move.
+- **Extra LK fact that matters:** LK has `mmc_put_card_to_sleep()` (CMD7 with
+  arg 0 to deselect, then CMD5 with `SLEEP_AWAKE|rca<<16`). A card left
+  deselected (Standby, state 3) or asleep (state 5) also ignores CMD13, so the
+  probe now repairs both instead of only reporting them.
+- **Second confirmed defect (R2 layout):** the MSM v4 core strips the 8-bit
+  CRC and right-aligns the 120-bit response, so Linux
+  (`sdhci_read_rsp_136()`) shifts each word left by 8 and folds in the top byte
+  of the next. The old driver only reversed RESPONSE[3..0], which would have
+  printed MID 0x00, a blank PNM and a wrong serial number. Fixed together with
+  the eMMC CID layout (6-char PNM, PRV[55:48], PSN[47:16], MDT[15:8]).
+  Bit-exact check with the mock words
+  (`RESPONSE 0x34567821/0x34520112/0x38475446/0x00150100`) now decodes
+  MID 0x15, PNM "8GTF4R", PRV 0.1, S/N 0x12345678, MDT 0x21.
+- **What changed in 0142:** `sdhci_cmd()` clears INT_STATUS before issuing (a
+  stale Command Complete must not be read as the new result) and prints
+  arg/INT_STATUS/PRESENT_STATE plus the named specific error bits
+  (cmd-timeout = the card sent no response, cmd-crc, cmd-end-bit, cmd-index);
+  new `sdhci_reset_paths()`, and `sdhci_recover()` = reset -> best-effort CMD12
+  -> reset (a timed-out CMD12 leaves CMD_INHIBIT set); `sdhci_read_response128`
+  takes the RCA argument and applies the CRC-strip shift;
+  CMD13/CMD9/CMD10 carry `rca << 16`, CMD8 keeps argument 0; new
+  `sdhci_claim_card()` ladder (CMD13 RCA 2 -> CMD13 RCA 1 -> VENDOR_SPEC POR
+  -> CMD5 awake -> CMD0) and `sdhci_restore_state()` (Standby -> CMD7,
+  Sleep -> CMD5 awake); takeover now logs `VENDOR_SPEC` and the legacy
+  `MCI_CLK`/`MCI_POWER` sampled *before* the HC-mode switch. The new-file hunk
+  header is `+1,1506`.
+- **Reading the next boot log (each line is a verdict):**
+  1. `takeover complete (... VENDOR_SPEC ..., legacy MCI_CLK ..., MCI_POWER ...)`
+     - recorded hand-off state, before any of our commands.
+  2. `card answered CMD13 on RCA 2 (... state 4)` - hypothesis A confirmed and
+     the hand-off is healthy; the driver proceeds to CID/CSD/EXT_CSD/GPT.
+  3. `CMD13 with RCA 2 got no answer` then a hit on `RCA 1` - that ABL used a
+     different RCA; the driver still works, and the log says so.
+  4. `CORE_VENDOR_SPEC ... -> POR ...` followed by a CMD13 answer - the vendor
+     clock selection *did* matter (only then is the 0xa9c hypothesis proven).
+  5. `CMD5 awake RCA n` + `CMD13 after wake-up` - LK left the card asleep.
+  6. `card state 3 ... selecting RCA n (CMD7)` - LK left it deselected.
+  7. `CMD0 completed: the command path shifts, but no addressed command
+     answered` - the core drives SDCLK and shifts commands, the card does not
+     answer: next step is a full re-identification from Idle (CMD0/CMD1) in a
+     later patch, not a register tweak.
+  8. `CMD0 did not complete either: no SDCLK reaches the card` - core/clock
+     problem, not a card problem.
+- **Offline verification:** `bash tests/run_tests.sh` exit 0 (3 host suites
+  including a new `test_card_ladder()` with RCA-2, RCA-1, sleep, standby and
+  card-absent cases, all patch checks, plus STOR-07 assertions that the RCA
+  form is shipped and the old `arg = 0` form is gone).
+- **Hardware status:** not yet booted with this fix (user was away; no
+  `fastboot boot` run). No device state changed.
+
+## Audit (2026-10-21, previous): 0142/0143 symbols + SDHCI registers, 3 findings
 
 - **Method (measured, not inferred):** reconstructed the exact shipped sources
   by applying 0142 and then 0143 to a scratch tree, then compiled them against

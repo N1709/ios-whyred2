@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,1246 @@
+@@ -0,0 +1,1506 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -159,6 +159,16 @@ new file mode 100644
 +#define SDHCI_INT_BWR           0x00000010u
 +#define SDHCI_INT_BRR           0x00000020u
 +#define SDHCI_INT_ERR           0x00008000u
++/*
++ * The specific error bits behind SDHCI_INT_ERR (SDHCI 3.0, one dword at
++ * 0x30). They separate "the card never answered" (CMD_TIMEOUT) from "the
++ * controller never shifted the command at all" (nothing but the software
++ * deadline), which is exactly the ambiguity a bare timeout leaves.
++ */
++#define SDHCI_INT_CMD_INDEX     0x00800000u
++#define SDHCI_INT_CMD_END_BIT   0x01000000u
++#define SDHCI_INT_CMD_CRC       0x02000000u
++#define SDHCI_INT_CMD_TIMEOUT   0x04000000u     /* no response from the card */
 +
 +/* ------------------------------------------ Qualcomm MSM v4 core registers */
 +#define SDHCI_HC_OFFSET         0x900           /* HC base - core base */
@@ -172,6 +182,26 @@ new file mode 100644
 +#define CORE_PWRCTL_MASK        0xe0
 +#define CORE_PWRCTL_CLEAR       0xe4
 +#define CORE_PWRCTL_CTL         0xe8
++/*
++ * core + 0x10c: vendor clock/DLL control. Linux (sdhci_msm_probe()) resets it
++ * to CORE_VENDOR_SPEC_POR_VAL before it enables HC mode; bits 9:8 select the
++ * clock the HC block uses (2 = free-running MCLK), bit 1 is CORE_CLK_PWRSAVE.
++ */
++#define CORE_VENDOR_SPEC        0x10c
++#define CORE_VENDOR_SPEC_POR_VAL 0xa9cu
++#define CORE_HC_MCLK_SEL_MASK   (3u << 8)
++#define CORE_HC_MCLK_SEL_DFLT   (2u << 8)
++/* Legacy MCI window the bootloader drove (LK mmc.c MMC_BOOT_MCI_POWER/CLK). */
++#define CORE_MCI_POWER          0x000
++#define CORE_MCI_CLK            0x004
++
++/*
++ * The relative card address the bootloader assigned in CMD3. Qualcomm LK/ABL
++ * use MMC_RCA 2 (bootloader_lk include/mmc.h), but it is probed, never
++ * assumed: CMD13/CMD9/CMD10 are addressed commands and must carry the RCA in
++ * bits 31:16, unlike CMD8 (SEND_EXT_CSD), whose argument is all stuff bits.
++ */
++#define SANTONI_CARD_RCA        2u
 +
 +/* --------------------------------------------------------------- transfers */
 +#define SDHCI_BLOCK             512u
@@ -194,6 +224,7 @@ new file mode 100644
 +	uint64_t first_block, nblocks;          /* root partition, 512-byte sectors */
 +	uint64_t sys_first_block, sys_nblocks;  /* "system" partition, 512-byte sectors */
 +	uint32_t sec_count;                     /* EXT_CSD SEC_COUNT, 512-byte units */
++	uint32_t rca;                           /* RCA the card answered with */
 +	uint32_t secsize;                       /* logical sector size for BSD */
 +	bool writable;                          /* boot-arg emmcrw=1 */
 +	int bmajor, cmajor;
@@ -277,8 +308,14 @@ new file mode 100644
 +}
 +
 +/*
-+ * Issue one command and wait for Command Complete. Errors clear the whole
-+ * status register so a stale error bit cannot poison the next command.
++ * Issue one command and wait for Command Complete.
++ *
++ * The status register is cleared before the command is written: the
++ * bootloader leaves Command Complete (and possibly an error) set, and a stale
++ * bit would otherwise be read as this command's result. Every failure prints
++ * the argument, the raw status (with the specific error bits named) and
++ * PRESENT_STATE, because "no response", "CRC error" and "the command never
++ * shifted" are one indistinguishable timeout without them.
 + */
 +static int
 +sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
@@ -290,9 +327,13 @@ new file mode 100644
 +	error = sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,
 +	    CMD_TIMEOUT_NS);
 +	if (error) {
++		printf("SANTONI SDHCI: command %u blocked (arg 0x%08x, "
++		    "INT_STATUS 0x%08x, PRESENT_STATE 0x%08x)\n", index, arg,
++		    hc_rd(SDHCI_INT_STATUS), hc_rd(SDHCI_PRESENT_STATE));
 +		return EBUSY;
 +	}
 +
++	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
 +	hc_wr(SDHCI_ARGUMENT, arg);
 +	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
 +	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(index, flags));
@@ -304,8 +345,14 @@ new file mode 100644
 +
 +		if (st & SDHCI_INT_ERR) {
 +			hc_wr(SDHCI_INT_STATUS, st);
-+			printf("SANTONI SDHCI: command %u failed (status 0x%08x)\n",
-+			    index, st);
++			printf("SANTONI SDHCI: command %u failed (arg 0x%08x, "
++			    "INT_STATUS 0x%08x%s%s%s%s, PRESENT_STATE "
++			    "0x%08x)\n", index, arg, st,
++			    (st & SDHCI_INT_CMD_TIMEOUT) ? " cmd-timeout" : "",
++			    (st & SDHCI_INT_CMD_CRC) ? " cmd-crc" : "",
++			    (st & SDHCI_INT_CMD_END_BIT) ? " cmd-end-bit" : "",
++			    (st & SDHCI_INT_CMD_INDEX) ? " cmd-index" : "",
++			    hc_rd(SDHCI_PRESENT_STATE));
 +			return EIO;
 +		}
 +		if (st & SDHCI_INT_CC) {
@@ -316,7 +363,11 @@ new file mode 100644
 +			return 0;
 +		}
 +		if (mach_absolute_time() > deadline) {
-+			printf("SANTONI SDHCI: command %u timed out\n", index);
++			printf("SANTONI SDHCI: command %u timed out (arg "
++			    "0x%08x, INT_STATUS 0x%08x, PRESENT_STATE 0x%08x, "
++			    "CMD_INHIBIT %u)\n", index, arg, st,
++			    hc_rd(SDHCI_PRESENT_STATE),
++			    hc_rd(SDHCI_PRESENT_STATE) & SDHCI_CMD_INHIBIT);
 +			return ETIMEDOUT;
 +		}
 +		delay(1);
@@ -381,14 +432,9 @@ new file mode 100644
 +	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
 +}
 +
-+/*
-+ * Recover the controller after a failed command or data transfer: reset the
-+ * command and data paths, wait for the reset to self-clear, drop every pending
-+ * interrupt, then try a best-effort CMD12 so the card leaves its data state.
-+ * CMD12 may itself fail (that is why we are here), so its status is ignored.
-+ */
-+static void
-+sdhci_recover(void)
++/* Reset the command and data paths and wait for the core to self-clear. */
++static int
++sdhci_reset_paths(void)
 +{
 +	uint64_t deadline;
 +
@@ -398,13 +444,31 @@ new file mode 100644
 +	while (hc_rd8(SDHCI_SOFTWARE_RESET) &
 +	    (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) {
 +		if (mach_absolute_time() > deadline) {
-+			break;
++			printf("SANTONI SDHCI: path reset did not complete "
++			    "(SOFTWARE_RESET 0x%02x)\n",
++			    hc_rd8(SDHCI_SOFTWARE_RESET));
++			return ETIMEDOUT;
 +		}
 +		delay(1);
 +	}
 +	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
++	return 0;
++}
++
++/*
++ * Recover the controller after a failed command or data transfer: reset the
++ * command and data paths, drop every pending interrupt, then try a best-effort
++ * CMD12 so the card leaves its data state. The CMD12 can itself time out (the
++ * card is exactly what is not answering), so its status is ignored - but the
++ * paths are reset a second time afterwards, because a timed-out CMD12 leaves
++ * CMD_INHIBIT set on this core and every later command would fail with EBUSY.
++ */
++static void
++sdhci_recover(void)
++{
++	(void)sdhci_reset_paths();
 +	(void)sdhci_stop_transmission();
-+	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
++	(void)sdhci_reset_paths();
 +}
 +
 +/*
@@ -504,21 +568,30 @@ new file mode 100644
 +	return 0;
 +}
 +
++/*
++ * CMD9 / CMD10: 136-bit R2 response into out[0] = most-significant word.
++ *
++ * Both are addressed commands, so arg carries the RCA in bits 31:16 (Linux
++ * include/linux/mmc/mmc.h: "ac [31:16] RCA R2"). The MSM v4 core strips the
++ * 8-bit CRC and right-aligns the remaining 120 bits, so the payload of the
++ * first word sits in bits 23:0; Linux (sdhci_read_rsp_136()) shifts each word
++ * left by 8 and folds in the top byte of the next. Without that shift the CID
++ * decodes as MID 0x00, a blank PNM and a nonsense serial number.
++ */
 +static int
-+sdhci_read_response128(uint8_t index, uint32_t out[4])
++sdhci_read_response128(uint8_t index, uint32_t arg, uint32_t out[4])
 +{
-+	int error = sdhci_cmd(index, 0, 0,
++	int error = sdhci_cmd(index, arg, 0,
 +	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
 +	if (error) {
 +		return error;
 +	}
-+	/*
-+	 * SDHCI exposes R2 least-significant word first: RESPONSE[0] is bits
-+	 * 31:0 and RESPONSE[3] is bits 127:96. Callers (CID/CSD decoders) expect
-+	 * out[0] to be the most-significant word, so reverse the four words.
-+	 */
 +	for (int i = 0; i < 4; i++) {
-+		out[i] = hc_rd(SDHCI_RESPONSE + 4 * (3 - i));
++		uint32_t lo = hc_rd(SDHCI_RESPONSE + 4 * (3 - i));
++		uint32_t hi = (i == 3) ? 0u :
++		    hc_rd(SDHCI_RESPONSE + 4 * (2 - i));
++
++		out[i] = (lo << 8) | (hi >> 24);
 +	}
 +	return 0;
 +}
@@ -611,28 +684,28 @@ new file mode 100644
 +{
 +	uint16_t clk;
 +	uint8_t ctrl;
-+	uint64_t deadline;
++	uint32_t mci_clk, mci_power;
 +	int error;
 +
 +	error = sdhci_core_check();
 +	if (error) {
 +		return error;
 +	}
++	/*
++	 * Sample the legacy MCI window while it is still the active layout:
++	 * LK drove SDCC1 entirely through it, and once HC mode is on these
++	 * flops no longer describe the card clock.
++	 */
++	mci_power = core_rd(CORE_MCI_POWER);
++	mci_clk = core_rd(CORE_MCI_CLK);
 +	error = sdhci_enter_hc_mode();
 +	if (error) {
 +		return error;
 +	}
 +
-+	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
-+	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
-+	deadline += mach_absolute_time();
-+	while (hc_rd8(SDHCI_SOFTWARE_RESET) &
-+	    (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) {
-+		if (mach_absolute_time() > deadline) {
-+			printf("SANTONI SDHCI: reset did not complete\n");
-+			return ETIMEDOUT;
-+		}
-+		delay(1);
++	error = sdhci_reset_paths();
++	if (error) {
++		return error;
 +	}
 +
 +	/* PIO: select the (unused) SDMA field, preserve bus width and speed. */
@@ -687,55 +760,242 @@ new file mode 100644
 +		}
 +	}
 +
-+	printf("SANTONI SDHCI: takeover complete (HC_MODE 0x%08x)\n",
-+	    core_rd(CORE_HC_MODE));
++	/*
++	 * Log the vendor state the bootloader left behind: these are the
++	 * registers that decide whether the HC block sees a card clock at all,
++	 * and nothing else in this driver reads them on the success path.
++	 */
++	printf("SANTONI SDHCI: takeover complete (HC_MODE 0x%08x, "
++	    "VENDOR_SPEC 0x%08x, legacy MCI_CLK 0x%08x, MCI_POWER 0x%08x)\n",
++	    core_rd(CORE_HC_MODE), core_rd(CORE_VENDOR_SPEC), mci_clk,
++	    mci_power);
 +	return 0;
++}
++
++/*
++ * CMD13 SEND_STATUS: the cheap proof that a card is selected and answering.
++ * arg is rca << 16 (Linux include/linux/mmc/mmc.h: "ac [31:16] RCA R1"). A
++ * timed-out command leaves CMD_INHIBIT set on this core, so the command path
++ * is reset before the next probe rung: writing INT_STATUS alone is not enough.
++ */
++static int
++sdhci_send_status(uint32_t rca, uint32_t *r1)
++{
++	int error;
++
++	error = sdhci_cmd(13, rca << 16, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, r1);
++	if (error) {
++		sdhci_recover();
++	}
++	return error;
++}
++
++/* CMD7: select one card by RCA (Standby -> Transfer). */
++static int
++sdhci_select_card(uint32_t rca)
++{
++	return sdhci_cmd(7, rca << 16, 0,
++	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
++}
++
++/*
++ * CMD5 SLEEP_AWAKE with SLEEP_AWAKE=0: wake a card LK may have put to sleep.
++ * LK's mmc_put_card_to_sleep() deselects with CMD7 arg 0 and then sends CMD5
++ * with bit 15 set; a sleeping card ignores CMD13 but answers CMD5, and the
++ * R1b response repeats the RCA in bits 31:16.
++ */
++static int
++sdhci_sleep_awake(uint32_t rca, uint32_t *r1)
++{
++	return sdhci_cmd(5, rca << 16, 0,
++	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, r1);
++}
++
++/*
++ * The bootloader does not necessarily hand the card over in Transfer state:
++ * LK deselects before sleeping it, so Standby (3) and Sleep (5) are both
++ * plausible. Repair with the one command that fits and re-check; each branch
++ * is logged, so the boot log says which state the hand-off was in.
++ */
++static int
++sdhci_restore_state(uint32_t *r1)
++{
++	for (int step = 0; step < 3; step++) {
++		uint32_t state = (*r1 >> 9) & 0xf;
++
++		if (state == 4) {               /* TRAN: usable */
++			return 0;
++		}
++		printf("SANTONI SDHCI: card state %u (not TRAN), R1 0x%08x\n",
++		    state, *r1);
++		if (state == 3) {
++			printf("SANTONI SDHCI: selecting RCA %u (CMD7)\n",
++			    se.rca);
++			if (sdhci_select_card(se.rca) != 0) {
++				return EIO;
++			}
++		} else if (state == 5) {
++			printf("SANTONI SDHCI: waking RCA %u (CMD5 "
++			    "SLEEP_AWAKE)\n", se.rca);
++			if (sdhci_sleep_awake(se.rca, r1) != 0) {
++				return EIO;
++			}
++		} else {
++			printf("SANTONI SDHCI: no repair for card state %u\n",
++			    state);
++			return ENXIO;
++		}
++		if (sdhci_send_status(se.rca, r1) != 0) {
++			return EIO;
++		}
++	}
++	return ENXIO;
++}
++
++/*
++ * Find the RCA the card answers on. The bootloader assigned it in CMD3, and
++ * Qualcomm LK/ABL use MMC_RCA 2 (bootloader_lk include/mmc.h), but that is
++ * checked rather than assumed: an addressed command with the wrong RCA gets no
++ * response at all, which is exactly the "command 13 timed out" seen on
++ * hardware. The ladder is ordered by cost; every rung is logged so that one
++ * boot log identifies the culprit:
++ *
++ *   1. CMD13 with RCA 2              - the LK/ABL address
++ *   2. CMD13 with RCA 1              - the other address on a one-card bus
++ *   3. CORE_VENDOR_SPEC <- POR       - what Linux sdhci_msm_probe() writes
++ *   4. CMD5 awake, RCA 2 then RCA 1  - the card may be asleep
++ *   5. CMD0                          - clock test; resets the card, so last
++ */
++static int
++sdhci_claim_card(void)
++{
++	static const uint32_t candidates[] = { SANTONI_CARD_RCA, 1u };
++	uint32_t r1 = 0, vendor;
++	int error = ETIMEDOUT;
++	unsigned i;
++
++	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
++		error = sdhci_send_status(candidates[i], &r1);
++		if (!error) {
++			break;
++		}
++		printf("SANTONI SDHCI: CMD13 with RCA %u got no answer\n",
++		    candidates[i]);
++	}
++	if (!error) {
++		se.rca = candidates[i];
++		printf("SANTONI SDHCI: card answered CMD13 on RCA %u "
++		    "(R1 0x%08x, state %u)\n", se.rca, r1, (r1 >> 9) & 0xf);
++		return sdhci_restore_state(&r1);
++	}
++
++	/*
++	 * Rung 3: core + 0x10c selects the clock feeding the HC block (bits
++	 * 9:8) and holds CORE_CLK_PWRSAVE (bit 1). Linux resets it to the POR
++	 * value before it enables HC mode and never trusts the bootloader;
++	 * LK does not write it at all. Nothing has answered, so this cannot
++	 * cost a working card, and both values are logged so the boot log can
++	 * prove whether it mattered.
++	 */
++	vendor = core_rd(CORE_VENDOR_SPEC);
++	printf("SANTONI SDHCI: CORE_VENDOR_SPEC 0x%08x (MCLK sel %u, "
++	    "PWRSAVE %u) -> POR 0x%08x, CLOCK_CONTROL 0x%04x\n", vendor,
++	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8, (vendor >> 1) & 1u,
++	    CORE_VENDOR_SPEC_POR_VAL, hc_rd16(SDHCI_CLOCK_CONTROL));
++	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
++	(void)sdhci_reset_paths();
++	if (sdhci_send_status(SANTONI_CARD_RCA, &r1) == 0) {
++		se.rca = SANTONI_CARD_RCA;
++		printf("SANTONI SDHCI: CMD13 answers on RCA %u after the "
++		    "vendor reset (R1 0x%08x, state %u)\n", se.rca, r1,
++		    (r1 >> 9) & 0xf);
++		return sdhci_restore_state(&r1);
++	}
++
++	/*
++	 * Rung 4: SLEEP. A sleeping card answers CMD5 but not CMD13, and the
++	 * CMD5 response repeats the RCA, so both candidate addresses are
++	 * tried and the one that answers wins.
++	 */
++	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
++		error = sdhci_sleep_awake(candidates[i], &r1);
++		if (error) {
++			(void)sdhci_reset_paths();
++			continue;
++		}
++		printf("SANTONI SDHCI: CMD5 awake RCA %u -> R1 0x%08x\n",
++		    candidates[i], r1);
++		se.rca = candidates[i];
++		if (sdhci_send_status(se.rca, &r1) != 0) {
++			continue;
++		}
++		printf("SANTONI SDHCI: CMD13 after wake-up (R1 0x%08x, "
++		    "state %u)\n", r1, (r1 >> 9) & 0xf);
++		return sdhci_restore_state(&r1);
++	}
++
++	/*
++	 * Rung 5: CMD0 needs no response. It separates "the command path never
++	 * shifted" from "the card does not answer", and it sends the card back
++	 * to Idle, so it is the very last thing this probe does. Re-identifying
++	 * the card from Idle is a later patch, not this one.
++	 */
++	if (sdhci_cmd(0, 0, 0, 0, NULL) == 0) {
++		printf("SANTONI SDHCI: CMD0 completed: the command path shifts, "
++		    "but no addressed command answered\n");
++	} else {
++		printf("SANTONI SDHCI: CMD0 did not complete either: no SDCLK "
++		    "reaches the card\n");
++	}
++	return ENXIO;
 +}
 +
 +static int
 +sdhci_card_check(void)
 +{
-+	uint32_t cid[4] = { 0 }, csd[4] = { 0 }, r1 = 0;
++	uint32_t cid[4] = { 0 }, csd[4] = { 0 };
 +	uint32_t sec_count = 0;
-+	char pnm[6];
++	char pnm[7];
 +	int error;
 +
-+	error = sdhci_cmd(13, 0, 0,
-+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
-+	if (error) {
-+		return error;
-+	}
-+	if (((r1 >> 9) & 0xf) != 4) {           /* TRAN */
-+		printf("SANTONI SDHCI: card is not in transfer state (R1 0x%08x)\n", r1);
-+		return ENXIO;
-+	}
-+
-+	error = sdhci_read_response128(10, cid);
-+	if (error) {
-+		return error;
-+	}
-+	error = sdhci_read_response128(9, csd);
++	error = sdhci_claim_card();
 +	if (error) {
 +		return error;
 +	}
 +
-+	/* CID: MID[127:120], PNM[103:64] (5 ASCII), PRV[63:56], PSN[55:32] */
++	error = sdhci_read_response128(10, se.rca << 16, cid);
++	if (error) {
++		return error;
++	}
++	error = sdhci_read_response128(9, se.rca << 16, csd);
++	if (error) {
++		return error;
++	}
++
++	/*
++	 * eMMC CID (JESD84-B51): MID[127:120], CBX[119:112], OID[111:104],
++	 * PNM[103:56] (6 ASCII), PRV[55:48], PSN[47:16], MDT[15:8].
++	 */
 +	pnm[0] = (char)(cid[0] & 0xff);
 +	pnm[1] = (char)(cid[1] >> 24);
 +	pnm[2] = (char)(cid[1] >> 16);
 +	pnm[3] = (char)(cid[1] >> 8);
 +	pnm[4] = (char)cid[1];
-+	pnm[5] = 0;
-+	for (int i = 0; i < 5; i++) {
++	pnm[5] = (char)(cid[2] >> 24);
++	pnm[6] = 0;
++	for (int i = 0; i < 6; i++) {
 +		if (pnm[i] < 0x20 || pnm[i] > 0x7e) {
 +			pnm[i] = '.';
 +		}
 +	}
-+	printf("SANTONI SDHCI: eMMC MID 0x%02x OID 0x%04x PNM \"%s\" "
-+	    "rev %u.%u S/N 0x%06x CSD 0x%08x\n",
-+	    (cid[0] >> 24) & 0xff, (cid[0] >> 8) & 0xffff, pnm,
-+	    (cid[2] >> 28) & 0xf, (cid[2] >> 24) & 0xf, cid[2] & 0xffffff,
-+	    csd[0]);
++	printf("SANTONI SDHCI: eMMC MID 0x%02x CBX 0x%02x OID 0x%02x "
++	    "PNM \"%s\" rev %u.%u S/N 0x%08x MDT 0x%02x CSD 0x%08x\n",
++	    (cid[0] >> 24) & 0xff, (cid[0] >> 16) & 0xff,
++	    (cid[0] >> 8) & 0xff, pnm, (cid[2] >> 20) & 0xf,
++	    (cid[2] >> 16) & 0xf,
++	    ((cid[2] & 0xffffu) << 16) | (cid[3] >> 16),
++	    (cid[3] >> 8) & 0xff, csd[0]);
 +
 +	/* Extended CSD (CMD8): SEC_COUNT is the last 32-bit little-endian
 +	 * field at offset 212, in 512-byte units. */

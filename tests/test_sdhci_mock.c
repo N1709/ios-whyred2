@@ -92,6 +92,11 @@
 #define SDHCI_INT_BWR          0x00000010u  /* buffer write ready */
 #define SDHCI_INT_BRR          0x00000020u  /* buffer read ready */
 #define SDHCI_INT_ERR          0x00008000u
+/* Specific error bits behind SDHCI_INT_ERR (SDHCI 3.0, dword at 0x30). */
+#define SDHCI_INT_CMD_INDEX    0x00800000u
+#define SDHCI_INT_CMD_END_BIT  0x01000000u
+#define SDHCI_INT_CMD_CRC      0x02000000u
+#define SDHCI_INT_CMD_TIMEOUT  0x04000000u
 
 #define SDHCI_HOST_VERSION     0xfe
 #define SDHCI_CLOCK_INT_EN     0x0001u
@@ -107,6 +112,19 @@
 #define CORE_FF_CLK_SW_RST_DIS 0x00002000u
 #define CORE_PWRCTL_STATUS     0xdc
 #define CORE_PWRCTL_MASK       0xe0
+#define CORE_VENDOR_SPEC       0x10c
+#define CORE_VENDOR_SPEC_POR_VAL 0xa9cu
+#define CORE_HC_MCLK_SEL_MASK  (3u << 8)
+#define CORE_HC_MCLK_SEL_DFLT  (2u << 8)
+#define CORE_MCI_POWER         0x000
+#define CORE_MCI_CLK           0x004
+
+/*
+ * The relative card address LK/ABL assigned in CMD3 (MMC_RCA in
+ * bootloader_lk include/mmc.h). Addressed commands must carry it in [31:16];
+ * the mock card only answers when the argument matches.
+ */
+#define SANTONI_CARD_RCA       2u
 
 /* --------------------------------------------------------- card / protocol */
 
@@ -155,6 +173,11 @@ static struct mock {
 	unsigned reset_writes;
 	uint16_t reset_value;
 	int hc_mode_write_ignored;      /* HC_MODE_EN never latches */
+	/* card model: one eMMC at m.rca, which only answers addressed commands
+	 * whose argument carries that RCA in bits 31:16 */
+	uint32_t rca;
+	int card_asleep;                /* CMD13 is ignored until CMD5 awake */
+	int card_absent;                /* nothing answers, only CMD0 completes */
 	uint16_t blk_size;
 	uint16_t blk_count;
 	uint16_t tr_mode;
@@ -321,22 +344,51 @@ mock_command(uint16_t val)
 		m.int_status |= SDHCI_INT_ERR;
 		return;
 	}
+	if (m.card_absent && index != 0 && index != 12) {
+		return;                 /* nothing on the bus: no response */
+	}
 
 	switch (index) {
 	case 13:                        /* SEND_STATUS: R1, card in TRAN */
-		mock_wr32(SDHCI_RESPONSE, 0x00000900u);   /* ready for data, state 4 */
+		if (m.card_asleep || (m.argument >> 16) != m.rca) {
+			/* A sleeping or unselected card is absent on the bus. */
+			return;
+		}
+		mock_wr32(SDHCI_RESPONSE, 0x00000900u);
+		break;
+	case 5:                         /* SLEEP_AWAKE: R1b, RCA repeated */
+		if ((m.argument >> 16) != m.rca) {
+			return;
+		}
+		m.card_asleep = (m.argument & 0x8000u) != 0;
+		mock_wr32(SDHCI_RESPONSE, (m.rca << 16) | 0x00000900u);
+		break;
+	case 7:                         /* SELECT_CARD: R1b */
+		if ((m.argument >> 16) != m.rca) {
+			return;
+		}
+		m.card_asleep = 0;
+		mock_wr32(SDHCI_RESPONSE, 0x00000900u);
 		break;
 	case 10:                        /* SEND_CID: 128-bit response */
-		mock_wr32(SDHCI_RESPONSE + 0, 0x15010044u);
-		mock_wr32(SDHCI_RESPONSE + 4, 0x33413831u);
-		mock_wr32(SDHCI_RESPONSE + 8, 0x00000000u);
-		mock_wr32(SDHCI_RESPONSE + 12, 0x00000000u);
+		if ((m.argument >> 16) != m.rca) {
+			return;
+		}
+		/* The MSM core strips the CRC: payload right-aligned, 3 bytes
+		 * in the most-significant word. */
+		mock_wr32(SDHCI_RESPONSE + 0, 0x34567821u);
+		mock_wr32(SDHCI_RESPONSE + 4, 0x34520112u);
+		mock_wr32(SDHCI_RESPONSE + 8, 0x38475446u);
+		mock_wr32(SDHCI_RESPONSE + 12, 0x00150100u);
 		break;
 	case 9:                         /* SEND_CSD: 128-bit response */
-		mock_wr32(SDHCI_RESPONSE + 0, 0xd00f590au);
-		mock_wr32(SDHCI_RESPONSE + 4, 0x0f5a83b9u);
-		mock_wr32(SDHCI_RESPONSE + 8, 0x3b9aca00u);
-		mock_wr32(SDHCI_RESPONSE + 12, 0x00000000u);
+		if ((m.argument >> 16) != m.rca) {
+			return;
+		}
+		mock_wr32(SDHCI_RESPONSE + 0, 0x00000000u);
+		mock_wr32(SDHCI_RESPONSE + 4, 0xb93b9acau);
+		mock_wr32(SDHCI_RESPONSE + 8, 0x0a0f5a83u);
+		mock_wr32(SDHCI_RESPONSE + 12, 0x00d00f59u);
 		break;
 	case 17:                        /* READ_SINGLE_BLOCK */
 		mock_start_data(m.argument, 1, 1);
@@ -586,6 +638,9 @@ sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
 		return EBUSY;
 	}
 
+	/* A stale Command Complete from the bootloader must not be read as
+	 * this command's result. */
+	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
 	hc_wr(SDHCI_ARGUMENT, arg);
 	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
 	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(index, flags));
@@ -613,28 +668,34 @@ sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
 }
 
 static int
-sdhci_read_response128(uint8_t index, uint32_t out[4])
+sdhci_read_response128(uint8_t index, uint32_t arg, uint32_t out[4])
 {
-	int error = sdhci_cmd(index, 0, 0,
+	int error = sdhci_cmd(index, arg, 0,
 	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
 	if (error) {
 		return error;
 	}
-	/* RESPONSE[0] is bits 31:0; callers want out[0] = bits 127:96. */
+	/* RESPONSE[0] is bits 31:0; out[0] must be bits 127:96. The core
+	 * stripped the CRC, so each word is shifted left by 8 and the top
+	 * byte of the next word is folded in (Linux sdhci_read_rsp_136). */
 	for (int i = 0; i < 4; i++) {
-		out[i] = hc_rd(SDHCI_RESPONSE + 4 * (3 - i));
+		uint32_t lo = hc_rd(SDHCI_RESPONSE + 4 * (3 - i));
+		uint32_t hi = (i == 3) ? 0u :
+		    hc_rd(SDHCI_RESPONSE + 4 * (2 - i));
+
+		out[i] = (lo << 8) | (hi >> 24);
 	}
 	return 0;
 }
 
 static int
-sdhci_read_cid_csd(uint32_t cid[4], uint32_t csd[4])
+sdhci_read_cid_csd(uint32_t rca, uint32_t cid[4], uint32_t csd[4])
 {
-	int error = sdhci_read_response128(10, cid);
+	int error = sdhci_read_response128(10, rca << 16, cid);
 	if (error) {
 		return error;
 	}
-	return sdhci_read_response128(9, csd);
+	return sdhci_read_response128(9, rca << 16, csd);
 }
 
 /* Poll one data interrupt (BRR for reads, BWR for writes) and clear it. */
@@ -692,22 +753,133 @@ sdhci_stop_transmission(void)
 	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
 }
 
-/* Reset the command and data paths, clear status, then best-effort CMD12. */
+/* Reset the command and data paths; the core self-clears when done. */
 static int
-sdhci_recover(void)
+sdhci_reset_paths(void)
 {
 	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 	uint64_t deadline = host_now_ns() + CMD_INHIBIT_US * 1000ull;
 	while (hc_rd8(SDHCI_SOFTWARE_RESET) & (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) {
 		if (host_now_ns() > deadline) {
-			break;
+			return ETIMEDOUT;
 		}
 		host_delay_us(5);
 	}
 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
-	(void)sdhci_stop_transmission();
-	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
 	return 0;
+}
+
+/* Reset, best-effort CMD12, reset again: a timed-out CMD12 leaves
+ * CMD_INHIBIT set, and the next command needs a clean command path. */
+static int
+sdhci_recover(void)
+{
+	(void)sdhci_reset_paths();
+	(void)sdhci_stop_transmission();
+	(void)sdhci_reset_paths();
+	return 0;
+}
+
+/* ------------------------------------------------ RCA ladder (driver logic) */
+
+static uint32_t drv_rca;
+
+static int
+sdhci_send_status(uint32_t rca, uint32_t *r1)
+{
+	int error = sdhci_cmd(13, rca << 16, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, r1);
+	if (error) {
+		sdhci_recover();
+	}
+	return error;
+}
+
+static int
+sdhci_select_card(uint32_t rca)
+{
+	return sdhci_cmd(7, rca << 16, 0,
+	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
+}
+
+static int
+sdhci_sleep_awake(uint32_t rca, uint32_t *r1)
+{
+	return sdhci_cmd(5, rca << 16, 0,
+	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, r1);
+}
+
+static int
+sdhci_restore_state(uint32_t *r1)
+{
+	for (int step = 0; step < 3; step++) {
+		uint32_t state = (*r1 >> 9) & 0xf;
+
+		if (state == 4) {               /* TRAN */
+			return 0;
+		}
+		if (state == 3) {
+			if (sdhci_select_card(drv_rca) != 0) {
+				return EIO;
+			}
+		} else if (state == 5) {
+			if (sdhci_sleep_awake(drv_rca, r1) != 0) {
+				return EIO;
+			}
+		} else {
+			return ENXIO;
+		}
+		if (sdhci_send_status(drv_rca, r1) != 0) {
+			return EIO;
+		}
+	}
+	return ENXIO;
+}
+
+static int
+sdhci_claim_card(void)
+{
+	static const uint32_t candidates[] = { SANTONI_CARD_RCA, 1u };
+	uint32_t r1 = 0;
+	int error = ETIMEDOUT;
+	unsigned i;
+
+	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		error = sdhci_send_status(candidates[i], &r1);
+		if (!error) {
+			break;
+		}
+	}
+	if (!error) {
+		drv_rca = candidates[i];
+		return sdhci_restore_state(&r1);
+	}
+
+	/* Rung 3: Linux sdhci_msm_probe() resets core + 0x10c to POR. */
+	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
+	(void)sdhci_reset_paths();
+	if (sdhci_send_status(SANTONI_CARD_RCA, &r1) == 0) {
+		drv_rca = SANTONI_CARD_RCA;
+		return sdhci_restore_state(&r1);
+	}
+
+	/* Rung 4: a sleeping card answers CMD5 but not CMD13. */
+	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+		error = sdhci_sleep_awake(candidates[i], &r1);
+		if (error) {
+			(void)sdhci_reset_paths();
+			continue;
+		}
+		drv_rca = candidates[i];
+		if (sdhci_send_status(drv_rca, &r1) != 0) {
+			continue;
+		}
+		return sdhci_restore_state(&r1);
+	}
+
+	/* Rung 5: CMD0 needs no response; last because it resets the card. */
+	(void)sdhci_cmd(0, 0, 0, 0, NULL);
+	return ENXIO;
 }
 
 static int
@@ -807,6 +979,12 @@ reset_mock(void)
 	core_wr(CORE_GENERICS, 0x20000000u);
 	core_wr(CORE_HC_MODE, 0x00000000u);
 	core_wr(CORE_PWRCTL_MASK, 0x00000000u);
+	/* LK never writes the vendor clock register: leave a non-POR value so
+	 * the ladder's POR rung is observable. */
+	core_wr(CORE_VENDOR_SPEC, 0x000001c0u);
+	core_wr(CORE_MCI_CLK, 0x0000000bu);
+	core_wr(CORE_MCI_POWER, 0x0000000fu);
+	m.rca = SANTONI_CARD_RCA;
 	mock_wr16(SDHCI_HOST_VERSION, 0x0002);            /* SDHCI 3.0 */
 	mock_wr16(SDHCI_CLOCK_CONTROL,
 	    SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE | SDHCI_CLOCK_CARD_EN);
@@ -933,19 +1111,20 @@ test_cmd13_status(void)
 	assert(sdhci_take_over() == 0);
 
 	m.inhibit_polls = 3;    /* controller busy for the first three polls */
-	error = sdhci_cmd(13, 0, 0,
+	error = sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp);
 	assert(error == 0);
 	assert(m.state_reads >= 4);
 	assert(resp == 0x00000900u);
 	assert(((resp >> 9) & 0xf) == 4);       /* TRAN */
 
-	/* ARGUMENT / TRANSFER_MODE / COMMAND bytes actually hit the FIFO. */
+	/* ARGUMENT / TRANSFER_MODE / COMMAND bytes actually hit the FIFO, and
+	 * CMD13 carries the RCA in bits 31:16 like every addressed command. */
 	assert(m.cmd_count == 1);
 	assert(m.trace[0].cmd == 13);
-	assert(m.trace[0].arg == 0);
+	assert(m.trace[0].arg == SANTONI_CARD_RCA << 16);
 	assert(m.trace[0].tr_mode == 0);
-	assert(mock_rd32(SDHCI_ARGUMENT) == 0);
+	assert(mock_rd32(SDHCI_ARGUMENT) == SANTONI_CARD_RCA << 16);
 	assert(m.trace[0].word == 0x0d1a);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);   /* CC acknowledged */
 }
@@ -954,21 +1133,116 @@ static void
 test_cid_csd(void)
 {
 	uint32_t cid[4] = { 0 }, csd[4] = { 0 };
+	char pnm[7];
 
 	reset_mock();
 	assert(sdhci_take_over() == 0);
-	assert(sdhci_read_cid_csd(cid, csd) == 0);
+	assert(sdhci_read_cid_csd(SANTONI_CARD_RCA, cid, csd) == 0);
 
 	assert(m.cmd_count == 2);
 	assert(m.trace[0].cmd == 10);
+	assert(m.trace[0].arg == SANTONI_CARD_RCA << 16);
 	assert(m.trace[1].cmd == 9);
-	/* R2 is stored least-significant-word first in RESPONSE[0]: the driver
-	 * reverses it so out[0] is bits 127:96 (RESPONSE+12). */
-	assert(cid[3] == 0x15010044u);
-	assert(cid[2] == 0x33413831u);
-	assert(cid[0] == 0x00000000u);
-	assert(csd[3] == 0xd00f590au);
-	assert(csd[1] == 0x3b9aca00u);
+	assert(m.trace[1].arg == SANTONI_CARD_RCA << 16);
+
+	/* The core strips the CRC and right-aligns the 120-bit payload, so the
+	 * driver shifts each word by 8 (Linux sdhci_read_rsp_136): the decoded
+	 * words are the real CID/CSD, not the raw register contents. */
+	assert(cid[0] == 0x15010038u);
+	assert(cid[1] == 0x47544634u);
+	assert(cid[2] == 0x52011234u);
+	assert(cid[3] == 0x56782100u);
+	assert(csd[0] == 0xd00f590au);
+	assert(csd[1] == 0x0f5a83b9u);
+	assert(csd[2] == 0x3b9aca00u);
+	assert(csd[3] == 0x00000000u);
+
+	/* eMMC CID: MID[127:120], PNM[103:56] (6 ASCII), PRV[55:48],
+	 * PSN[47:16], MDT[15:8]. */
+	pnm[0] = (char)(cid[0] & 0xff);
+	pnm[1] = (char)(cid[1] >> 24);
+	pnm[2] = (char)(cid[1] >> 16);
+	pnm[3] = (char)(cid[1] >> 8);
+	pnm[4] = (char)cid[1];
+	pnm[5] = (char)(cid[2] >> 24);
+	pnm[6] = 0;
+	assert(((cid[0] >> 24) & 0xff) == 0x15);        /* MID */
+	assert(strcmp(pnm, "8GTF4R") == 0);             /* 6-character PNM */
+	assert(((cid[2] >> 20) & 0xf) == 0);            /* PRV major */
+	assert(((cid[2] >> 16) & 0xf) == 1);            /* PRV minor */
+	assert((((cid[2] & 0xffffu) << 16) | (cid[3] >> 16)) == 0x12345678u);
+	assert(((cid[3] >> 8) & 0xff) == 0x21);         /* MDT */
+}
+
+static void
+test_card_ladder(void)
+{
+	int saw_cmd5;
+
+	/* RCA 2 answers: the LK/ABL MMC_RCA, tried first. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	m.cmd_count = 0;
+	assert(sdhci_claim_card() == 0);
+	assert(drv_rca == SANTONI_CARD_RCA);
+	assert(m.trace[0].cmd == 13);
+	assert(m.trace[0].arg == SANTONI_CARD_RCA << 16);
+
+	/* A card on RCA 1: the first rung gets no response, the ladder must
+	 * recover the command path and then succeed on the second rung. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	m.rca = 1;
+	m.cmd_count = 0;
+	assert(sdhci_claim_card() == 0);
+	assert(drv_rca == 1);
+	assert(m.trace[0].cmd == 13);
+	assert(m.trace[0].arg == SANTONI_CARD_RCA << 16);
+	assert(m.trace[1].cmd == 12);           /* recover: best-effort CMD12 */
+	assert(m.trace[2].cmd == 13);
+	assert(m.trace[2].arg == 1u << 16);
+
+	/* Sleep: CMD13 is ignored, the vendor rung runs (no answer), then CMD5
+	 * wakes the card and the RCA it reports is used. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	m.card_asleep = 1;
+	m.cmd_count = 0;
+	assert(sdhci_claim_card() == 0);
+	assert(drv_rca == SANTONI_CARD_RCA);
+	assert(m.card_asleep == 0);
+	assert(core_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_POR_VAL);
+	saw_cmd5 = 0;
+	for (unsigned i = 0; i < m.cmd_count; i++) {
+		if (m.trace[i].cmd == 5) {
+			saw_cmd5 = 1;
+			assert(m.trace[i].arg == SANTONI_CARD_RCA << 16);
+		}
+	}
+	assert(saw_cmd5);
+
+	/* Standby: LK deselected the card with CMD7 arg 0 before sleeping. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	{
+		/* CMD13 reported Standby: the repair is CMD7 select. */
+		uint32_t standby = 0x00000600u;
+
+		drv_rca = SANTONI_CARD_RCA;
+		assert(sdhci_restore_state(&standby) == 0);
+	}
+	assert(m.trace[0].cmd == 7);
+	assert(m.trace[0].arg == SANTONI_CARD_RCA << 16);
+	assert(m.trace[1].cmd == 13);
+
+	/* Nothing on the bus: every rung runs and CMD0 (no response) is the
+	 * final liveness test, after which the probe fails closed. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	m.card_absent = 1;
+	m.cmd_count = 0;
+	assert(sdhci_claim_card() == ENXIO);
+	assert(m.trace[m.cmd_count - 1].cmd == 0);
 }
 
 static void
@@ -1081,11 +1355,22 @@ test_errors(void)
 		assert(host_now_ns() - start >= (uint64_t)CMD_TIMEOUT_US * 1000ull);
 	}
 
+	/* A stale Command Complete from the bootloader must not be read as this
+	 * command's result: the driver clears INT_STATUS before it writes
+	 * COMMAND, so a stalled command still times out. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	m.int_status = SDHCI_INT_CC;
+	m.stall_cmd = 1;
+	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) ==
+	    ETIMEDOUT);
+
 	/* Inhibit that clears: the driver retries rather than failing */
 	reset_mock();
 	assert(sdhci_take_over() == 0);
 	m.inhibit_polls = 5;
-	assert(sdhci_cmd(13, 0, 0,
+	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
 
 	/* DATA_INHIBIT (PRESENT_STATE bit 1) is waited on as well: a stuck data
@@ -1105,6 +1390,7 @@ main(void)
 	test_take_over();
 	test_cmd13_status();
 	test_cid_csd();
+	test_card_ladder();
 	test_read_pio();
 	test_write_pio();
 	test_bounds();
