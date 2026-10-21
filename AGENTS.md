@@ -7,6 +7,7 @@
   build/boot results and unfinished work. Distinguish observations from guesses.
 - Commit completed changes. All new commits must include the trailer `Co-Authored-By: Gemini <noreply@google.com>`. Use `gh` for GitHub Actions kernel builds and logs.
   Local single-file cross-compiles are useful before spending a CI run.
+- Leverage OpenCode with `opencode run -m opencode/deepseek-v4.1-flash-free --auto "<prompt>"` (and subagents) to divide work, parallelize research, hardware register analysis, and implementation tasks to boost development speed.
 - Device bring-up uses temporary `fastboot boot` images. Preserve the Android
   installation and partition backups. The user approved (2026-10-15) using
   internal UFS for iOS and said Android may be deleted: the iOS root goes
