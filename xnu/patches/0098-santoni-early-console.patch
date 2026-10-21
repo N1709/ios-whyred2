@@ -107,7 +107,7 @@ index 6928957..6b7d3a4 100644
  {
  	sweet_early_mark(8, "leaving bootstrap TTBR0");
 +#if defined(SANTONI)
-+	early_fb = (volatile uint8_t *)(uintptr_t)base;
++	early_fb = (volatile uint8_t *)(uintptr_t)(base + 0x1000);
 +#else
  	early_fb = (volatile uint32_t *)(uintptr_t)base;
 +#endif

@@ -2,7 +2,35 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Early Kernel Panic machine_routines.c:1244 Solved — Full 8-Core Topology & Dynamic Boot CPU Matching <<<
+### >>> UPDATE 2026-10-21: Early Kernel Panic arm_vm_init.c:1842 Solved — Low Globals L2 Framebuffer Alias & 4K Page Shift Guard <<<
+
+- **Physical Boot Observation (Commit 43fb1e1 image):**
+  - Physical execution on Redmi 4X booted past CPU bootstrap and completed Mark 6:
+    ```
+    SWEET EARLY 1: arm_init entered (MMU on)
+    SWEET EARLY 2: PE_init_platform done
+    SWEET EARLY 3: ml_parse_cpu_topology done
+    SWEET EARLY 4: cpu_bootstrap done
+    SWEET EARLY 5: kernel_startup_bootstrap done
+    SWEET EARLY 6: cpu_init done
+    SWEET EARLY 7: entering arm_vm_init
+    SWEET EARLY PANIC: arm_vm_init.c:1842 Assertion failed: (l1 & (ARM_TTE_VALID | ARM_TTE_TYPE_MASK)) == (ARM_TTE_VALID | ARM_TTE_TYPE_TABLE)
+    ```
+- **Root Cause Analysis:**
+  - `sweet_early_map_final()` in `xnu/patches/0012-sweet-keep-debug-console-after-ttbr0.patch` sets up a post-TTBR0 kernel VA alias for early diagnostics.
+  - It defined `SWEET_EARLY_FB_VA` as `(VM_MIN_KERNEL_ADDRESS + ARM_TT_L2_SIZE)`.
+  - On `SWEET` (SM7150), `ARM_LARGE_MEMORY=1` was defined, where `VM_MIN_KERNEL_ADDRESS == LOW_GLOBAL_BASE_ADDRESS` (`0xfffffe0000000000ULL`). `cpu_tte` had a valid table entry for `LOW_GLOBAL_BASE_ADDRESS`, so `l1` was valid.
+  - On `SANTONI` (MSM8937), `ARM_LARGE_MEMORY` is explicitly undefined (`-UARM_LARGE_MEMORY` in `0093-santoni-39bit-kernel-va.patch` for 39-bit kernel VA). `VM_MIN_KERNEL_ADDRESS` is at `0xffffff8000000000ULL`, which has no L1 table allocated in `cpu_tte` during early boot; `l1` was `0x0`, causing the assertion to fail!
+  - In contrast, `LOW_GLOBAL_BASE_ADDRESS` (`0xfffffff000000000ULL`) has a valid Level 1 table pointing to the low globals Level 2 table, where Slot 0 is low globals and Slots 1..55 (up to `gVirtBase` at Slot 56) are completely empty.
+  - Furthermore, `*slot` was hardcoded to `0x9c000000ULL` (sweet framebuffer PA). Santoni's continuous splash framebuffer is at `0x90001000` (2.64 MB, 720x1280 24bpp), requiring two 2 MB blocks (`0x90000000` and `0x90200000`).
+- **Fix Applied:**
+  - `xnu/patches/0012-sweet-keep-debug-console-after-ttbr0.patch`:
+    - Defined `SWEET_EARLY_FB_VA` on `SANTONI` as `(LOW_GLOBAL_BASE_ADDRESS + ARM_TT_L2_SIZE)`.
+    - Mapped two 2 MB blocks (`0x90000000` and `0x90200000`) into L2 slots 1 and 2 of the existing low globals table.
+  - `xnu/patches/0098-santoni-early-console.patch`:
+    - In `sweet_early_relocate(base)`, set `early_fb = (volatile uint8_t *)(uintptr_t)(base + 0x1000)` so pixel (0,0) aligns with physical `0x90001000`.
+  - `xnu/patches/0084-santoni-4k-user-va.patch`:
+    - Guarded `PAGE_SHIFT_CONST` in `osfmk/arm/arm_init.c` with `#if __ARM_16K_PG__`, defaulting to `ARM_PGSHIFT` (4 KB) on SANTONI so 4K translation stays active regardless of RAM expansion.
 
 - **Physical Boot Observation (Commit 9d4223a image):**
   - Physical execution on Redmi 4X reached:

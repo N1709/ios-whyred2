@@ -10,3 +10,31 @@ diff --git a/osfmk/mach/arm/vm_param.h b/osfmk/mach/arm/vm_param.h
  #define MACH_VM_MAX_ADDRESS_RAW 0x00007FFFFE000000ULL
  #else
  #define MACH_VM_MAX_ADDRESS_RAW 0x0000000FC0000000ULL
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -395,20 +395,24 @@
+ 		/*
+ 		 * Select the advertised kernel page size.
+ 		 */
++#if __ARM_16K_PG__
+ 		if (args->memSize > 1ULL * 1024 * 1024 * 1024) {
+ 			/*
+ 			 * arm64 device with > 1GB of RAM:
+ 			 * kernel uses 16KB pages.
+ 			 */
+ 			PAGE_SHIFT_CONST = PAGE_MAX_SHIFT;
+ 		} else {
+ 			/*
+ 			 * arm64 device with <= 1GB of RAM:
+ 			 * kernel uses hardware page size
+ 			 * (4KB for H6/H7, 16KB for H8+).
+ 			 */
+ 			PAGE_SHIFT_CONST = ARM_PGSHIFT;
+ 		}
++#else
++		PAGE_SHIFT_CONST = ARM_PGSHIFT;
++#endif
+ 
+ 		/* 32-bit apps always see 16KB page size */
+ 		page_shift_user32 = PAGE_MAX_SHIFT;
