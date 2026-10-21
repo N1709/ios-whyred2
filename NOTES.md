@@ -2,6 +2,16 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **Phase 4 Exploration & Fortification (`orhunnx/ios-a5xelte` codex/a5xelte-bringup learnings):**
+  - **Context:** Evaluated `orhunnx/ios-a5xelte` (Exynos 7580, Cortex-A53, 4 KiB VM pages, eMMC) in collaboration with OpenCode DeepSeek v4.1 Flash Free.
+  - **Key Discoveries & Plan 04-03 Fortifications:**
+    1. **The 4 KiB dyld Shared Cache Trap (`0144-santoni-4k-unsigned-dyld-cache.patch`):** Added Task 04-03-03 to author patch 0144 (port of `0107-a5xelte`). iOS 16 dyld shared cache uses 16 KiB hash units (`cd->pageSize = 14`). On 4 KiB VM pages, XNU rejects `cd->pageSize != 12` in `ubc_subr.c` and panics over-reading mapped pages in `ubc_cs_blob_add`. Patch 0144 permits `pageSize == 14`, bails early before page over-reads, and sets `vm_map_cs_enforcement_set(sub_map, false)`.
+    2. **Isolated SYSTEM Bootlog (`0143-santoni-persistent-console-log.patch`):** Moved the 4 MiB circular console log from userdata tail to the dedicated, idle `SYSTEM` partition (sectors 0..8192). Eliminates the risk of raw sector writes silently corrupting active HFS+ filesystem allocations on `userdata`.
+    3. **Hardened GPT Parser (Task 04-03-01):** Integrated CRC32 header and partition array verification (matching `0104-a5xelte`) into `tests/test_gpt_parser.c` and `santoni_sdhci.c`.
+    4. **Rootfs Staging Reference:** Stored reference patterns for `mkiosroot.sh` and `sweet-root-tweaks.py` (CommCenter removal, `_PanicOnCrasX`, `BKNoWatchdogs`, and activation ark seeding).
+  - **Artifacts Updated:** `04-03-PLAN.md`, `04-VALIDATION.md`, `04-RESEARCH.md`.
+  - **Next Concrete Action:** Execute Wave 1 / Plan 04-01: author `tools/santoni-init.S`, build Mach-O with `tools/mkinit.py`, inject RAM disk into `tools/mkpayload.py`, and package `shim/out/shim-boot.img` with `rd=md0`.
+
 - **Phase 4 Planning Complete & Verified (`04-01-PLAN.md`, `04-02-PLAN.md`, `04-03-PLAN.md`):**
   - **Milestone Status:** Phase 4 ("RAM Disk Root & SDHCI eMMC Storage Bring-up") is fully researched, pattern-mapped, and verified.
   - **DeepSeek v4.1 Collaboration:**
