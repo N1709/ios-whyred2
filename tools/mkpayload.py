@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
 LC_SEGMENT_64, LC_UNIXTHREAD, LC_DYLD_CHAINED_FIXUPS = 0x19, 0x5, 0x80000034
-PAGE = 0x4000
+PAGE = 0x1000  # Cortex-A53 4 KiB translation granule
 BOOT_LINE_LENGTH = 608
 CMDLINE = 0x48
 SEG_TABLE = CMDLINE + BOOT_LINE_LENGTH	# 0x2a8
@@ -64,7 +64,9 @@ def apply_chained_fixups(buf, m):
     if not m['fixups']:
         return 0
     data_off, _ = m['fixups']
+    assert 0 <= data_off < len(buf), 'data_off out of bounds'
     _, starts_off, _, _, imports_count, _, _ = struct.unpack_from('<7I', buf, data_off)
+    assert 0 <= data_off + starts_off < len(buf), 'starts_off out of bounds'
     assert imports_count == 0, 'kernel has binds; only rebases are supported'
     image_base = m['segs'][0]['vmaddr']		# __TEXT, holds the mach header
     seg_count, = struct.unpack_from('<I', buf, data_off + starts_off)
@@ -154,8 +156,17 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     kernel_end = (kernel_end + PAGE - 1) & ~(PAGE - 1)
 
     adt_blob = open(adt_path, 'rb').read()
-    # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
+    # The ADT decides where the kernel's RAM is (mkadt.py).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
+
+    # Verify segment destinations fall within [phys_base .. phys_base + mem_size)
+    for s in segs:
+        seg_dest = s['vmaddr'] - virt_base + PHYS_BASE
+        assert PHYS_BASE <= seg_dest < PHYS_BASE + MEM_SIZE, (
+            f"Segment {s['name']} destination {hex(seg_dest)} outside memory range "
+            f"[{hex(PHYS_BASE)} .. {hex(PHYS_BASE + MEM_SIZE)})"
+        )
+
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
     ramdisk = None
     if ramdisk_path:
@@ -196,7 +207,7 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('kernel'); ap.add_argument('adt'); ap.add_argument('out')
-    ap.add_argument('--cmdline', default='debug=0xc serial=3 cpus=1 keepsyms=1')
+    ap.add_argument('--cmdline', default='debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam sweetfb_native=1 santoni')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     a = ap.parse_args()
     blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk)
