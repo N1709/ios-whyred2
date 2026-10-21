@@ -251,6 +251,8 @@ mock_load_block(void)
 }
 
 static inline uint32_t core_rd(uint32_t off);
+static inline uint32_t hc_rd(uint32_t off);
+static inline void hc_wr(uint32_t off, uint32_t val);
 
 /*
  * Is the HC datapath clocked? The standard register file always answers (it is
@@ -268,9 +270,9 @@ static inline uint32_t core_rd(uint32_t off);
 static int
 mock_hc_clocked(void)
 {
-	uint32_t vs = core_rd(CORE_VENDOR_SPEC);
-	uint32_t dll = core_rd(CORE_DLL_CONFIG);
-	uint32_t status = core_rd(CORE_DLL_STATUS);
+	uint32_t vs = hc_rd(CORE_VENDOR_SPEC);
+	uint32_t dll = hc_rd(CORE_DLL_CONFIG);
+	uint32_t status = hc_rd(CORE_DLL_STATUS);
 
 	if ((vs & CORE_HC_MCLK_SEL_MASK) != CORE_HC_MCLK_SEL_DFLT) {
 		return 0;
@@ -646,27 +648,27 @@ sdhci_enter_hc_mode(void)
 static void
 sdhci_select_hc_clock(void)
 {
-	uint32_t vs = core_rd(CORE_VENDOR_SPEC);
+	uint32_t vs = hc_rd(CORE_VENDOR_SPEC);
 
 	vs &= ~CORE_HC_MCLK_SEL_MASK;
 	vs |= CORE_HC_MCLK_SEL_DFLT;
 	vs &= ~(CORE_HC_SELECT_IN_EN | CORE_HC_SELECT_IN_MASK);
-	core_wr(CORE_VENDOR_SPEC, vs);
+	hc_wr(CORE_VENDOR_SPEC, vs);
 }
 
 /* Card-clock output follows the DLL: live+locked -> its output, else bypass. */
 static void
 sdhci_clock_output(void)
 {
-	uint32_t dll = core_rd(CORE_DLL_CONFIG);
-	uint32_t status = core_rd(CORE_DLL_STATUS);
+	uint32_t dll = hc_rd(CORE_DLL_CONFIG);
+	uint32_t status = hc_rd(CORE_DLL_STATUS);
 	bool dll_live = (dll & CORE_DLL_EN) && !(dll & CORE_DLL_OFF) &&
 	    (status & CORE_DLL_LOCK);
 	uint32_t want = dll_live ? (dll | CORE_CK_OUT_EN) :
 	    (dll & ~CORE_CK_OUT_EN);
 
 	if (want != dll) {
-		core_wr(CORE_DLL_CONFIG, want);
+		hc_wr(CORE_DLL_CONFIG, want);
 	}
 }
 
@@ -680,7 +682,7 @@ sdhci_take_over(void)
 		return ENXIO;
 	}
 	/* Vendor clock register before HC mode, Linux's order. */
-	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
+	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
 	if (sdhci_enter_hc_mode() != 0) {
 		return ENXIO;
 	}
@@ -962,8 +964,8 @@ sdhci_claim_card(void)
 		return sdhci_restore_state(&r1);
 	}
 
-	/* Rung 3: Linux sdhci_msm_probe() resets core + 0x10c to POR. */
-	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
+	/* Rung 3: Linux sdhci_msm_probe() resets HC + 0x10c to POR. */
+	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
 	(void)sdhci_reset_paths();
 	if (sdhci_send_status(SANTONI_CARD_RCA, &r1) == 0) {
 		drv_rca = SANTONI_CARD_RCA;
@@ -1089,10 +1091,10 @@ reset_mock(void)
 	/* LK never writes the vendor clock register (0x00000000 on hardware):
 	 * MCLK select 0, so the HC datapath has no functional clock until
 	 * takeover selects it. */
-	core_wr(CORE_VENDOR_SPEC, 0x00000000u);
+	hc_wr(CORE_VENDOR_SPEC, 0x00000000u);
 	/* DLL untouched by LK: neither enabled nor selected (bypass). */
-	core_wr(CORE_DLL_CONFIG, 0x00000000u);
-	core_wr(CORE_DLL_STATUS, 0x00000000u);
+	hc_wr(CORE_DLL_CONFIG, 0x00000000u);
+	hc_wr(CORE_DLL_STATUS, 0x00000000u);
 	core_wr(CORE_MCI_CLK, 0x90000000u);              /* legacy MCI clock */
 	core_wr(CORE_MCI_POWER, 0x00000041u);
 	m.rca = SANTONI_CARD_RCA;
@@ -1196,10 +1198,10 @@ test_take_over(void)
 
 	/* The vendor clock register is at its POR value before HC mode is
 	 * enabled, and free-running MCLK is selected for the HC datapath. */
-	assert(core_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_POR_VAL);
-	assert((core_rd(CORE_VENDOR_SPEC) & CORE_HC_MCLK_SEL_MASK) ==
+	assert(hc_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_POR_VAL);
+	assert((hc_rd(CORE_VENDOR_SPEC) & CORE_HC_MCLK_SEL_MASK) ==
 	    CORE_HC_MCLK_SEL_DFLT);
-	assert((core_rd(CORE_VENDOR_SPEC) & CORE_HC_SELECT_IN_EN) == 0);
+	assert((hc_rd(CORE_VENDOR_SPEC) & CORE_HC_SELECT_IN_EN) == 0);
 	assert(mock_hc_clocked());
 
 	/* A closed card-clock gate is reopened, divider left untouched. */
@@ -1257,20 +1259,33 @@ test_clock_path(void)
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
 	reset_mock();
 
+	/*
+	 * Photographed bug test: writing CORE_VENDOR_SPEC_POR_VAL to core_wr
+	 * lands in legacy MCI space where bits 9:8 are RO 0, leaving mock_hc
+	 * unclocked. CMD0 still times out with CMD_INHIBIT, while mock_hc is untouched.
+	 */
+	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
+	assert(hc_rd(CORE_VENDOR_SPEC) == 0);
+	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
+	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(0, 0));
+	assert((hc_rd(SDHCI_PRESENT_STATE) & SDHCI_CMD_INHIBIT) != 0);
+	assert(hc_rd(SDHCI_INT_STATUS) == 0);
+	reset_mock();
+
 	/* Same with the HC clock selected but SDCLK taken from a DLL that is
 	 * not running: still no clock, still no completion. */
-	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
-	core_wr(CORE_DLL_CONFIG, CORE_CK_OUT_EN);
+	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
+	hc_wr(CORE_DLL_CONFIG, CORE_CK_OUT_EN);
 	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
 	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(0, 0));
 	assert((hc_rd(SDHCI_PRESENT_STATE) & SDHCI_CMD_INHIBIT) != 0);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
 
-	/* Takeover selects free-running MCLK before the first command, so the
+	/* Takeover selects free-running MCLK via hc_wr before the first command, so the
 	 * same CMD13 that used to time out now completes. */
 	reset_mock();
 	assert(sdhci_take_over() == 0);
-	assert((core_rd(CORE_VENDOR_SPEC) & CORE_HC_MCLK_SEL_MASK) ==
+	assert((hc_rd(CORE_VENDOR_SPEC) & CORE_HC_MCLK_SEL_MASK) ==
 	    CORE_HC_MCLK_SEL_DFLT);
 	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
@@ -1278,27 +1293,27 @@ test_clock_path(void)
 
 	/* A locked DLL left running by LK: its output is the card clock. */
 	reset_mock();
-	core_wr(CORE_DLL_CONFIG, CORE_DLL_EN);
-	core_wr(CORE_DLL_STATUS, CORE_DLL_LOCK);
+	hc_wr(CORE_DLL_CONFIG, CORE_DLL_EN);
+	hc_wr(CORE_DLL_STATUS, CORE_DLL_LOCK);
 	assert(sdhci_take_over() == 0);
-	assert((core_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) != 0);
+	assert((hc_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) != 0);
 	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
 
 	/* A DLL held in reset must not be the clock source: fall back to
 	 * bypass instead of driving a dead clock to the card. */
 	reset_mock();
-	core_wr(CORE_DLL_CONFIG, CORE_CK_OUT_EN | CORE_DLL_RST);
+	hc_wr(CORE_DLL_CONFIG, CORE_CK_OUT_EN | CORE_DLL_RST);
 	assert(sdhci_take_over() == 0);
-	assert((core_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) == 0);
+	assert((hc_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) == 0);
 	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
 
 	/* An enabled but unlocked DLL is not usable either. */
 	reset_mock();
-	core_wr(CORE_DLL_CONFIG, CORE_DLL_EN | CORE_CK_OUT_EN);
+	hc_wr(CORE_DLL_CONFIG, CORE_DLL_EN | CORE_CK_OUT_EN);
 	assert(sdhci_take_over() == 0);
-	assert((core_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) == 0);
+	assert((hc_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) == 0);
 
 	/* The status model gates 0x30 on 0x34, so the driver must leave the
 	 * enable all ones; clearing it reproduces the "INT_STATUS 0x00000000"
@@ -1425,7 +1440,7 @@ test_card_ladder(void)
 	assert(sdhci_claim_card() == 0);
 	assert(drv_rca == SANTONI_CARD_RCA);
 	assert(m.card_asleep == 0);
-	assert(core_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_POR_VAL);
+	assert(hc_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_POR_VAL);
 	saw_cmd5 = 0;
 	for (unsigned i = 0; i < m.cmd_count; i++) {
 		if (m.trace[i].cmd == 5) {

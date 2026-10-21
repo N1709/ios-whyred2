@@ -68,7 +68,7 @@ new file mode 100644
 + * programming the bootloader did through GCC. The driver does switch the
 + * vendor core from the bootloader's legacy MCI mode into SDHCI HC mode
 + * (CORE_HC_MODE, core + 0x78), selects the free-running MCLK the HC datapath
-+ * runs on (CORE_VENDOR_SPEC, core + 0x10c) and only ever opens the SDHCI
++ * runs on (CORE_VENDOR_SPEC, HC + 0x10c = 0x07824a0c) and only ever opens the SDHCI
 + * card-clock gate when the divider the bootloader left behind is already
 + * valid. It resets only the command and data paths (0x06) and clears the DMA
 + * select so transfers use the FIFO. All DMA-free, so the only cache
@@ -184,12 +184,15 @@ new file mode 100644
 +#define CORE_PWRCTL_CLEAR       0xe4
 +#define CORE_PWRCTL_CTL         0xe8
 +/*
-+ * core + 0x10c: vendor clock/DLL control. Linux (sdhci_msm_probe()) resets it
-+ * to CORE_VENDOR_SPEC_POR_VAL before it enables HC mode; bits 9:8 select the
-+ * clock the HC block itself runs on (2 = free-running MCLK, 3 = MCLK/2 for
-+ * HS400), bit 1 is CORE_CLK_PWRSAVE, bit 18 enables HC_SELECT_IN. The POR
-+ * value already selects free-running MCLK; msm_hc_select_default() re-asserts
-+ * that selection and clears HC_SELECT_IN before every rate change.
++ * Qualcomm vendor-specific registers CORE_DLL_CONFIG (0x100), CORE_DLL_STATUS
++ * (0x108), CORE_VENDOR_SPEC (0x10c), CORE_VENDOR_SPEC_FUNC2 (0x110), and
++ * CORE_VENDOR_SPEC_CAPABILITIES0 (0x11c) reside at offsets within hc_mem
++ * (0x07824900), mapping physically to 0x07824a00..0x07824a1c (HC + 0x100..0x11c),
++ * while core_mem (0x07824000) hosts only legacy MCI registers (MCI_VERSION 0x50,
++ * GENERICS 0x70, HC_MODE 0x78, PWRCTL 0xdc..0xe8).
++ * HC + 0x10c: vendor clock/DLL control (physically 0x07824a0c). Linux resets
++ * it to CORE_VENDOR_SPEC_POR_VAL before HC mode; bits 9:8 select HC datapath
++ * clock (2 = free-running MCLK).
 + */
 +#define CORE_VENDOR_SPEC        0x10c
 +#define CORE_VENDOR_SPEC_POR_VAL 0xa9cu
@@ -198,12 +201,10 @@ new file mode 100644
 +#define CORE_HC_SELECT_IN_EN    0x00040000u     /* BIT(18) */
 +#define CORE_HC_SELECT_IN_MASK  (7u << 19)
 +/*
-+ * core + 0x100: DLL configuration (sdhci-msm.c msm_init_cm_dll()).
-+ * CORE_CK_OUT_EN hands the card clock to the DLL output; CORE_DLL_EN arms the
-+ * DLL, RST/PDN hold it down. Selecting a DLL that is not running is the same
-+ * as driving no card clock at all, so the output source must follow the DLL
-+ * state. Linux only sets CK_OUT_EN as the last step of msm_init_cm_dll(),
-+ * which runs for HS200/HS400 tuning - not on the default/high-speed path.
++ * HC + 0x100: DLL configuration (physically 0x07824a00; sdhci-msm.c).
++ * CORE_CK_OUT_EN hands the card clock to DLL output; CORE_DLL_EN arms DLL.
++ * Selecting a DLL that is not running drives no card clock; output source
++ * must follow DLL state: bypass if DLL is in reset/off, DLL output if locked.
 + */
 +#define CORE_DLL_CONFIG         0x100
 +#define CORE_DLL_STATUS         0x108
@@ -721,19 +722,19 @@ new file mode 100644
 +static void
 +sdhci_select_hc_clock(void)
 +{
-+	uint32_t vs = core_rd(CORE_VENDOR_SPEC);
++	uint32_t vs = hc_rd(CORE_VENDOR_SPEC);
 +
 +	vs &= ~CORE_HC_MCLK_SEL_MASK;
 +	vs |= CORE_HC_MCLK_SEL_DFLT;
 +	vs &= ~(CORE_HC_SELECT_IN_EN | CORE_HC_SELECT_IN_MASK);
-+	core_wr(CORE_VENDOR_SPEC, vs);
-+	vs = core_rd(CORE_VENDOR_SPEC);
++	hc_wr(CORE_VENDOR_SPEC, vs);
++	vs = hc_rd(CORE_VENDOR_SPEC);
 +	printf("SANTONI SDHCI: HC clock source MCLK sel %u (VENDOR_SPEC "
 +	    "0x%08x)\n", (vs & CORE_HC_MCLK_SEL_MASK) >> 8, vs);
 +}
 +
 +/*
-+ * Card-clock output stage (core + 0x100). CORE_CK_OUT_EN selects the DLL as
++ * Card-clock output stage (HC + 0x100). CORE_CK_OUT_EN selects the DLL as
 + * the source of SDCLK; a DLL held in reset, powered down or unlocked cannot
 + * drive it, so the output must fall back to bypass. Linux never sets
 + * CK_OUT_EN outside msm_init_cm_dll() (HS200/HS400 tuning), so bypass is the
@@ -744,8 +745,8 @@ new file mode 100644
 +static void
 +sdhci_clock_output(void)
 +{
-+	uint32_t dll = core_rd(CORE_DLL_CONFIG);
-+	uint32_t status = core_rd(CORE_DLL_STATUS);
++	uint32_t dll = hc_rd(CORE_DLL_CONFIG);
++	uint32_t status = hc_rd(CORE_DLL_STATUS);
 +	bool dll_live = (dll & CORE_DLL_EN) && !(dll & CORE_DLL_OFF) &&
 +	    (status & CORE_DLL_LOCK);
 +	uint32_t want = dll_live ? (dll | CORE_CK_OUT_EN) :
@@ -757,10 +758,10 @@ new file mode 100644
 +	    (dll & CORE_DLL_RST) ? 1u : 0u, (status & CORE_DLL_LOCK) ? 1u : 0u,
 +	    (dll & CORE_CK_OUT_EN) ? 1u : 0u);
 +	if (want != dll) {
-+		core_wr(CORE_DLL_CONFIG, want);
++		hc_wr(CORE_DLL_CONFIG, want);
 +		printf("SANTONI SDHCI: card clock output %s (CORE_DLL_CONFIG "
 +		    "0x%08x)\n", dll_live ? "selected from the locked DLL" :
-+		    "bypasses the powered-down DLL", core_rd(CORE_DLL_CONFIG));
++		    "bypasses the powered-down DLL", hc_rd(CORE_DLL_CONFIG));
 +	}
 +}
 +
@@ -794,12 +795,12 @@ new file mode 100644
 +	 * FF_CLK_SW_RST_DIS). LK never writes it, so on this hand-off it still
 +	 * selects "no clock" for the HC datapath.
 +	 */
-+	vendor = core_rd(CORE_VENDOR_SPEC);
++	vendor = hc_rd(CORE_VENDOR_SPEC);
 +	printf("SANTONI SDHCI: CORE_VENDOR_SPEC 0x%08x (MCLK sel %u, "
 +	    "PWRSAVE %u) -> POR 0x%08x\n", vendor,
 +	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8, (vendor >> 1) & 1u,
 +	    CORE_VENDOR_SPEC_POR_VAL);
-+	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
++	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
 +	error = sdhci_enter_hc_mode();
 +	if (error) {
 +		return error;
@@ -899,7 +900,7 @@ new file mode 100644
 +	 */
 +	printf("SANTONI SDHCI: takeover complete (HC_MODE 0x%08x, "
 +	    "VENDOR_SPEC 0x%08x, legacy MCI_CLK 0x%08x, MCI_POWER 0x%08x)\n",
-+	    core_rd(CORE_HC_MODE), core_rd(CORE_VENDOR_SPEC), mci_clk,
++	    core_rd(CORE_HC_MODE), hc_rd(CORE_VENDOR_SPEC), mci_clk,
 +	    mci_power);
 +	return 0;
 +}
@@ -1024,7 +1025,7 @@ new file mode 100644
 +	}
 +
 +	/*
-+	 * Rung 3: re-assert the vendor clock state. core + 0x10c selects the
++	 * Rung 3: re-assert the vendor clock state. HC + 0x10c selects the
 +	 * clock feeding the HC block (bits 9:8) and holds CORE_CLK_PWRSAVE
 +	 * (bit 1); Linux resets it to the POR value at probe and re-selects
 +	 * free-running MCLK on every rate change. Takeover already did both,
@@ -1032,12 +1033,12 @@ new file mode 100644
 +	 * because FF_CLK_SW_RST_DIS did not stick and the core self-reset).
 +	 * Nothing has answered, so it cannot cost a working card.
 +	 */
-+	vendor = core_rd(CORE_VENDOR_SPEC);
++	vendor = hc_rd(CORE_VENDOR_SPEC);
 +	printf("SANTONI SDHCI: CORE_VENDOR_SPEC 0x%08x (MCLK sel %u, "
 +	    "PWRSAVE %u) -> POR 0x%08x, CLOCK_CONTROL 0x%04x\n", vendor,
 +	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8, (vendor >> 1) & 1u,
 +	    CORE_VENDOR_SPEC_POR_VAL, hc_rd16(SDHCI_CLOCK_CONTROL));
-+	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
++	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
 +	sdhci_select_hc_clock();
 +	(void)sdhci_reset_paths();
 +	if (sdhci_send_status(SANTONI_CARD_RCA, &r1) == 0) {
