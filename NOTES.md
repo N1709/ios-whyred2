@@ -15,8 +15,10 @@
   patch checks, shipped-code assertions); strict hunk-body scan finds no
   trailing body lines; scripted scan confirms every `SDHCI_*`/`CORE_*`
   identifier used by the 0142 driver (53) is defined in it.
-- **Next:** push so the kernel CI rebuilds; then continue the hardware steps of
-  the HC-mode handoff below. No device state changed in this fix.
+- **CI:** commit 98c5c3d, run 39647739926 (job 119387671745) = success,
+  including "Fail if a Santoni storage patch was skipped".
+- **Next:** continue the hardware steps of the HC-mode handoff below. No device
+  state changed in this fix.
 
 ## Agent handoff (2026-10-21, previous): SDHCI HC-mode takeover fixed in 0142, committed as c66ee92
 
