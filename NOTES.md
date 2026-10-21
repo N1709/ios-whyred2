@@ -2,26 +2,33 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Phase 3 CI Fix — Enable kperf and kpc in MASTER.arm64.santoni <<<
+### >>> UPDATE 2026-10-21: Phase 3 CI Fix — Linker Undefined Symbols Resolved <<<
 
-- **Issues Diagnosed via CI Run 39546456467:**
-  - `installhdrs` passed cleanly with zero header errors.
-  - All source files across Mach, BSD, Skywalk, IOKit, and Libkern compiled cleanly and archived into their respective `.a` libraries.
-  - Only two compilation units failed:
-    - `osfmk/kperf/kperf_kpc.h:43`: error: use of undeclared identifier 'KPC_MAX_COUNTERS' (in `ast.c`)
-    - `osfmk/kern/processor.c:151`: error: use of undeclared identifier 'kperf_timer_expire', 'RUNNING_TIMER_KPERF'
-  - **Root Cause:**
-    - `kperf` and `kpc` were omitted from `PERF_DBG_BASE` in `config/MASTER.arm64.santoni`.
-    - XNU's core scheduler in `osfmk/kern/processor.c` unconditionally defines:
-      `static timer_call_func_t running_timer_funcs[] = { [RUNNING_TIMER_QUANTUM] = thread_quantum_expire, [RUNNING_TIMER_KPERF] = kperf_timer_expire };`
-      and asserts the array length equals `RUNNING_TIMER_MAX`. Thus, XNU cannot build without `kperf`.
-    - In `kperf_kpc.h`, `<kern/kpc.h>` (which defines `KPC_MAX_COUNTERS`) is only included when `#if KPC` is true, but `struct kpcdata` is unconditionally defined.
-    - Upstream `MASTER.arm64.sweet` defines `PERF_DBG_BASE = [ ... kperf kpc ]` with the comment:
-      `# kperf/kpc stay (xnu does not build without kperf); osfmk/arm64/kpc.c is a stub with no hardware counters.`
-      The backend `osfmk/arm64/kpc.c` (provided by patch 0008) is completely hardware-neutral and stubs all PMU counters with 0 / `ENOTSUP`.
-- **Fix Applied & Verified:**
-  - In `xnu/patches/0085-santoni-board-target.patch`: Added `kperf kpc` to `PERF_DBG_BASE` in `config/MASTER.arm64.santoni`.
-  - Verified clean `git apply --check` against xnu source tree.
+- **Issues Diagnosed via CI Run 39547830556:**
+  - All source files across Mach, BSD, Skywalk, IOKit, and Libkern compiled cleanly (including `ast.o` and `processor.o`).
+  - Build successfully proceeded to the link step: `ld ... -o .../kernel.development.santoni.unstripped`.
+  - Link failed with 8 undefined symbols:
+    1. `_gicc_base` (from `_sleh_irq` in `sleh.o`)
+    2. `_sweet_vtimer_intid` (from `_sleh_irq` in `sleh.o`)
+    3. `_sweet_console_copy_dirty` (from `SweetFramebuffer.cpo`)
+    4. `_sweet_console_muted` (from `SweetFramebuffer.cpo`)
+    5. `_sweet_console_retarget` (from `SweetFramebuffer.cpo`)
+    6. `_sweet_console_show_hook` (from `SweetFramebuffer.cpo`)
+    7. `_sweet_sample_task` (from `sweet_sample.o`)
+    8. `_sweet_ufs_read_part` (from `TopazModem.cpo`)
+  - **Root Cause Analysis:**
+    - Symbols 1 & 2: `pe_fiq.c` guarded its entire implementation with `#if HAS_GIC_V3`. Because santoni has Cortex-A53 with GICv2 (`HAS_GIC_V3 == 0`), `pe_fiq.c` fell into an empty stub `pe_init_fiq() {}`, eliding `sweet_vtimer_intid` and `gicc_base` definitions.
+    - Symbols 3-8: The common sweet platform drivers (`sweet_ufs.c`, `sweet_sample.c`, `video_console.c`, `serial_console.c`, `exception.c`) were guarded by `#if defined(ARM64_BOARD_CONFIG_SWEET)`. In `MakeInc.def`, `MACHINE_FLAGS_ARM64_SANTONI` previously only defined `-DARM64_BOARD_CONFIG_SANTONI`, omitting `-DARM64_BOARD_CONFIG_SWEET` so all these driver implementations were compiled out as empty files.
+  - **Fixes Applied & Verified:**
+    1. In `xnu/patches/0017-santoni-gicv2-rtclock.patch`:
+       - Changed `pe_fiq.c` guard to `#if HAS_GIC_V3 || defined(SANTONI)` so that `sweet_vtimer_intid` and `gicc_base` are defined.
+       - Guarded GICv3 redistributor loops with `#if HAS_GIC_V3`.
+       - Added `return;` after santoni's GICv2 configuration to prevent fallthrough into GICv3 `ICC_IGRPEN0_EL1` system registers.
+    2. In `xnu/patches/0085-santoni-board-target.patch`:
+       - Updated `pexpert/pexpert/arm64/board_config.h` so `#ifdef ARM64_BOARD_CONFIG_SWEET` checks `!defined(ARM64_BOARD_CONFIG_SANTONI)` to prevent including `SWEET.h` when building santoni.
+    3. In `xnu/patches/0094-santoni-cortex-a53-codegen.patch`:
+       - Added `-DARM64_BOARD_CONFIG_SWEET` to `MACHINE_FLAGS_ARM64_SANTONI` in `MakeInc.def`, satisfying all shared sweet driver definitions.
+    - Verified all modified patches apply cleanly (`git apply --check`) against runner buildtree.
 - **Physical Device Boot Verification Procedure (Awaiting User Test):**
   1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
   2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
