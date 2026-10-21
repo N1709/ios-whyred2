@@ -2,15 +2,17 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Phase 3 CI Kernel Build Fixes (kperf drop, IPI SGI, early_fb, start.s asm) EXECUTED <<<
+### >>> UPDATE 2026-10-21: Phase 3 CI SANTONI.h Hunk Header Normalization & Build Resumed <<<
 
-- **Issues Diagnosed via CI Run 39544062100:**
-  - `arm64e` PAC / ptrauth error was **100% resolved** (`dtrace.c`, `randomdev.c`, `memdev.c`, `systrace_args.c` all compiled cleanly with `-arch arm64`).
-  - Remaining 4 build issues across 10 objects diagnosed and resolved:
-    1. `sweet_early.c`: `early_fb` was undeclared for `SANTONI` because `0098` had `#define EARLY_FB ((volatile uint8_t *)...)` in the `#if defined(SANTONI)` branch, leaving `sweet_early_relocate()` with an undeclared `early_fb`. Fixed in `0098` by defining `static volatile uint8_t *early_fb` and casting in `sweet_early_relocate()`.
-    2. `SweetCPU.cpp:230`: `SWEET_IPI_SGI` undeclared. Fixed in `0085` by adding `#define SWEET_IPI_SGI 1` to `pexpert/arm64/SANTONI.h`.
-    3. `kperf` objects (`ast.o`, `action.o`, `kperf.o`, `pet.o`, `kptimer.o`, `kperf_kpc.o`, `lazy.o`): `KPC_MAX_COUNTERS` undeclared because Apple's proprietary Silicon PMU `kpc` is dropped on ARM targets without Apple PMU. Fixed in `0085` by dropping `kperf` from `PERF_DBG_BASE` in `config/MASTER.arm64.santoni`, exactly as `MASTER.arm64.sweet` did in `0007`.
-    4. `start.s:880`: `MOV64 w1, 0x000000ff` failed in assembler with `expected 'lsl' with optional integer 0 or 16` because 32-bit register `w1` cannot take `lsl #32`/`#48`. Fixed in `0082` by using `mov w1, #0xff`.
+- **Issues Diagnosed via CI Run 39545532713:**
+  - `6_Build.txt` showed zero compilation errors across Mach, BSD, and Skywalk.
+  - Failure occurred during `installhdrs` in `unifdef`:
+    `unifdef: .../SANTONI.h: 31: Premature EOF (#if line 1 depth 1)`
+    `make[6]: *** [.../SANTONI.h] Error 1`
+  - Root Cause: In `0085-santoni-board-target.patch`, when `SWEET_IPI_SGI` was added to `SANTONI.h`, the hunk header was `@@ -0,0 +1,29 @@` instead of `@@ -0,0 +1,30 @@`. `patch` read only 29 lines and dropped the closing `#endif /* _PEXPERT_ARM64_SANTONI_H */`, triggering premature EOF.
+- **Fix Applied & Verified:**
+  - `xnu/patches/0085-santoni-board-target.patch`: Corrected hunk header to `@@ -0,0 +1,30 @@` and stripped trailing whitespace from empty comment lines.
+  - Verified clean `git apply` on runner tree: `SANTONI.h` is intact with all 30 lines including `#endif`.
 - **Physical Device Boot Verification Procedure (Awaiting User Test):**
   1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
   2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
