@@ -2,7 +2,34 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Phase 3 Plan 04 (Shim Loader 4K Handoff & Boot Image Packaging) EXECUTED & COMMITTED <<<
+### >>> UPDATE 2026-10-21: Phase 3 CI Patch Recount & Context Normalization EXECUTED & COMMITTED <<<
+
+- **Issue Diagnosed:**
+  - Remote GitHub Actions CI run `39529820707` failed at step 6 (`Build`) with `Unsupported CURRENT_MACHINE_CONFIG SANTONI. Stop.`.
+  - Diagnosis: `dxb/build.sh` skipped `0085-santoni-board-target.patch` (`error: corrupt patch at line 106`) and `0017-santoni-gicv2-rtclock.patch` (`error: corrupt patch at line 12`). Because `0085` was skipped, `SANTONI` was never added to `SUPPORTED_ARM64_MACHINE_CONFIGS` in `MakeInc.def`.
+  - Underlying cause: Hunk line count headers (`@@ -old,count +new,count @@`) and context lines in `0017`, `0082`, `0085`, `0093`, `0094`, `0097`, and `0098` did not match the file state after earlier sweet patches (`0004`, `0008`, `0010`, `0065`) were applied.
+- **Fix Applied & Verified:**
+  - `xnu/patches/0017-santoni-gicv2-rtclock.patch`: Re-generated exact unified diff against post-0004 `pe_fiq.c`, `sleh.c`, and `protos.h`. Verified 100% clean application with 0 corrupt lines.
+  - `xnu/patches/0082-santoni-4k-entry.patch`: Re-generated exact unified diff against post-0010 `start.s`. Preserves `#elif defined(SWEET)` fallback and adds SANTONI physical markers/simplefb mappings cleanly.
+  - `xnu/patches/0085-santoni-board-target.patch`: Re-aligned hunks with post-0004 `board_config.h`, `Makefile`, and `MakeInc.def`. Corrected hunk counts on new files `SANTONI.h` (+1,29) and `MASTER.arm64.santoni` (+1,113).
+  - `xnu/patches/0093-santoni-39bit-kernel-va.patch`: Re-aligned 39-bit kernel VA link address hunk against post-0085 `MakeInc.def`.
+  - `xnu/patches/0094-santoni-cortex-a53-codegen.patch`: Re-aligned `-mcpu=cortex-a53` codegen hunk against post-0093 `MakeInc.def`.
+  - `xnu/patches/0097-santoni-zone-va-size.patch`: Replaced `#if XNU_PLATFORM_MacOSX` deletion line and normalized hunk count (10 lines).
+  - `xnu/patches/0098-santoni-early-console.patch`: Normalized hunk count `-64,13 +92,23` for `sweet_early.c` simplefb blitter.
+  - `.github/workflows/xnu.yml`: Added `git apply --recount --whitespace=fix` flag replacement in `dxb/build.sh` for robust patch application on macOS runners.
+  - Verification: All 10 santoni patches verified sequentially in isolated test repository against `xnu-8796.141.3`. All applied cleanly with 0 errors.
+- **Physical Device Boot Verification Procedure (Awaiting User Test):**
+  1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
+  2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
+  3. Verify screen sequence:
+     - Red screen: SHIM santoni phase 3 diagnostic telemetry.
+     - White rectangular bar: `start.s` Stage 0 physical entry (MMU off).
+     - Blue rectangular bar: `start.s` Stage 1 MMU active (4K pmap bootstrap).
+     - Darwin kernel banner printed to screen: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
+- **Next Concrete Action:**
+  - Push commit to `origin/santoni`.
+  - Monitor remote CI run on GitHub Actions for `kernel.development.santoni`.
+  - Physical device verification: execute `fastboot boot shim/out/shim-boot.img` on hardware when user wakes up.
 
 - **Plan 03-04 Status:** EXECUTED, VERIFIED, AND COMMITTED (Physical hardware verification awaiting user test)
 - **Deliverables:**

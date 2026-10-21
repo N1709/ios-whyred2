@@ -54,7 +54,7 @@ diff --git a/osfmk/arm64/sweet_early.c b/osfmk/arm64/sweet_early.c
  	}
 +#endif
  }
-@@ -64,12 +92,23 @@ sweet_early_putc(char c)
+@@ -64,13 +92,23 @@ sweet_early_putc(char c)
  	for (unsigned int gy = 0; gy < 16; gy++) {
  		for (unsigned int sy = 0; sy < EARLY_SCALE; sy++) {
 +#if defined(SANTONI)

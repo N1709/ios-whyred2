@@ -1,10 +1,11 @@
-diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 --- a/makedefs/MakeInc.def
 +++ b/makedefs/MakeInc.def
-@@ -338,6 +338,14 @@ ifeq ($(CURRENT_MACHINE_CONFIG),BCM2837)
- ARM64_LINK_ADDR    =0xfffffff007004000
- endif
- 
+@@ -338,6 +338,15 @@
+ LARGE_MEMORY_DEFINE=-DARM_LARGE_MEMORY=1
+ ARM64_PLKSEG_ADDR  =0xfffffe0004004000
+ ARM64_LINK_ADDR    =0xfffffe0007004000
++endif
++
 +# Qualcomm MSM8937 (santoni) uses 4 KiB pages: TTBR1 has a 39-bit range.
 +# The macOS ARM_LARGE_MEMORY link address at -2 TiB is outside that range.
 +# Keep santoni inside the compact 39-bit kernel VA layout.
@@ -12,4 +13,6 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
 +LARGE_MEMORY_DEFINE=-UARM_LARGE_MEMORY
 +ARM64_PLKSEG_ADDR  =0xfffffff004004000
 +ARM64_LINK_ADDR    =0xfffffff007004000
-+endif
+ endif
+ 
+ 
