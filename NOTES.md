@@ -2,6 +2,27 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **Independent Phase 4 Goal-Backward Verification: GAPS_FOUND** (report:
+  `.planning/phases/04-.../04-GBV-VERIFICATION.md`).
+  - **Observed PASS:** STOR-01 artifacts (`out/init.macho` magic `0xfeedfacf`,
+    valid ad-hoc CS 0x2 SHA-256 4K CodeDirectory; `shim/out/shim-boot.img`
+    `ANDROID!` + `rd=md0` in both cmdlines, ramdisk segment byte-identical to
+    init.macho, ADT `RAMDisk` present). STOR-02: mock test passes; mkadt emits
+    `/santoni-sdhci` `reg 0x07824000/hc-reg 0x07824900`; 0142 applies and
+    `santoni_sdhci.o` compiles in CI run 39620598020 (warnings only).
+  - **Observed GAPS (not guesses):** `0143` and `0144` have wrong hunk counts;
+    CI log shows `Skipping patch ... corrupt patch at line 158` (0143) and
+    `line 22` (0144), so the built kernel has neither. 0143 also targets a
+    nonexistent `santoni_sdhci_probe()`/`userdata partition at` context, uses
+    undefined `sys`, `su.dma`, `sdhci_write_blocks`, and SYSTEM writes would be
+    refused (`EPERM`, lba < `se.first_block`; `EROFS` without `emmcrw=1`).
+    0142's GPT parser has no CRC32 and no SYSTEM lookup - those exist only in
+    `tests/test_gpt_parser.c`, which is a standalone test double. None of the
+    three host tests is wired into `shim/build.sh`/CI.
+  - **Next:** regenerate 0143/0144 cleanly, add CRC32 + `sys` parse to
+    `santoni_sdhci.c`, add a SYSTEM-bounded raw write path, fail CI on skipped
+    Santoni patches, wire tests into the build. Hardware tests remain pending.
+
 - **Phase 4 Plan 03 (Hardened GPT, Persistent Console Log, 4 KiB Dyld Cache) EXECUTED & COMMITTED:**
   - **Milestone Achieved:** STOR-03, STOR-04, and STOR-05 verified. Hardened GPT parser with CRC32 checks and userdata write boundary clamping authored; persistent 4 MiB circular console log flusher targeting SYSTEM partition (sectors 0..8192) authored with recovery extraction tools; 4 KiB unsigned dyld shared cache compatibility patch authored for Cortex-A53 userland.
   - **Commits:**
