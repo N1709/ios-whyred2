@@ -2,6 +2,22 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> UPDATE 2026-10-21: Phase 3 Plan 03 (Architecture Conformance & CI Workflow) EXECUTED & COMMITTED <<<
+
+- **Plan 03-03 Status:** EXECUTED, VERIFIED, AND COMMITTED
+- **Deliverables:**
+  - `xnu/patches/0094-santoni-cortex-a53-codegen.patch`: Enforced `-mcpu=cortex-a53` in `MakeInc.def` to prevent Apple Silicon codegen emitting LSE atomics.
+  - `xnu/patches/0095-santoni-disable-pan.patch`: Confirmed `__ARM_PAN_AVAILABLE__ 0` in `SANTONI.h` for ARMv8.0 Cortex-A53 without PAN support.
+  - `xnu/patches/0096-santoni-commpage-llsc.patch`: Replaced ARMv8.1-A `casa` with ARMv8.0 `ldaxr`/`stxr`/`clrex` loops in `osfmk/arm/commpage/commpage_asm.s` guarded by `ARM64_BOARD_CONFIG_SANTONI`.
+  - `xnu/patches/0098-santoni-early-console.patch`: Implemented 720x1280 24-bit BGR simplefb console blitter (`EARLY_FB 0x90001000`, `EARLY_STRIDE 2160`, `early_pixel24`) in `osfmk/arm64/sweet_early.c`.
+  - `xnu/patches/0017-santoni-gicv2-rtclock.patch`: Updated `protos.h` guard to include `ARM64_BOARD_CONFIG_SANTONI` and confirmed GICv2 SGI CPUID bitmasking (`intid = iar & 0x3ff`) in `sleh.c`.
+  - `.github/workflows/xnu.yml`: Updated workflow default `machine_config` to `SANTONI`, added `santoni` branch push trigger, and set default `MACHINE_CONFIG` environment variable.
+- **Commits Added in Plan 03-03:**
+  - `1e4bd3f`: `feat(03-03): author cortex-a53 codegen, pan disable, commpage llsc, and early console patches`
+  - `4440e72`: `feat(03-03): update GitHub Actions workflow for SANTONI machine target`
+- **Next Concrete Action:**
+  - Execute Plan 03-04: Update bare-metal shim loader for 4K segment unrolling, cache cleaning to PoC, and iBoot-compliant `boot_args` handoff, assemble `shim-boot.img`, and verify physical boot.
+
 ### >>> UPDATE 2026-10-21: Phase 3 Plan 02 (Core 4K Pmap, Board Target, and Early Entry) EXECUTED & COMMITTED <<<
 
 - **Plan 03-02 Status:** EXECUTED, VERIFIED, AND COMMITTED
