@@ -1,47 +1,35 @@
 #!/usr/bin/env python3
-"""Build the minimal Apple Device Tree that the TOPAZ xnu needs to boot.
+"""Build the minimal Apple Device Tree that the SANTONI xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the topaz (Redmi Note 12 4G, SM6225 khaje) live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
+address comes from the santoni (Redmi 4X, MSM8937) live FDT.
+Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--native]
 """
 import hashlib, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: above every Qualcomm XPU carve-out (see NOTES.md)
-PHYS_BASE = 0xb0000000
-MEM_SIZE = 0x4d000000
-# --highmem (phone only): the whole upper DDR bank. The topaz live FDT memory
-# node is <0x40000000 0x3bb00000>, <0x80000000 3G>, <0x1_40000000 4G>; every
-# fixed reserved-memory carve-out is below 0x63900000 and the dynamic pools are
-# limited below 4G.
-HIGH_PHYS_BASE = 0x140000000
-HIGH_MEM_SIZE = 0x100000000
-# --midmem (phone only): the middle and upper banks as one range, 0x80000000 +
-# 3G + 4G = 7G up to 0x2_40000000. No fixed carve-out is above 0x63900000, and it
-# gives the kernel RAM below 4 GiB, which the GPU needs (it does not reach above).
-MID_PHYS_BASE = int(__import__("os").environ.get("MIDBASE", "0x80000000"), 16)
-MID_MEM_SIZE = int(__import__("os").environ.get("MIDSIZE", "0x1c0000000"), 16)
+# Kernel-managed RAM: strictly above Qualcomm XPU carve-outs (ending at 0x92280000)
+PHYS_BASE = 0x98000000
+MEM_SIZE = 0x60000000  # 1.5 GiB safe budget
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
 # interrupt-controller@b000000 (santoni MSM8937 QGIC2)
 GICD, GICD_SIZE = 0x0b000000, 0x1000
 GICC, GICC_SIZE = 0x0b002000, 0x1000
-# cont_splash_region left lit by ABL
-FB, FB_SIZE = 0x5c000000, 0xf00000
-SWEET_ECID = 0x544f50415a000001  # 'TOPAZ' + 1, synthetic
-FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4
-# Internal UFS host (ufshc@4804000 "ufs_mem"); QEMU virt has none
-UFS, UFS_SIZE = 0x04804000, 0x3000
+# Continuous splash simplefb left lit by Qualcomm ABL (720x1280 24-bit BGR)
+FB, FB_SIZE = 0x90001000, 720 * 1280 * 3
+SWEET_ECID = 0x53414e544f4e4901  # 'SANTONI' + 1, synthetic
+FB_W, FB_H, FB_STRIDE = 720, 1280, 720 * 3
 TIMEBASE = 19200000
 VTIMER_INTID = 20
 # QEMU virt (-M virt,gic-version=2 -cpu cortex-a53): GICD/GICC and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICC, QEMU_TIMEBASE = 0x08000000, 0x08010000, 62500000
 QEMU_VTIMER_INTID = 27
 
-BOOT_MANIFEST_HASH = hashlib.sha384(b'topaz boot manifest').digest()
+BOOT_MANIFEST_HASH = hashlib.sha384(b'santoni boot manifest').digest()
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -76,10 +64,9 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
+def build(seed=None, qemu=False, native=False):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
-    phys_base, mem_size = ((MID_PHYS_BASE, MID_MEM_SIZE) if midmem else
-                           (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE))
+    phys_base, mem_size = PHYS_BASE, MEM_SIZE
     gicd, gicc, timebase = (QEMU_GICD, QEMU_GICC, QEMU_TIMEBASE) if qemu else (GICD, GICC, TIMEBASE)
     seed = seed if seed is not None else os.urandom(64)
     phandle = iter(range(1, 1000))
@@ -91,8 +78,8 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('dram-size', u64(mem_size)),
         ('random-seed', seed),
         ('debug-enabled', u32(1)),
-        ('firmware-version', cstr('topaz-shim')),
-        ('system-firmware-version', cstr('topaz-shim')),
+        ('firmware-version', cstr('santoni-shim')),
+        ('system-firmware-version', cstr('santoni-shim')),
         # iBoot's SHA-384 of the boot manifest; /sbin/mount -P 1 exits unless
         # it exists (bind mounts /private/preboot/<hex>/usr/standalone/firmware,
         # tolerating a missing directory). Fixed stand-in value.
@@ -101,10 +88,9 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         # it; real A11+ device trees say sha2-384.
         ('crypto-hash-method', cstr('sha2-384')),
         # MobileGestalt's screen class: display-scale (u32, default 0) comes
-        # from /chosen, the pixel size from IOMobileFramebuffer. Scale 0 makes
-        # SpringBoard's FBSDisplayMode "infxinf@0x" invalid. 1080x2400 @3x =
-        # 360x800 points (like iPhone X class devices).
-        ('display-scale', u32(3)),
+        # from /chosen, the pixel size from IOMobileFramebuffer.
+        # Santoni 720x1280 @2x = 360x640 points.
+        ('display-scale', u32(2)),
         # XNU derives IOPlatformUUID (gethostuuid) from these on arm; without
         # them CFPreferences cannot use kCFPreferencesCurrentHost (no ByHost
         # files), so e.g. DataMigration never records LastSystemVersion and
@@ -128,35 +114,29 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         # with CSR_ALLOW_UNRESTRICTED_FS (vm_unix.c shared region checks).
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])])
 
-    # TOPAZ SMP: only the four Cortex-A73 (gold) cores, MPIDR 0x100-0x103:
-    # the Kryo 260 Silver cores have no 16K granule, so the shim boots xnu
-    # on gold CPU 0x100 and parks the silver cluster. One cluster. The kernel defaults to one
-    # and uses cpus=N to select an initial prefix (N <= 8).
-    # QEMU retains its original single-CPU tree: its MPIDRs differ from sweet.
-    cpu_nodes = []
-    for core in range(1 if qemu else 4):
-        cpu_nodes.append(node(f'cpu{core}', [
-            ph(),
-            ('device_type', cstr('cpu')),
-            ('compatible', cstr('qcom,kryo260') + cstr('qcom,kryo470') + cstr('ARM,v8')),
-            ('reg', u32(core if qemu else 0x100 | core)),  # actual MPIDR Aff1:Aff0, NOT logical ID
-            ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
-            ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology
-            ('cluster-type', u32(0)),  # homogeneous CLUSTER_TYPE_SMP, not AMP
-            ('die-cluster-id', u32(0)),
-            ('cluster-core-id', u32(core)),
-            ('l2-cache-id', u32(0)),  # gold L2
-            ('l3-cache-id', u32(0)),
-            ('state', cstr('running' if core == 0 else 'stopped')),
-            ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2803200000)),
-            ('bus-frequency', u32(100000000)),
-            ('memory-frequency', u32(1866000000)),
-            ('peripheral-frequency', u32(timebase)),
-            ('fixed-frequency', u32(timebase)),
-        ]))
+    # Qualcomm MSM8937 Cortex-A53 CPU0 (MPIDR 0x0)
+    cpu0 = node('cpu0', [
+        ph(),
+        ('device_type', cstr('cpu')),
+        ('compatible', cstr('arm,cortex-a53') + cstr('ARM,v8')),
+        ('reg', u32(0)),
+        ('cpu-id', u32(0)),
+        ('cluster-id', u32(0)),
+        ('cluster-type', u32(0)),
+        ('die-cluster-id', u32(0)),
+        ('cluster-core-id', u32(0)),
+        ('l2-cache-id', u32(0)),
+        ('l3-cache-id', u32(0)),
+        ('state', cstr('running')),
+        ('timebase-frequency', u32(timebase)),
+        ('clock-frequency', u32(1401600000)),
+        ('bus-frequency', u32(100000000)),
+        ('memory-frequency', u32(933000000)),
+        ('peripheral-frequency', u32(timebase)),
+        ('fixed-frequency', u32(timebase)),
+    ])
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
-                         ('#size-cells', u32(0))], cpu_nodes)
+                         ('#size-cells', u32(0))], [cpu0])
 
     gic = node('gic', [
         ph(),
@@ -187,17 +167,14 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         node('wlan', [
             ph(),
             ('device_type', cstr('wlan')),
-            ('compatible', cstr('topaz,wcn3988')),
+            ('compatible', cstr('qcom,wcn3680')),
         ]),
         node('disp0', [
             ph(),
             ('device_type', cstr('display-subsystem')),
             ('compatible', cstr('sweet,display')),
-            # --native: present the real 1080x2400 panel (needed for direct MDP scanout,
-            # which must match the canvas: sweetfb_native=1 with a 1125x2436 canvas makes
-            # backboardd ask for a hardware scaler that does not exist)
-            ('canvas-width', u32(1080 if native else 1125)),
-            ('canvas-height', u32(2400 if native else 2436)),
+            ('canvas-width', u32(720 if native else 1125)),
+            ('canvas-height', u32(1280 if native else 2436)),
         ])])
 
     fbcon = node('sweet-fbcon', [
@@ -206,13 +183,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         ('width', u32(FB_W)),
         ('height', u32(FB_H)),
         ('stride', u32(FB_STRIDE)),
-    ])
-
-    # bsd/dev/sweet_ufs.c: the UFS host ABL leaves running (absolute physical reg).
-    ufs = node('sweet-ufs', [
-        ph(),
-        ('compatible', cstr('qcom,ufshc')),
-        ('reg', u64(UFS, UFS_SIZE)),
+        ('depth', u32(24)),
     ])
 
     # pmap_compute_max_asids requires the node even when no overrides are set.
@@ -240,25 +211,28 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
 
     # Identity of the iPhone X whose userland runs here: compatible[0] is
     # hw.model/hw.target (D22AP), model is hw.machine/hw.product
-    # (iPhone10,3). 'xiaomi,sweet' and qcom,kryo470 stay because the
-    # SweetPlatformExpert and CPU IONameMatch still use them.
+    # (iPhone10,3). 'xiaomi,santoni' and qcom,msm8937 match our target silicon.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,topaz') + cstr('xiaomi,sweet') + cstr('qcom,khaje') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,santoni') + cstr('qcom,msm8937') + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product)
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
-                 native='--native' in sys.argv, midmem='--midmem' in sys.argv)
+    if len(sys.argv) < 2:
+        print("Usage: mkadt.py OUT.adt [--dump] [--qemu] [--native]", file=sys.stderr)
+        sys.exit(1)
+    root = build(qemu='--qemu' in sys.argv, native='--native' in sys.argv)
     blob = adt.serialize(root)
-    open(sys.argv[1], 'wb').write(blob)
+    out_path = sys.argv[1]
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    open(out_path, 'wb').write(blob)
     if '--dump' in sys.argv:
         adt.dump(adt.parse(blob)[0])
-    print(f'{sys.argv[1]}: {len(blob)} bytes', file=sys.stderr)
+    print(f'{out_path}: {len(blob)} bytes', file=sys.stderr)
