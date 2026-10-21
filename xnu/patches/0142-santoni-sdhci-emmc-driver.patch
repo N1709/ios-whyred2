@@ -191,8 +191,7 @@ new file mode 100644
 + * while core_mem (0x07824000) hosts only legacy MCI registers (MCI_VERSION 0x50,
 + * GENERICS 0x70, HC_MODE 0x78, PWRCTL 0xdc..0xe8).
 + * HC + 0x10c: vendor clock/DLL control (physically 0x07824a0c). Linux resets
-+ * it to CORE_VENDOR_SPEC_POR_VAL before HC mode; bits 9:8 select HC datapath
-+ * clock (2 = free-running MCLK).
++ * it to CORE_VENDOR_SPEC_POR_VAL before HC mode; bits 9:8 select HC datapath.
 + */
 +#define CORE_VENDOR_SPEC        0x10c
 +#define CORE_VENDOR_SPEC_POR_VAL 0xa9cu
