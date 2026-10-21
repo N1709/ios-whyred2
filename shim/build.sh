@@ -44,7 +44,8 @@ if [ -n "$PAYLOAD" ]; then
 	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
 		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
 		python3 ../tools/mkadt.py out/santoni.adt
-		python3 ../tools/mkpayload.py "$PAYLOAD" out/santoni.adt out/payload.bin
+		CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 -v keepsyms=1 santoni"
+		python3 ../tools/mkpayload.py "$PAYLOAD" out/santoni.adt out/payload.bin --cmdline "$CMDLINE"
 		RAMDISK="out/payload.bin"
 	else
 		RAMDISK="$PAYLOAD"
@@ -64,6 +65,7 @@ if [ -f ../resources/santoni_appended_dtbs.bin ]; then
 fi
 
 # Packaging: wrap in boot.img v0 using tools/mkbootimg.py
+CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 -v keepsyms=1 santoni"
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image \
 	--ramdisk "$RAMDISK" \
@@ -71,7 +73,7 @@ python3 ../tools/mkbootimg.py \
 	--base 0x80000000 \
 	--pagesize 2048 \
 	--header_version 0 \
-	--cmdline "debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam -v keepsyms=1"
+	--cmdline "$CMDLINE"
 
 # Host render of the console layout
 $HOST_CC -O2 -Wall -I. -o out/host_test console.c host_test.c && ./out/host_test

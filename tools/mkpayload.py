@@ -207,7 +207,14 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('kernel'); ap.add_argument('adt'); ap.add_argument('out')
-    ap.add_argument('--cmdline', default='debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam sweetfb_native=1 santoni')
+    # santoni: sweetcpufreq/sweetbattery keep the SM6225 cpufreq-hw block
+    # (0xf523000) and the topaz QUP0 SE1 battery bus (0x4a84000) out of the
+    # kernel. Neither exists on the MSM8937; touching them faults the board
+    # right after "SWEET HID: touch registered", when the SweetBattery
+    # personality is matched. Patch 0141 also makes both paths inert at
+    # compile time, so these two are belt and braces.
+    ap.add_argument('--cmdline', default='debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam '
+                                       'sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 santoni')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     a = ap.parse_args()
     blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk)

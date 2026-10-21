@@ -1,0 +1,95 @@
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+index 94c7552..969c04c 100644
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -3,6 +3,11 @@
+  * (qcom,cpufreq-hw, freq-domain1 at 0xf523000; msm-4.19 qcom-cpufreq-hw.c
+  * layout): LUT at +0x110, 32-byte rows, PERF_STATE at +0x920.
+  * Nothing scales it down again: there is no XNU cpufreq driver yet.
++ *
++ * santoni (MSM8937): there is no cpufreq-hw block at all. 0xf523000 is
++ * unassigned in the MSM8937 map (the highest peripheral is 0xc200000), so
++ * mapping and writing it faults the board: the whole MMIO part is compiled
++ * out for SANTONI.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -21,6 +26,14 @@ int sweet_cpufreq_max(void);
+ int
+ sweet_cpufreq_max(void)
+ {
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	/*
++	 * MSM8937: there is no cpufreq-hw block, so 0xf523000 is never
++	 * mapped or written. sweetcpufreq has no meaning on this board.
++	 */
++	printf("SWEET CPUFREQ: no cpufreq-hw on this board; skipped\n");
++	return -1;
++#else
+ 	int on = 1;
+ 	PE_parse_boot_argn("sweetcpufreq", &on, sizeof(on));
+ 	if (!on) {
+@@ -50,5 +63,6 @@ sweet_cpufreq_max(void)
+ 	__asm__ volatile("dsb sy" ::: "memory");
+ 	printf("SWEET CPUFREQ: gold perf state %u -> %u (%u MHz)\n", old, best, bestKHz / 1000);
+ 	return 0;
++#endif
+ }
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_i2c1.c b/bsd/dev/sweet_i2c1.c
+index 08cdc34..f5830b8 100644
+--- a/bsd/dev/sweet_i2c1.c
++++ b/bsd/dev/sweet_i2c1.c
+@@ -48,6 +48,27 @@ int sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len);
+ #define SE_PACK0        0x0007f8feu
+ #define SE_PACK1        0x000ffefeu
+ 
++/*
++ * santoni (MSM8937): the topaz battery bus does not exist here. 0x4a84000
++ * is unassigned on MSM8937 (its QUP is at 0xa20000, its TLMM at 0x1000000,
++ * its GCC at 0x1800000), so mapping or writing it faults the board. The
++ * whole topaz engine is compiled out; the battery stays on the static
++ * fallback until a real MSM8937 gauge driver exists.
++ */
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++int
++sweet_i2c1_init(void)
++{
++	printf("SWEET I2C1: no QUP0 SE1 on this board; static battery fallback\n");
++	return EIO;
++}
++
++int
++sweet_i2c1_read(uint8_t addr, uint8_t reg, uint8_t *buf, unsigned len)
++{
++	return ENXIO;
++}
++#else
+ static vm_offset_t i2c1_se, i2c1_gcc, i2c1_west;
+ static bool i2c1_ready;
+ static LCK_GRP_DECLARE(sweet_i2c1_grp, "sweet_i2c1");
+@@ -225,4 +246,5 @@ sweet_i2c1_init(void)
+ 	printf("SWEET I2C1: SE1 ready (fw %#x vote %#x)\n", fw, rd(i2c1_gcc, I2C1_GCC_VOTE));
+ 	return 0;
+ }
++#endif /* ARM64_BOARD_CONFIG_SANTONI */
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 824c022..3a1da62 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -323,6 +323,14 @@ SweetBattery::start(IOService *provider)
+ 	if (!IOPMPowerSource::start(provider)) {
+ 		return false;
+ 	}
++	/*
++	 * santoni (MSM8937): this board has neither the SM6225 cpufreq-hw
++	 * block (0xf523000) nor the topaz QUP0 SE1 battery bus (0x4a84000),
++	 * so sweet_cpufreq_max() and sweet_i2c1_init() are inert here (see
++	 * bsd/dev/sweet_cpufreq.c and bsd/dev/sweet_i2c1.c). The gauge then
++	 * fails to initialise and the battery stays on the static fallback
++	 * until a real MSM8937 fuel-gauge driver exists.
++	 */
+ 	(void)sweet_cpufreq_max();
+ 	int real = 1;   /* topaz: real gauge by default; sweetbattery=0 for the static fallback */
+ 	(void)PE_parse_boot_argn("sweetbattery", &real, sizeof(real));
