@@ -89,4 +89,9 @@ $HOST_CC -O2 -Wall -I. -o out/gic_test gic_test.c && ./out/gic_test
 # Host unit test for Mach-O segment unroller and boot_args
 $HOST_CC -O2 -Wall -I. -o out/loader_test loader_test.c loader.c && ./out/loader_test
 
+# Phase 4 storage: SDHCI register mock, hardened GPT (CRC32 + SYSTEM log
+# fence) and console log ring, plus unified-diff structure of xnu/patches.
+# Fails the build if any of them regress or a Santoni patch is malformed.
+HOST_CC="$HOST_CC" OUT_DIR="$PWD/out" bash ../tests/run_tests.sh
+
 ls -l out/Image out/shim-boot.img

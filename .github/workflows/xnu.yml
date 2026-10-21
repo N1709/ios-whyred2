@@ -49,6 +49,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Host tests and patch validation
+        run: |
+          # Unified-diff structure of every patch (a corrupt hunk made CI drop
+          # 0143/0144) plus the three phase 4 host tests: SDHCI mock, hardened
+          # GPT with the SYSTEM log fence, and the console log ring.
+          bash tests/run_tests.sh
+
       - name: Fetch build script
         run: |
           git init -q dxb
@@ -101,9 +108,25 @@ jobs:
           # keep going after errors so one run reports every compile failure
           MAKEFLAGS: ${{ inputs.keep_going == 'false' && '' || '-k' }}
         run: |
+          set -o pipefail
           ccache -z
-          bash build.sh
+          bash build.sh 2>&1 | tee ../build.log
           ccache -s
+
+      - name: Fail if a Santoni storage patch was skipped
+        if: always()
+        run: |
+          # dxb applies patches with `git apply --check` and only warns on
+          # failure, so a malformed hunk silently ships a kernel without that
+          # feature (0143 and 0144 were lost this way). Make it fatal.
+          if [ ! -f build.log ]; then
+            echo "no build.log (build never started)"; exit 0
+          fi
+          if grep -E 'Skipping patch .*014[234]-santoni' build.log; then
+            echo "::error::a Santoni storage patch was skipped by the build"
+            exit 1
+          fi
+          echo "no Santoni storage patch skipped"
 
       - name: Package build tree for local compiles
         if: always()

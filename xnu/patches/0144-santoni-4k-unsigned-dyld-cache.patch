@@ -1,54 +1,70 @@
 diff --git a/bsd/kern/ubc_subr.c b/bsd/kern/ubc_subr.c
+index 9b553be..22f56bb 100644
 --- a/bsd/kern/ubc_subr.c
 +++ b/bsd/kern/ubc_subr.c
-@@ -4210,7 +4210,14 @@ cs_validate_page(
- 	if (cd == NULL) {
- 		return CS_VALIDATION_BITMAP_MISSING;
+@@ -371,10 +371,26 @@ cs_validate_codedirectory(const CS_CodeDirectory *cd, size_t length)
+ 	if (ntohl(cd->magic) != CSMAGIC_CODEDIRECTORY) {
+ 		return EBADEXEC;
  	}
- 
 +#if defined(ARM64_BOARD_CONFIG_SANTONI)
 +	/*
-+	 * iOS 16 dyld shared cache uses 16 KiB hash units (pageSize == 14).
-+	 * Allow pageSize == 14 on Santoni's 4 KiB translation granule.
++	 * iOS 16's dyld shared cache is signed with 16 KiB hash units
++	 * (pageSize == 14) while Santoni runs a 4 KiB translation granule, so
++	 * PAGE_SHIFT is 12. Accept 16 KiB units here: the per-page hashing that
++	 * would read past a mapped 4 KiB page is skipped in ubc_cs_blob_add()
++	 * below, and code-signing enforcement is disabled for the shared
++	 * region's sub map in vm_shared_region_enter().
 +	 */
-+	if (cd->pageSize != PAGE_SHIFT && cd->pageSize != 14) {
-+		return CS_VALIDATION_BITMAP_MISSING;
++	if ((cd->pageSize != PAGE_SHIFT_4K) && (cd->pageSize != PAGE_SHIFT) &&
++	    (cd->pageSize != 14)) {
++		printf("disallowing unsupported code signature page shift: %u\n", cd->pageSize);
++		return EBADEXEC;
 +	}
 +#else
- 	if (cd->pageSize != PAGE_SHIFT) {
- 		return CS_VALIDATION_BITMAP_MISSING;
+ 	if ((cd->pageSize != PAGE_SHIFT_4K) && (cd->pageSize != PAGE_SHIFT)) {
+ 		printf("disallowing unsupported code signature page shift: %u\n", cd->pageSize);
+ 		return EBADEXEC;
  	}
 +#endif
-@@ -4350,6 +4357,14 @@ ubc_cs_blob_add(
- 		return EINVAL;
+ 	hashtype = cs_find_md(cd->hashType);
+ 	if (hashtype == NULL) {
+ 		return EBADEXEC;
+@@ -4630,6 +4646,17 @@ ubc_cs_blob_add(
+ 		return error;
  	}
  
 +#if defined(ARM64_BOARD_CONFIG_SANTONI)
 +	/*
-+	 * Bail early during unsigned boot to prevent hashing beyond the
-+	 * mapped 4 KiB page boundary when pageSize (14) > PAGE_SHIFT (12).
++	 * pageSize 14 means 16 KiB hash units on 4 KiB pages: cs_validate_hash()
++	 * would hash a whole 16 KiB unit out of a single mapped 4 KiB page and
++	 * fault. Keep the blob detached and boot the cache as unsigned.
 +	 */
 +	if (cd != NULL && cd->pageSize > PAGE_SHIFT) {
 +		return 0;
 +	}
 +#endif
 +
- 	/*
+ 	tmp_blob.csb_cpu_type = cputype;
+ 	tmp_blob.csb_cpu_subtype = cpusubtype & ~CPU_SUBTYPE_MASK;
+ 	tmp_blob.csb_base_offset = base_offset;
 diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
+index db1d613..efd1699 100644
 --- a/osfmk/vm/vm_shared_region.c
 +++ b/osfmk/vm/vm_shared_region.c
-@@ -380,6 +380,13 @@ vm_shared_region_enter(
- 	sub_map = shared_region->sr_submap;
- 	assert(sub_map != VM_MAP_NULL);
+@@ -2279,6 +2279,16 @@ vm_shared_region_enter(
+ 		return KERN_FAILURE;
+ 	}
  
 +#if defined(ARM64_BOARD_CONFIG_SANTONI)
 +	/*
-+	 * Allow 16 KiB-signed iOS 16 dyld shared cache to execute on
-+	 * Santoni's 4 KiB Cortex-A53 translation granule without code-signing traps.
++	 * The 16 KiB-signed iOS 16 dyld shared cache executes from 4 KiB pages
++	 * on Santoni. Disable code-signing enforcement on the region's sub map
++	 * so those pages are mapped executable without per-page 16 KiB hash
++	 * validation (which is skipped in ubc_cs_blob_add()).
 +	 */
-+	vm_map_cs_enforcement_set(sub_map, false);
++	vm_map_cs_enforcement_set(vm_shared_region_vm_map(shared_region), false);
 +#endif
 +
- 	/*
- 	 * Map the submap into the task's map.
- 	 */
+ 	kr = KERN_SUCCESS;
+ 	/* no need to lock since this data is never modified */
+ 	sr_address = (vm_map_offset_t)shared_region->sr_base_address;

@@ -42,7 +42,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,903 @@
+@@ -0,0 +1,1047 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -64,7 +64,13 @@ new file mode 100644
 + * "userdata") and exposed as the BSD disk emmcroot0 (remmcroot0 character
 + * device), 512-byte logical sectors. Root on it with rd=emmcroot0. Writes
 + * are refused unless boot-arg emmcrw=1 is given, and always stay inside the
-+ * selected partition.
++ * selected partition. The primary GPT header and its partition entry array
++ * are verified with their IEEE 802.3 CRC32 before any entry is trusted.
++ *
++ * The "system" partition is parsed as well, but only to give the persistent
++ * console log (xnu/patches/0143) a private 8193-sector area at its start:
++ * santoni_sdhci_write_log_blocks() is the one write path that needs neither
++ * emmcrw=1 nor the userdata fence, and it refuses anything outside that area.
 + */
 +#if defined(ARM64_BOARD_CONFIG_SANTONI)
 +
@@ -150,6 +156,12 @@ new file mode 100644
 +/* --------------------------------------------------------------- transfers */
 +#define SDHCI_BLOCK             512u
 +#define BOUNCE_SIZE             (1u << 20)
++/*
++ * SYSTEM partition log area used by the persistent console log
++ * (bsd/dev/santoni_sdhci.c + xnu/patches/0143): sector 0 carries the
++ * santoni_log_header, sectors 1..8192 the 4 MiB circular ring.
++ */
++#define SANTONI_LOG_SYSTEM_BLOCKS 8193u
 +#define DMA_BOUNCE              0x0000
 +#define CMD_TIMEOUT_NS          (100ull * NSEC_PER_MSEC)
 +#define DATA_TIMEOUT_NS         (2ull * NSEC_PER_SEC)
@@ -159,7 +171,8 @@ new file mode 100644
 +	vm_offset_t dma;                        /* kernel VA of the bounce buffer */
 +	uint64_t dma_pa;
 +	char part[64];                          /* GPT partition name */
-+	uint64_t first_block, nblocks;          /* partition, in 512-byte sectors */
++	uint64_t first_block, nblocks;          /* root partition, 512-byte sectors */
++	uint64_t sys_first_block, sys_nblocks;  /* "system" partition, 512-byte sectors */
 +	uint32_t secsize;                       /* logical sector size for BSD */
 +	bool writable;                          /* boot-arg emmcrw=1 */
 +	int bmajor, cmajor;
@@ -601,12 +614,64 @@ new file mode 100644
 +	return EPERM;
 +}
 +
++/*
++ * UEFI 2.8 GPT header (section 5.3.1), 92 bytes on the wire. Only used to
++ * decode the fields we validate; the CRC32 is computed over the raw bytes.
++ */
++struct santoni_gpt_header {
++	char signature[8];                      /* "EFI PART" */
++	uint32_t revision;
++	uint32_t header_size;                   /* 92 */
++	uint32_t header_crc32;                  /* CRC32 with this field zeroed */
++	uint32_t reserved;
++	uint64_t my_lba;
++	uint64_t alternate_lba;
++	uint64_t first_usable_lba;
++	uint64_t last_usable_lba;
++	uint8_t disk_guid[16];
++	uint64_t partition_entry_lba;
++	uint32_t num_partition_entries;
++	uint32_t sizeof_partition_entry;         /* 128 */
++	uint32_t partition_entry_array_crc32;
++} __attribute__((packed));
++
++/*
++ * IEEE 802.3 CRC32 (reflected, polynomial 0xEDB88320). Matches the UEFI
++ * specification, tests/test_gpt_parser.c and every other GPT implementation.
++ */
++static uint32_t
++santoni_crc32(const uint8_t *data, size_t len)
++{
++	uint32_t crc = 0xFFFFFFFFu;
++
++	for (size_t i = 0; i < len; i++) {
++		crc ^= data[i];
++		for (int bit = 0; bit < 8; bit++) {
++			crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
++		}
++	}
++	return ~crc;
++}
++
++/*
++ * Validate the GPT and look up both partitions we care about:
++ *  - "userdata" (or the emmcroot= override) becomes the BSD disk emmcroot0
++ *    (se.first_block / se.nblocks),
++ *  - "system" is kept only as the persistent console log area
++ *    (se.sys_first_block / se.sys_nblocks); it is intentionally not exposed
++ *    as a BSD device.
++ * The primary header is verified with its own CRC32 (header_crc32 zeroed) and
++ * the partition entry array with the CRC32 over num_entries * entry_size.
++ */
 +static int
 +santoni_sdhci_find_partition(const char *want)
 +{
 +	const uint8_t *b = (const uint8_t *)(se.dma + DMA_BOUNCE);
++	struct santoni_gpt_header hdr;
++	uint8_t hdr_raw[SDHCI_BLOCK];
 +	uint64_t entry_lba;
-+	uint32_t nent, esz;
++	uint32_t nent, esz, entry_bytes, entry_blocks;
++	bool root_found = false;
 +	int error;
 +
 +	error = santoni_sdhci_read_blocks(1, 1, (void *)b);
@@ -617,21 +682,43 @@ new file mode 100644
 +		printf("SANTONI SDHCI: eMMC has no GPT\n");
 +		return ENXIO;
 +	}
-+	memcpy(&entry_lba, b + 72, 8);
-+	memcpy(&nent, b + 80, 4);
-+	memcpy(&esz, b + 84, 4);
-+	if (esz != 128 || nent == 0 || nent * esz > BOUNCE_SIZE) {
++	memcpy(&hdr, b, sizeof(hdr));
++	if (hdr.header_size < sizeof(hdr) || hdr.header_size > SDHCI_BLOCK) {
++		printf("SANTONI SDHCI: bad GPT header size %u\n", hdr.header_size);
++		return EINVAL;
++	}
++	/* header_crc32 lives at offset 16 of the header */
++	memcpy(hdr_raw, b, SDHCI_BLOCK);
++	memset(hdr_raw + 16, 0, 4);
++	if (santoni_crc32(hdr_raw, hdr.header_size) != hdr.header_crc32) {
++		printf("SANTONI SDHCI: GPT header CRC32 mismatch "
++		    "(stored 0x%08x)\n", hdr.header_crc32);
++		return EBADMSG;
++	}
++
++	esz = hdr.sizeof_partition_entry;
++	nent = hdr.num_partition_entries;
++	if (esz != 128 || nent == 0 || nent > BOUNCE_SIZE / esz) {
 +		printf("SANTONI SDHCI: unsupported GPT entries %u x %u\n", nent, esz);
 +		return ENXIO;
 +	}
-+	error = santoni_sdhci_read_blocks(entry_lba,
-+	    (nent * esz + SDHCI_BLOCK - 1) / SDHCI_BLOCK, (void *)b);
++	entry_lba = hdr.partition_entry_lba;
++	entry_bytes = nent * esz;
++	entry_blocks = (entry_bytes + SDHCI_BLOCK - 1) / SDHCI_BLOCK;
++	error = santoni_sdhci_read_blocks(entry_lba, entry_blocks, (void *)b);
 +	if (error) {
 +		return error;
 +	}
++	if (santoni_crc32(b, entry_bytes) != hdr.partition_entry_array_crc32) {
++		printf("SANTONI SDHCI: GPT entry array CRC32 mismatch "
++		    "(stored 0x%08x)\n", hdr.partition_entry_array_crc32);
++		return EBADMSG;
++	}
++
 +	for (uint32_t i = 0; i < nent; i++) {
-+		const uint8_t *e = b + i * esz;
++		const uint8_t *e = b + (uint64_t)i * esz;
 +		char name[37];
++		uint64_t first, last;
 +		unsigned c;
 +
 +		for (c = 0; c < 36; c++) {
@@ -642,22 +729,71 @@ new file mode 100644
 +			name[c] = (char)ch;
 +		}
 +		name[c] = 0;
-+		if (strcmp(name, want) != 0) {
++		if (c == 0) {
 +			continue;
 +		}
-+		uint64_t first, last;
-+
 +		memcpy(&first, e + 32, 8);
 +		memcpy(&last, e + 40, 8);
 +		if (last < first) {
++			printf("SANTONI SDHCI: GPT entry \"%s\" has inverted "
++			    "bounds 0x%llx..0x%llx\n", name,
++			    (unsigned long long)last, (unsigned long long)first);
 +			return ENXIO;
 +		}
-+		se.first_block = first;
-+		se.nblocks = last - first + 1;
-+		return 0;
++		if (strcmp(name, "system") == 0) {
++			se.sys_first_block = first;
++			se.sys_nblocks = last - first + 1;
++			continue;
++		}
++		if (strcmp(name, want) == 0) {
++			se.first_block = first;
++			se.nblocks = last - first + 1;
++			root_found = true;
++		}
 +	}
-+	printf("SANTONI SDHCI: no GPT partition named \"%s\"\n", want);
-+	return ENOENT;
++	if (!root_found) {
++		printf("SANTONI SDHCI: no GPT partition named \"%s\"\n", want);
++		return ENOENT;
++	}
++	return 0;
++}
++
++/*
++ * Raw sector writes for the persistent console log flusher
++ * (xnu/patches/0143). This is the only write path that does not require
++ * boot-arg emmcrw=1 and it is fenced hard to the SYSTEM partition log area:
++ * sectors [sys_first_block, sys_first_block + 8193), which can only ever
++ * touch the 36-byte header and the 4 MiB ring - never a filesystem.
++ */
++int santoni_sdhci_write_log_blocks(uint64_t lba, uint32_t count,
++    const void *buf);
++
++int
++santoni_sdhci_write_log_blocks(uint64_t lba, uint32_t count, const void *buf)
++{
++	int error;
++
++	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
++		return EINVAL;
++	}
++	if (se.sys_nblocks < SANTONI_LOG_SYSTEM_BLOCKS ||
++	    lba < se.sys_first_block ||
++	    lba + (uint64_t)count >
++	    se.sys_first_block + SANTONI_LOG_SYSTEM_BLOCKS ||
++	    lba > UINT32_MAX) {
++		printf("SANTONI SDHCI: refusing log write of %u blocks at 0x%llx "
++		    "(SYSTEM log is 0x%llx..0x%llx)\n", count,
++		    (unsigned long long)lba,
++		    (unsigned long long)se.sys_first_block,
++		    (unsigned long long)(se.sys_first_block +
++		    SANTONI_LOG_SYSTEM_BLOCKS - 1));
++		return EPERM;
++	}
++
++	lck_mtx_lock(&santoni_sdhci_lock);
++	error = sdhci_write_pio((uint32_t)lba, count, buf);
++	lck_mtx_unlock(&santoni_sdhci_lock);
++	return error;
 +}
 +
 +static int
@@ -922,6 +1058,14 @@ new file mode 100644
 +	devfs_make_node(makedev(se.cmajor, 0), DEVFS_CHAR, UID_ROOT,
 +	    GID_OPERATOR, 0640, "remmcroot0");
 +	se.ready = true;
++	if (se.sys_nblocks) {
++		printf("SANTONI SDHCI: \"system\" first block 0x%llx, %llu MiB%s\n",
++		    (unsigned long long)se.sys_first_block,
++		    (unsigned long long)(se.sys_nblocks * SDHCI_BLOCK >> 20),
++		    se.sys_nblocks >= SANTONI_LOG_SYSTEM_BLOCKS ?
++		    " (console log area available)" :
++		    " (too small for the console log)");
++	}
 +	printf("SANTONI SDHCI: \"%s\" first block 0x%llx, %llu MiB, %s\n",
 +	    se.part, (unsigned long long)se.first_block,
 +	    (unsigned long long)(se.nblocks * SDHCI_BLOCK >> 20),

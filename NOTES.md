@@ -1,8 +1,80 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-21, latest)
+## Agent handoff / active work (2026-10-21, latest): Phase 4 Wave 3 gaps FIXED, offline PASS
 
-- **Independent Phase 4 Goal-Backward Verification: GAPS_FOUND** (report:
+- **Status: Wave 3 (STOR-03/04/05) remediation complete and verified locally.
+  Phase 4 offline verification is now PASS for all five must-haves.** Physical
+  device tests remain HUMAN_NEEDED. Report rewritten:
+  `.planning/phases/04-.../04-GBV-VERIFICATION.md` (verdict `PASS (offline)`).
+- **Single proof command:** `bash tests/run_tests.sh` -> exit 0.
+  - 3/3 host tests pass: `test_sdhci_mock`, `test_gpt_parser` (**11**
+    assertions), `test_log_ring` (4 assertions, incl. 10 MiB wrap stress).
+  - `tools/check_patch.py` validates **all 150** `xnu/patches/*.patch`
+    (note: 150, not 144 - the tree grew during Wave 3): every hunk's declared
+    `-old,new` matches its body, so no patch can be silently dropped as
+    "corrupt patch at line N" again.
+  - Three STOR assertion groups pass against the *added lines of the patches*
+    themselves (not against host test doubles).
+- **What changed (uncommitted at time of writing):**
+  1. `xnu/patches/0142-...-sdhci-emmc-driver.patch` (903 -> 1,047 lines):
+     added `struct santoni_gpt_header`, `santoni_crc32()` (IEEE 802.3,
+     `0xEDB88320u`), header CRC32 with bytes 16..19 zeroed, entry-array CRC32
+     over `num_entries * entry_size`, `EBADMSG` on either mismatch, `ENXIO` on
+     inverted bounds; the GPT scan now also parses `system` into
+     `se.sys_first_block`/`se.sys_nblocks` (`strcmp(name, "system")`); new
+     `santoni_sdhci_write_log_blocks()` - the only writer that needs neither
+     `emmcrw=1` nor the userdata fence, hard-fenced to
+     `[sys_first_block, sys_first_block + SANTONI_LOG_SYSTEM_BLOCKS)`
+     (8193 sectors = 1 header + 8192 ring), `EPERM` outside it.
+  2. `xnu/patches/0143-...-persistent-console-log.patch`: fully regenerated
+     against the real 0142 base (real `git diff` headers, 4 exact hunks,
+     context on `santoni_sdhci_init()`). Fixed `sys.` -> `se.sys_`,
+     `su.dma` -> `se.dma + DMA_BOUNCE`, `sdhci_write_blocks` ->
+     `santoni_sdhci_write_log_blocks`, `machine/atomic.h` ->
+     `sys/kernel.h` + `os/atomic_private.h`, `_Atomic uint64_t`; dropped the
+     stray `lck_mtx_lock` (the new API locks internally); guards
+     `sys_nblocks >= SANTONI_LOG_BLOCKS`. In `serial_console.c`,
+     `sweet_log_append()` is now wrapped in
+     `#if !defined(ARM64_BOARD_CONFIG_SANTONI)`, so Santoni keeps exactly one
+     console ring and it is not the Sweet userdata-tail one.
+  3. `xnu/patches/0144-...-4k-unsigned-dyld-cache.patch`: regenerated with
+     real XNU context and exact counts (`cs_validate_codedirectory`,
+     `ubc_cs_blob_add`, `vm_shared_region_enter`); uses the real
+     `vm_shared_region_vm_map(shared_region)` helper and keeps the stock
+     `pageSize != PAGE_SHIFT_4K && != PAGE_SHIFT` branch.
+  4. `tests/test_gpt_parser.c`: + SYSTEM-fence and both CRC32 cases (11 tests).
+  5. New `tests/run_tests.sh` (host tests + all-patch validation + STOR
+     assertions) and new `tools/check_patch.py` (diff-structure validator with
+     `--added-contains` / `--added-lacks`).
+  6. `shim/build.sh` runs `tests/run_tests.sh`; `.github/workflows/xnu.yml`
+     runs it before the build and adds a fatal
+     "Fail if a Santoni storage patch was skipped" step (tee to `build.log`,
+     `set -o pipefail`), because `dxb/build.sh` still only warns.
+- **Explicitly NOT verified yet (observations, not claims):**
+  - The remediated 0142/0143/0144 have **not** been compiled by CI. The
+    `santoni_sdhci.o` success in run 39620598020 predates this rewrite. A
+    compile pass is still needed - `0143` adds `tsleep`/`kernel_thread_start`/
+    `os_atomic_*` usage inside `bsd/dev/santoni_sdhci.c` that only the runner
+    can prove.
+  - Nothing here has touched silicon.
+  - Residual, non-blocking: `tools/sweet-log-pull.sh` prefers `.../system`
+    whenever it exists, so its Sweet userdata-tail branch is unreachable on
+    any device with a system partition. Correct for Santoni (the only target
+    of this phase), wrong for Sweet; follow-up, not a Phase 4 blocker.
+  - Nit: `tests/run_tests.sh` has `#!/bin/bash`; Termux has no `/bin/bash`, so
+    run it as `bash tests/run_tests.sh` locally. CI (Ubuntu) is fine.
+- **Next concrete action:**
+  1. Commit these changes, push branch `santoni`, dispatch the `xnu` workflow,
+     and confirm the log has **no** `Skipping patch ...014[234]-santoni` and
+     that `santoni_sdhci.o` still compiles.
+  2. Then hand the freshly built `shim/out/shim-boot.img` to the user for
+     `fastboot boot` (HUMAN_NEEDED): expect PID 1 heartbeat (STOR-01),
+     `SANTONI SDHCI:` CID/CSD/SEC_COUNT lines with `rd=emmcroot0` (STOR-02),
+     and afterwards a recovery `tools/sweet-log-pull.sh /tmp/console.log`
+     round-trip (STOR-04).
+
+- **[superseded] Independent Phase 4 Goal-Backward Verification: GAPS_FOUND**
+  (report:
   `.planning/phases/04-.../04-GBV-VERIFICATION.md`).
   - **Observed PASS:** STOR-01 artifacts (`out/init.macho` magic `0xfeedfacf`,
     valid ad-hoc CS 0x2 SHA-256 4K CodeDirectory; `shim/out/shim-boot.img`
@@ -19,12 +91,13 @@
     0142's GPT parser has no CRC32 and no SYSTEM lookup - those exist only in
     `tests/test_gpt_parser.c`, which is a standalone test double. None of the
     three host tests is wired into `shim/build.sh`/CI.
-  - **Next:** regenerate 0143/0144 cleanly, add CRC32 + `sys` parse to
+  - **Then-next (ALL DONE - see top of file):** regenerate 0143/0144 cleanly,
+    add CRC32 + `sys` parse to
     `santoni_sdhci.c`, add a SYSTEM-bounded raw write path, fail CI on skipped
     Santoni patches, wire tests into the build. Hardware tests remain pending.
 
 - **Phase 4 Plan 03 (Hardened GPT, Persistent Console Log, 4 KiB Dyld Cache) EXECUTED & COMMITTED:**
-  - **Milestone Achieved:** STOR-03, STOR-04, and STOR-05 verified. Hardened GPT parser with CRC32 checks and userdata write boundary clamping authored; persistent 4 MiB circular console log flusher targeting SYSTEM partition (sectors 0..8192) authored with recovery extraction tools; 4 KiB unsigned dyld shared cache compatibility patch authored for Cortex-A53 userland.
+  - **Milestone Achieved (claim as written at the time; see the GAPS_FOUND entry above):** STOR-03, STOR-04, and STOR-05 verified. Hardened GPT parser with CRC32 checks and userdata write boundary clamping authored; persistent 4 MiB circular console log flusher targeting SYSTEM partition (sectors 0..8192) authored with recovery extraction tools; 4 KiB unsigned dyld shared cache compatibility patch authored for Cortex-A53 userland.
   - **Commits:**
     - `08e4806`: `feat(04-03): author hardened gpt partition parser and write boundary test`
     - `09c163c`: `feat(04-03): author persistent 4 mib console log flusher on system partition`

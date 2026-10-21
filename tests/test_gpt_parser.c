@@ -220,6 +220,32 @@ sdhci_assert_write_bounds(uint64_t lba, uint32_t count)
 }
 
 /*
+ * Mirror of santoni_sdhci_write_log_blocks() (0142/0143).
+ *
+ * The persistent console log bypasses the emmcrw=1 userdata gate, so its
+ * fence is the only thing standing between the flusher and the mounted HFS+
+ * root: sector 0 (header) plus the 4 MiB ring, i.e. exactly 8193 sectors at
+ * the start of SYSTEM, and only when SYSTEM really is at least that large.
+ */
+#define SANTONI_LOG_BLOCKS 8193
+
+static int
+sdhci_assert_log_bounds(uint64_t lba, uint32_t count)
+{
+	if (count == 0) {
+		return EINVAL;
+	}
+	if (sys.nblocks < SANTONI_LOG_BLOCKS) {
+		return EPERM;
+	}
+	if (lba < sys.first_block ||
+	    (lba + count) > (sys.first_block + SANTONI_LOG_BLOCKS)) {
+		return EPERM;
+	}
+	return 0;
+}
+
+/*
  * Helper to build valid synthetic GPT table on fake_disk
  */
 static void
@@ -262,6 +288,27 @@ build_synthetic_gpt(void)
 	hdr->num_partition_entries = 4;
 	hdr->sizeof_partition_entry = (uint32_t)sizeof(struct gpt_entry);
 	hdr->partition_entry_array_crc32 = array_crc;
+	hdr->header_crc32 = 0;
+	hdr->header_crc32 = crc32_calculate((const uint8_t *)hdr, hdr->header_size);
+}
+
+/* Rebuild the synthetic disk with a SYSTEM partition exactly as large as the
+ * console-log area (8193 sectors) and userdata after it. */
+static void
+build_synthetic_gpt_log(void)
+{
+	struct gpt_entry *entries;
+	struct gpt_header *hdr;
+
+	build_synthetic_gpt();
+	entries = (struct gpt_entry *)(fake_disk + (2 * SDHCI_BLOCK));
+	entries[0].starting_lba = 4096;
+	entries[0].ending_lba = 4096 + SANTONI_LOG_BLOCKS - 1;
+	entries[1].starting_lba = 12288;
+	entries[1].ending_lba = 20000;
+	hdr = (struct gpt_header *)(fake_disk + (1 * SDHCI_BLOCK));
+	hdr->partition_entry_array_crc32 =
+	    crc32_calculate((const uint8_t *)entries, 4 * sizeof(struct gpt_entry));
 	hdr->header_crc32 = 0;
 	hdr->header_crc32 = crc32_calculate((const uint8_t *)hdr, hdr->header_size);
 }
@@ -320,27 +367,49 @@ main(void)
 	assert(sdhci_assert_write_bounds(6000, 0) == EINVAL);      /* Zero count */
 	printf("  [PASS] Out-of-bounds writes strictly fenced with EPERM\n");
 
-	/* Test 5: Corrupt signature */
+	/* Test 5: SYSTEM console-log fence (santoni_sdhci_write_log_blocks) */
+	build_synthetic_gpt_log();
+	assert(sdhci_find_partition("system", &sys) == 0);
+	assert(sys.first_block == 4096);
+	assert(sys.nblocks == SANTONI_LOG_BLOCKS);
+	uint64_t log_lba = sys.first_block;
+	assert(sdhci_assert_log_bounds(log_lba, 1) == 0);              /* header sector */
+	assert(sdhci_assert_log_bounds(log_lba + 1, 8192) == 0);       /* whole 4 MiB ring */
+	assert(sdhci_assert_log_bounds(log_lba + 8192, 1) == 0);       /* last ring sector */
+	assert(sdhci_assert_log_bounds(log_lba, SANTONI_LOG_BLOCKS) == 0);
+	assert(sdhci_assert_log_bounds(log_lba - 1, 1) == EPERM);      /* before SYSTEM */
+	assert(sdhci_assert_log_bounds(0, 1) == EPERM);                /* GPT / bootloader */
+	assert(sdhci_assert_log_bounds(log_lba + 1, 8193) == EPERM);   /* past the ring */
+	assert(sdhci_assert_log_bounds(log_lba, 0) == EINVAL);         /* zero count */
+
+	/* A SYSTEM partition smaller than 8193 sectors disables the log */
+	build_synthetic_gpt();
+	assert(sdhci_find_partition("system", &sys) == 0);
+	assert(sys.nblocks < SANTONI_LOG_BLOCKS);
+	assert(sdhci_assert_log_bounds(sys.first_block, 1) == EPERM);
+	printf("  [PASS] SYSTEM log writes fenced to exactly 8193 sectors, EPERM elsewhere\n");
+
+	/* Test 6: Corrupt signature */
 	build_synthetic_gpt();
 	fake_disk[1 * SDHCI_BLOCK] = 'X'; /* Invalidate "EFI PART" */
 	assert(sdhci_find_partition("userdata", &dummy) == ENXIO);
 	printf("  [PASS] Corrupted signature returns ENXIO\n");
 
-	/* Test 6: Corrupt header CRC32 */
+	/* Test 7: Corrupt header CRC32 */
 	build_synthetic_gpt();
 	struct gpt_header *hdr = (struct gpt_header *)(fake_disk + (1 * SDHCI_BLOCK));
 	hdr->header_crc32 ^= 0x12345678;
 	assert(sdhci_find_partition("userdata", &dummy) == EBADMSG);
 	printf("  [PASS] Corrupted header CRC32 returns EBADMSG\n");
 
-	/* Test 7: Corrupt partition entries CRC32 */
+	/* Test 8: Corrupt partition entries CRC32 */
 	build_synthetic_gpt();
 	hdr = (struct gpt_header *)(fake_disk + (1 * SDHCI_BLOCK));
 	hdr->partition_entry_array_crc32 ^= 0x87654321;
 	assert(sdhci_find_partition("userdata", &dummy) == EBADMSG);
 	printf("  [PASS] Corrupted partition array CRC32 returns EBADMSG\n");
 
-	/* Test 8: Inverted LBA bounds (ending < starting) */
+	/* Test 9: Inverted LBA bounds (ending < starting) */
 	build_synthetic_gpt();
 	struct gpt_entry *entries = (struct gpt_entry *)(fake_disk + (2 * SDHCI_BLOCK));
 	entries[1].starting_lba = 20000;
