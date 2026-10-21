@@ -40,7 +40,15 @@ truncate -s "$size" out/Image
 # newc cpio -> diagnostics.
 RAMDISK="out/ramdisk.bin"
 if [ -n "$PAYLOAD" ]; then
-	RAMDISK="$PAYLOAD"
+	magic=$(python3 -c "import sys; f=open(sys.argv[1],'rb'); b=f.read(4); print(b.hex())" "$PAYLOAD" 2>/dev/null || true)
+	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
+		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
+		python3 ../tools/mkadt.py out/santoni.adt
+		python3 ../tools/mkpayload.py "$PAYLOAD" out/santoni.adt out/payload.bin
+		RAMDISK="out/payload.bin"
+	else
+		RAMDISK="$PAYLOAD"
+	fi
 else
 	if command -v cpio >/dev/null 2>&1; then
 		(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)

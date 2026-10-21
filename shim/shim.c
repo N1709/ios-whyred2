@@ -196,6 +196,28 @@ void shim_main(uint64_t dtb)
 	con_str("LOADER", why);
 	con_skip();
 
+	/*
+	 * If loader_boot returns an error other than "no initrd in /chosen",
+	 * a payload was provided but failed validation. Halt so the error
+	 * remains clearly displayed on screen rather than cleared by benchmarks.
+	 */
+	if (why) {
+		int is_no_initrd = 1;
+		const char *noid = "no initrd in /chosen";
+		for (int i = 0; noid[i] || why[i]; i++) {
+			if (noid[i] != why[i]) {
+				is_no_initrd = 0;
+				break;
+			}
+		}
+		if (!is_no_initrd) {
+			con_str("HALT", "payload load failed");
+			for (;;)
+				__asm__ volatile("wfe");
+		}
+		delay_ms(1000);
+	}
+
 	stage = "fill off";
 	uint64_t fill_off = ticks_fill(RED);
 	uint64_t mem_off = ticks_mem();
