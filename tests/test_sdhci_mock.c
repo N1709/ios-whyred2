@@ -93,8 +93,15 @@
 #define SDHCI_INT_BRR          0x00000020u  /* buffer read ready */
 #define SDHCI_INT_ERR          0x00008000u
 
+#define SDHCI_HOST_VERSION     0xfe
+#define SDHCI_CLOCK_INT_EN     0x0001u
+#define SDHCI_CLOCK_INT_STABLE 0x0002u
+#define SDHCI_CLOCK_CARD_EN    0x0004u
+
 /* ------------------------------------------ Qualcomm MSM v4 core registers */
 
+#define CORE_MCI_VERSION       0x50
+#define CORE_GENERICS          0x70
 #define CORE_HC_MODE           0x78
 #define CORE_HC_MODE_EN        0x00000001u
 #define CORE_FF_CLK_SW_RST_DIS 0x00002000u
@@ -147,6 +154,7 @@ static struct mock {
 	unsigned clock_writes;
 	unsigned reset_writes;
 	uint16_t reset_value;
+	int hc_mode_write_ignored;      /* HC_MODE_EN never latches */
 	uint16_t blk_size;
 	uint16_t blk_count;
 	uint16_t tr_mode;
@@ -408,7 +416,7 @@ mock_hc_write(uint32_t off, uint32_t val)
 		mock_hc[off] = 0;       /* reset self-clears when complete */
 		break;
 	case SDHCI_CLOCK_CONTROL:
-		m.clock_writes++;       /* the driver must never write this */
+		m.clock_writes++;       /* the default hand-off must need none */
 		mock_wr16(off, (uint16_t)val);
 		break;
 	default:
@@ -466,30 +474,62 @@ core_rd(uint32_t off)
 static inline void
 core_wr(uint32_t off, uint32_t val)
 {
+	if (off == CORE_HC_MODE && m.hc_mode_write_ignored) {
+		return;
+	}
 	mock_core[off] = (uint8_t)val;
 	mock_core[off + 1] = (uint8_t)(val >> 8);
 	mock_core[off + 2] = (uint8_t)(val >> 16);
 	mock_core[off + 3] = (uint8_t)(val >> 24);
 }
 
-/* ------------------------------------------------------------ driver logic */
+/* The vendor core answers only while its clock branch is on. */
+static int
+sdhci_core_check(void)
+{
+	uint32_t mci_version = core_rd(CORE_MCI_VERSION);
+
+	if (mci_version == 0 || mci_version == 0xffffffffu) {
+		return ENXIO;
+	}
+	return 0;
+}
 
 /*
- * Take the controller over from the bootloader: verify the vendor core is in
- * HC mode with the feedback-clock software reset disabled, then reset only the
- * command and data paths. SDHCI_RESET_ALL (0x01) would wipe the core clocks
- * that LK programmed through GCC, and CLOCK_CONTROL (0x2C) is never written.
+ * LK leaves the core in legacy MCI mode (HC_MODE 0x0), so the SDHCI window at
+ * +0x900 is not decoded until HC_MODE_EN | FF_CLK_SW_RST_DIS is written and
+ * read back. If bit 0 is write-only on the core, a live HC window is the proof
+ * that the switch happened.
  */
+static int
+sdhci_enter_hc_mode(void)
+{
+	const uint32_t want = CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS;
+	uint32_t hc_mode = core_rd(CORE_HC_MODE);
+	uint16_t host_version;
+
+	if ((hc_mode & want) == want) {
+		return 0;
+	}
+	core_wr(CORE_HC_MODE, hc_mode | want);
+	hc_mode = core_rd(CORE_HC_MODE);
+	if (!(hc_mode & CORE_HC_MODE_EN)) {
+		host_version = hc_rd16(SDHCI_HOST_VERSION);
+		if (host_version == 0 || host_version == 0xffffu) {
+			return ENXIO;
+		}
+	}
+	return 0;
+}
+
+/* Take the controller over from the bootloader. */
 static int
 sdhci_take_over(void)
 {
-	uint32_t hc_mode = core_rd(CORE_HC_MODE);
+	uint16_t clk;
 
-	if (!(hc_mode & CORE_HC_MODE_EN)) {
+	if (sdhci_core_check() != 0 || sdhci_enter_hc_mode() != 0) {
 		return ENXIO;
-	}
-	if (!(hc_mode & CORE_FF_CLK_SW_RST_DIS)) {
-		core_wr(CORE_HC_MODE, hc_mode | CORE_FF_CLK_SW_RST_DIS);
 	}
 
 	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
@@ -509,6 +549,15 @@ sdhci_take_over(void)
 	hc_wr(SDHCI_INT_ENABLE, 0);
 	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
+
+	clk = hc_rd16(SDHCI_CLOCK_CONTROL);
+	if (!(clk & SDHCI_CLOCK_CARD_EN)) {
+		if ((clk & (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE)) !=
+		    (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE)) {
+			return ENXIO;
+		}
+		hc_wr16(SDHCI_CLOCK_CONTROL, clk | SDHCI_CLOCK_CARD_EN);
+	}
 	return 0;
 }
 
@@ -750,10 +799,17 @@ reset_mock(void)
 	memset(mock_hc, 0, sizeof(mock_hc));
 	memset(mock_core, 0, sizeof(mock_core));
 
-	/* LK hand-off: vendor core in HC mode, feedback clock reset disabled,
-	 * 8-bit high-speed bus already selected. */
-	core_wr(CORE_HC_MODE, CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS);
+	/* LK hand-off: SDCC1 runs through the legacy MCI register set, so HC
+	 * mode is off and the standard window is not decoded yet. The legacy
+	 * path left the card clock running at a valid divider and the eMMC on
+	 * an 8-bit bus. */
+	core_wr(CORE_MCI_VERSION, 0x10000042u);          /* SUBSYS_MAJOR 1 */
+	core_wr(CORE_GENERICS, 0x20000000u);
+	core_wr(CORE_HC_MODE, 0x00000000u);
 	core_wr(CORE_PWRCTL_MASK, 0x00000000u);
+	mock_wr16(SDHCI_HOST_VERSION, 0x0002);            /* SDHCI 3.0 */
+	mock_wr16(SDHCI_CLOCK_CONTROL,
+	    SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE | SDHCI_CLOCK_CARD_EN);
 	mock_hc[SDHCI_HOST_CONTROL] = SDHCI_CTRL_8BITBUS | SDHCI_CTRL_DMA_MASK;
 
 	for (uint32_t b = 0; b < MOCK_CARD_BLOCKS; b++) {
@@ -782,11 +838,19 @@ test_registers(void)
 	assert(SDHCI_INT_STATUS == 0x30);
 
 	/* Qualcomm MSM v4 vendor core registers (sdhci_msm_mci_offset) */
+	assert(CORE_MCI_VERSION == 0x50);
+	assert(CORE_GENERICS == 0x70);
 	assert(CORE_HC_MODE == 0x78);
 	assert(CORE_PWRCTL_STATUS == 0xdc);
 	assert(CORE_PWRCTL_MASK == 0xe0);
 	assert(CORE_HC_MODE_EN == (1u << 0));
 	assert(CORE_FF_CLK_SW_RST_DIS == (1u << 13));
+
+	/* HC-mode takeover registers */
+	assert(SDHCI_HOST_VERSION == 0xfe);
+	assert(SDHCI_CLOCK_INT_EN == 0x1);
+	assert(SDHCI_CLOCK_INT_STABLE == 0x2);
+	assert(SDHCI_CLOCK_CARD_EN == 0x4);
 
 	/* One 0x1000 MMIO window maps core + HC (0x900) including its 0x500 */
 	assert(SDHCI_HC_OFFSET == 0x900);
@@ -805,11 +869,16 @@ static void
 test_take_over(void)
 {
 	reset_mock();
+	/* LK leaves the core in MCI mode: the driver performs the switch. */
+	assert(core_rd(CORE_HC_MODE) == 0);
 	assert(sdhci_take_over() == 0);
+	assert((core_rd(CORE_HC_MODE) &
+	    (CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS)) ==
+	    (CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS));
 	/* Only CMD|DATA reset, and only once. */
 	assert(m.reset_value == (SDHCI_RESET_CMD | SDHCI_RESET_DATA));
 	assert(m.reset_writes == 1);
-	/* CLOCK_CONTROL (0x2C) must never be written. */
+	/* A valid bootloader divider + open gate: 0x2C is not touched. */
 	assert(m.clock_writes == 0);
 	/* Command/data reset must not be RESET_ALL. */
 	assert((m.reset_value & SDHCI_RESET_ALL) == 0);
@@ -822,10 +891,36 @@ test_take_over(void)
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
 	assert(hc_rd16(SDHCI_BLOCK_SIZE) == 0);
 
-	/* Without HC_MODE_EN the core is not ours. */
+	/* A closed card-clock gate is reopened, divider left untouched. */
 	reset_mock();
-	core_wr(CORE_HC_MODE, 0);
+	mock_wr16(SDHCI_CLOCK_CONTROL,
+	    SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE);
+	assert(sdhci_take_over() == 0);
+	assert(m.clock_writes == 1);
+	assert(mock_rd16(SDHCI_CLOCK_CONTROL) ==
+	    (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE |
+	    SDHCI_CLOCK_CARD_EN));
+
+	/* No valid SDHCI divider at all: fail closed, RAM-disk boot survives. */
+	reset_mock();
+	mock_wr16(SDHCI_CLOCK_CONTROL, 0);
 	assert(sdhci_take_over() == ENXIO);
+
+	/* An unclocked vendor core is not ours. */
+	reset_mock();
+	core_wr(CORE_MCI_VERSION, 0xffffffffu);
+	assert(sdhci_take_over() == ENXIO);
+
+	/* HC_MODE_EN does not latch and the HC window is dead. */
+	reset_mock();
+	m.hc_mode_write_ignored = 1;
+	mock_wr16(SDHCI_HOST_VERSION, 0x0000);
+	assert(sdhci_take_over() == ENXIO);
+
+	/* Bit 0 is write-only but the switch worked: proceed. */
+	reset_mock();
+	m.hc_mode_write_ignored = 1;
+	assert(sdhci_take_over() == 0);
 }
 
 static void

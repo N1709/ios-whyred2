@@ -1,6 +1,50 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-21, latest): SDHCI consensus fixes (7 defects) in 0142/0143, offline PASS
+## Agent handoff / active work (2026-10-21, latest): SDHCI HC-mode takeover fixed in 0142, offline PASS
+
+- **Hardware evidence (Redmi 4X, shim-boot.img boot 22:57):** the non-fatal probe
+  worked - no panic, RAM-disk PID 1 alive, 1:1 console font - and printed
+  `SANTONI SDHCI: core not in HC mode (0x00000000)` then
+  `SANTONI: eMMC probe failed (6), continuing` (6 = ENXIO).
+- **Root cause (observation + vendor source):** `sdhci_take_over()` *assumed* LK
+  left `CORE_HC_MODE_EN` set at core+0x78. It reads 0. Linux never makes that
+  assumption: `sdhci_msm_init()` (resources/linux-msm89x7-7.1.3/
+  drivers/mmc/host/sdhci-msm.c:2782-2791) writes `HC_MODE_EN`, reads back, ORs
+  `FF_CLK_SW_RST_DIS` and writes again before touching the +0x900 window.
+  Consistent with LK driving SDCC1 through the legacy MCI register set.
+- **Fix (uncommitted):** 0142 `sdhci_take_over()` split into
+  `sdhci_core_check()` + `sdhci_enter_hc_mode()`:
+  - reads `CORE_MCI_VERSION` (0x50) / `CORE_GENERICS` (0x70) first; 0 or
+    all-ones => unclocked core / reset block, bail non-fatally;
+  - RMW-writes `(EN | FF_CLK_SW_RST_DIS)` into 0x78, read-back doubles as the
+    posted-write barrier (no delay needed; Linux proves the window answers
+    immediately);
+  - if bit 0 reads back 0, treat a live `HOST_VERSION` (0x900+0xFE) as proof the
+    switch happened and continue (some SDCC revisions do not make bit 0
+    readable) instead of failing;
+  - logs `CLOCK_CONTROL` / `PRESENT_STATE` / `POWER_CONTROL` / `HOST_CONTROL`;
+  - if `CARD_EN` is clear but the divider is valid (`INT_EN|INT_STABLE`), opens
+    only the card-clock gate (divider untouched); if the whole SDHCI clock path
+    is 0 (LK used MCI clocks), fails non-fatally with a clear message.
+  - Still never `RESET_ALL`, never reprograms a divider, no DMA.
+- **Verified offline:** `bash tests/run_tests.sh` exit 0; `test_sdhci_mock`
+  rebuilt to the LK/MCI hand-off (HC_MODE=0) plus 5 takeover cases (gate
+  reopen, dead clock, unclocked core, non-latching mode bit, write-only bit 0)
+  - all pass. 0142 hunk count recomputed (1245 added lines), check_patch exact.
+- **Next concrete actions (one CI run, then hardware):**
+  1. commit + CI; `fastboot boot` the new shim-boot.img.
+  2. Read the new log lines: `core MCI_VERSION/GENERICS`, `HC_MODE ... enabling`,
+     `HOST_VERSION`, `CLOCK_CONTROL`.
+  3. If `CLOCK_CONTROL` reports a valid divider, expect CMD13 + CID/CSD + CMD8
+     (SEC_COUNT) to succeed. If it reads 0x0000, LK left the core in MCI mode
+     with the SDHCI clock never programmed: next patch must read the GCC SDC1
+     RCG rate (or MCI_CLK at core+0x04) and program SDHCI CLOCK_CONTROL + DLL
+     before card init - do not guess a divider.
+  4. If `HOST_CONTROL` comes back without bit 5 (8-bit), the first CMD8 data
+     read will corrupt; then re-establish the bus width from EXT_CSD BUS_WIDTH
+     instead of assuming 8-bit.
+
+## Agent handoff (2026-10-21, previous): SDHCI consensus fixes (7 defects) in 0142/0143, offline PASS
 
 - **Consensus reached with Gemini: all 7 defects accepted and fixed (uncommitted
   at time of writing).** Changed:

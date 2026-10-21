@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,1120 @@
+@@ -0,0 +1,1245 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -64,11 +64,14 @@ new file mode 100644
 + * host controller registers at +0x900) and issues polled commands, one at a
 + * time, with PIO transfers through the SDHCI buffer port.
 + *
-+ * SDHCI_RESET_ALL (0x01) is never issued and SDHCI_CLOCK_CONTROL (0x2C) is
-+ * never written: both would undo the bootloader's clock setup and lock the
-+ * NoC. The driver only resets the command and data paths (0x06) and clears
-+ * the DMA select so transfers use the FIFO. All DMA-free, so the only cache
-+ * maintenance is the (conservative) clean/invalidate of the bounce buffer.
++ * SDHCI_RESET_ALL (0x01) is never issued: it would wipe the clock
++ * programming the bootloader did through GCC. The driver does switch the
++ * vendor core from the bootloader's legacy MCI mode into SDHCI HC mode
++ * (CORE_HC_MODE, core + 0x78) and only ever opens the SDHCI card-clock gate
++ * when the divider the bootloader left behind is already valid. It resets
++ * only the command and data paths (0x06) and clears the DMA select so
++ * transfers use the FIFO. All DMA-free, so the only cache maintenance is the
++ * (conservative) clean/invalidate of the bounce buffer.
 + *
 + * One GPT partition is found by name (boot-arg emmcroot=, default
 + * "userdata") and exposed as the BSD disk emmcroot0 (remmcroot0 character
@@ -118,7 +121,10 @@ new file mode 100644
 +#define SDHCI_PRESENT_STATE     0x24
 +#define SDHCI_HOST_CONTROL      0x28
 +#define SDHCI_CLOCK_CONTROL     0x2c
++#define SDHCI_CLOCK_INT_EN      0x0001
++#define SDHCI_CLOCK_INT_STABLE  0x0002
 +#define SDHCI_CLOCK_CARD_EN     0x0004
++#define SDHCI_POWER_CONTROL     0x29
 +#define SDHCI_SOFTWARE_RESET    0x2f
 +#define SDHCI_INT_STATUS        0x30
 +#define SDHCI_INT_ENABLE        0x34
@@ -155,6 +161,9 @@ new file mode 100644
 +
 +/* ------------------------------------------ Qualcomm MSM v4 core registers */
 +#define SDHCI_HC_OFFSET         0x900           /* HC base - core base */
++#define SDHCI_HOST_VERSION      0xfe
++#define CORE_MCI_VERSION        0x50            /* read-only core ID */
++#define CORE_GENERICS           0x70
 +#define CORE_HC_MODE            0x78
 +#define CORE_HC_MODE_EN         0x00000001u
 +#define CORE_FF_CLK_SW_RST_DIS  0x00002000u
@@ -514,27 +523,103 @@ new file mode 100644
 +}
 +
 +/*
-+ * Take the controller over from LK. Verify the vendor core is in HC mode with
-+ * the feedback-clock software reset disabled, then reset only the command and
-+ * data paths. SDHCI_CLOCK_CONTROL (0x2C) is only read for the log: writing it
-+ * (or issuing RESET_ALL) would wipe the clock configuration the bootloader
-+ * programmed through GCC.
++ * The vendor core answers only while its GCC clock branch is on.
++ * CORE_MCI_VERSION is a read-only ID register that reads 0x100000xx on a live
++ * SDCC v4 core; 0 or all-ones means the block is unclocked (or the access
++ * never reached it), and then no register in either window can be trusted.
++ */
++static int
++sdhci_core_check(void)
++{
++	uint32_t mci_version = core_rd(CORE_MCI_VERSION);
++	uint32_t generics = core_rd(CORE_GENERICS);
++
++	if (mci_version == 0 || mci_version == 0xffffffffu) {
++		printf("SANTONI SDHCI: vendor core does not answer "
++		    "(MCI_VERSION 0x%08x, GENERICS 0x%08x): GCC SDC1 clock "
++		    "branch off or block held in reset\n",
++		    mci_version, generics);
++		return ENXIO;
++	}
++	printf("SANTONI SDHCI: core MCI_VERSION 0x%08x GENERICS 0x%08x\n",
++	    mci_version, generics);
++	return 0;
++}
++
++/*
++ * LK drives SDCC1 through the legacy MCI register set and leaves HC_MODE
++ * (core + 0x78) at 0, so the standard SDHCI window at core + 0x900 is not
++ * decoded yet. Do not trust the bootloader for this: Linux
++ * (sdhci_msm_init(), drivers/mmc/host/sdhci-msm.c) performs the switch itself,
++ * writing HC_MODE_EN and then FF_CLK_SW_RST_DIS.
++ *
++ * CORE_HC_MODE is a plain flop in the core's always-on register block: the
++ * write has landed by the time the bus write is acknowledged, so the read-back
++ * both flushes the posted write and proves the bit. No settling delay is
++ * required before touching the +0x900 window. FF_CLK_SW_RST_DIS is written in
++ * the same access as HC_MODE_EN: it stops the core from resetting itself while
++ * the SDCLK feedback is not toggling, which would silently clear HC mode again.
++ */
++static int
++sdhci_enter_hc_mode(void)
++{
++	const uint32_t want = CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS;
++	uint32_t hc_mode = core_rd(CORE_HC_MODE);
++	uint16_t host_version;
++
++	if ((hc_mode & want) == want) {
++		return 0;
++	}
++
++	printf("SANTONI SDHCI: HC_MODE 0x%08x, enabling HC mode\n", hc_mode);
++	/* Keep any other vendor bits the bootloader left in the register. */
++	core_wr(CORE_HC_MODE, hc_mode | want);
++	hc_mode = core_rd(CORE_HC_MODE);
++
++	if (!(hc_mode & CORE_HC_MODE_EN)) {
++		/*
++		 * Some SDCC revisions do not make bit 0 readable. The switch
++		 * happened if the standard window at +0x900 now answers.
++		 */
++		host_version = hc_rd16(SDHCI_HOST_VERSION);
++		if (host_version == 0 || host_version == 0xffffu) {
++			printf("SANTONI SDHCI: HC mode did not latch "
++			    "(HC_MODE 0x%08x, HOST_VERSION 0x%04x)\n",
++			    hc_mode, host_version);
++			return ENXIO;
++		}
++		printf("SANTONI SDHCI: HC_MODE_EN reads back 0 but the HC "
++		    "window answers (HOST_VERSION 0x%04x)\n", host_version);
++	}
++	if (!(hc_mode & CORE_FF_CLK_SW_RST_DIS)) {
++		printf("SANTONI SDHCI: FF_CLK_SW_RST_DIS did not stick "
++		    "(HC_MODE 0x%08x)\n", hc_mode);
++	}
++	printf("SANTONI SDHCI: HC mode enabled (HC_MODE 0x%08x, "
++	    "HOST_VERSION 0x%04x)\n", hc_mode, hc_rd16(SDHCI_HOST_VERSION));
++	return 0;
++}
++
++/*
++ * Take the controller over from LK: enable the SDHCI register window, reset
++ * only the command and data paths, then verify that the clock and bus
++ * configuration the bootloader left behind is usable from the HC window.
 + */
 +static int
 +sdhci_take_over(void)
 +{
-+	uint32_t hc_mode = core_rd(CORE_HC_MODE);
 +	uint16_t clk;
++	uint8_t ctrl;
 +	uint64_t deadline;
++	int error;
 +
-+	if (!(hc_mode & CORE_HC_MODE_EN)) {
-+		printf("SANTONI SDHCI: core not in HC mode (0x%08x)\n", hc_mode);
-+		return ENXIO;
++	error = sdhci_core_check();
++	if (error) {
++		return error;
 +	}
-+	if (!(hc_mode & CORE_FF_CLK_SW_RST_DIS)) {
-+		printf("SANTONI SDHCI: enabling feedback clock (HC_MODE 0x%08x)\n",
-+		    hc_mode);
-+		core_wr(CORE_HC_MODE, hc_mode | CORE_FF_CLK_SW_RST_DIS);
++	error = sdhci_enter_hc_mode();
++	if (error) {
++		return error;
 +	}
 +
 +	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
@@ -550,19 +635,59 @@ new file mode 100644
 +	}
 +
 +	/* PIO: select the (unused) SDMA field, preserve bus width and speed. */
-+	hc_wr8(SDHCI_HOST_CONTROL,
-+	    (uint8_t)(hc_rd8(SDHCI_HOST_CONTROL) & ~SDHCI_CTRL_DMA_MASK));
++	ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	hc_wr8(SDHCI_HOST_CONTROL, (uint8_t)(ctrl & ~SDHCI_CTRL_DMA_MASK));
++	if (!(ctrl & SDHCI_CTRL_8BITBUS)) {
++		/*
++		 * LK identified the eMMC on an 8-bit bus. A freshly decoded HC
++		 * register bank reads back 1-bit here; forcing 8-bit could
++		 * corrupt the data phase if LK really used 4-bit, so only
++		 * report it: CMD13 and CMD9 still work, the first CMD8 read
++		 * will show whether the data path is set up.
++		 */
++		printf("SANTONI SDHCI: host bus width not 8-bit "
++		    "(HOST_CONTROL 0x%02x)\n", ctrl);
++	}
 +
 +	hc_wr(SDHCI_INT_ENABLE, 0);
 +	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
 +	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
 +
 +	clk = hc_rd16(SDHCI_CLOCK_CONTROL);
++	printf("SANTONI SDHCI: CLOCK_CONTROL 0x%04x PRESENT_STATE 0x%08x "
++	    "POWER_CONTROL 0x%02x\n", clk, hc_rd(SDHCI_PRESENT_STATE),
++	    hc_rd8(SDHCI_POWER_CONTROL));
++
 +	if (!(clk & SDHCI_CLOCK_CARD_EN)) {
-+		printf("SANTONI SDHCI: card clock not enabled by the bootloader "
-+		    "(0x%04x)\n", clk);
-+		return ENXIO;
++		if ((clk & (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE)) ==
++		    (SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE)) {
++			/*
++			 * The divider is valid and the internal clock is
++			 * stable, only the card-clock gate is closed. Open it
++			 * without touching the frequency select, so the SDCLK
++			 * rate LK programmed is preserved.
++			 */
++			clk |= SDHCI_CLOCK_CARD_EN;
++			hc_wr16(SDHCI_CLOCK_CONTROL, clk);
++			printf("SANTONI SDHCI: card clock gate was closed, "
++			    "enabled (CLOCK_CONTROL 0x%04x)\n", clk);
++		} else {
++			/*
++			 * No valid divider: LK ran SDCC1 entirely through the
++			 * MCI register set and the SDHCI clock path was never
++			 * programmed. Recovering it needs the GCC SDC1 rate
++			 * and the DLL sequence, which this driver does not own
++			 * yet; fail non-fatally and keep RAM-disk boot alive.
++			 */
++			printf("SANTONI SDHCI: SDHCI clock not configured "
++			    "(CLOCK_CONTROL 0x%04x): LK left the core in MCI "
++			    "mode, clock bring-up required\n", clk);
++			return ENXIO;
++		}
 +	}
++
++	printf("SANTONI SDHCI: takeover complete (HC_MODE 0x%08x)\n",
++	    core_rd(CORE_HC_MODE));
 +	return 0;
 +}
 +

@@ -70,7 +70,8 @@ python3 tools/check_patch.py "$P144" -q \
 echo "ok   0144 allows pageSize 14, skips 16 KiB hashing, disables CS enforcement"
 
 echo "== STOR-06: SDHCI consensus fixes (CMD12-after-BLK_CNT_EN, DATA_INHIBIT, ==="
-echo "==          recover, R2 reversal, SEC_COUNT fence, idempotent probe)      =="
+echo "==          recover, R2 reversal, SEC_COUNT fence, idempotent probe,      =="
+echo "==          HC-mode takeover from LK's legacy MCI mode)                  =="
 python3 tools/check_patch.py "$P142" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_recover(void)' \
@@ -79,6 +80,12 @@ python3 tools/check_patch.py "$P142" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:lba + (uint64_t)count > se.sec_count' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:static bool attempted;' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:int init_error;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_core_check(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_enter_hc_mode(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:core_wr(CORE_HC_MODE, hc_mode | want);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:HC_MODE_EN reads back 0' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:card clock gate was closed' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:core not in HC mode' \
 	--added-contains 'iokit/bsddev/IOKitBSDInit.cpp:santoni_sdhci_probe();' \
 	--added-contains 'iokit/bsddev/IOKitBSDInit.cpp:IOLog("SANTONI: eMMC probe failed' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:return sdhci_stop_transmission();'
