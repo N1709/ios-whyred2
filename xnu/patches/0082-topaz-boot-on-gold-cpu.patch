@@ -1,13 +1,11 @@
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -144,9 +144,20 @@
- 		}
- 		IOSleep(1);
- 	}
+@@ -147,5 +147,15 @@
 -	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
 -	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
 -		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
+-	}
 +	/*
 +	 * topaz: the ADT lists only the A73 (gold) cores and the shim boots xnu
 +	 * on gold CPU 0x100 (the silver cluster has no 16K granule).
@@ -22,10 +20,8 @@ diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 +		    topology->boot_cpu->phys_id, topology->boot_cpu->cpu_id);
 +	}
 +#endif
- 	}
  	for (unsigned int i = 0; i < topology->num_cpus; i++) {
- 		SweetCPU *cpu = __atomic_load_n(&sweet_cpus[i], __ATOMIC_ACQUIRE);
-@@ -231,10 +242,22 @@
+@@ -231,10 +241,22 @@
  	__builtin_arm_dsb(DSB_ISHST);
 +#if HAS_GIC_V3
  	__builtin_arm_wsr64("ICC_SGI1R_EL1", sgi);

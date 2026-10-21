@@ -2,13 +2,11 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-- **CI Run 39573529105 Diagnosis & Surgical Architecture Fix:**
-  - Build failed because `0085` was previously modified with extra Make/C++ hunks that broke when applied over the existing patch series.
-  - Architecture simplification:
-    1. Restored `0085-santoni-board-target.patch` to the working `a4f9f2b` baseline, simply adding `-DARM64_BOARD_CONFIG_SWEET` to `MACHINE_FLAGS_ARM64_SANTONI`.
-    2. Updated `0019-sweet-builtin-pthread.patch` and `0020-sweet-portable-aes-cbc.patch` Makefile conditionals from `ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)` to `ifneq ($(filter SWEET SANTONI,$(CURRENT_MACHINE_CONFIG)),)`, natively pulling in BearSSL crypto (SHA1, MD5, AES, SHA2big), HFS, and pthread includes and flags without any duplicated makefile rules.
-    3. Moved `SweetCPU.cpp` Santoni boot core check (allowing boot MPIDR 0) and GICv2 SGI signaling into `0082-topaz-boot-on-gold-cpu.patch` where `SweetCPU.cpp` is natively modified.
-    4. Verified patch application across all 145 patches via `git apply --check` (0 errors).
+- **CI Run 39575092980 Diagnosis & SweetCPU Syntax Fix:**
+  - Build made it through patch application and reached compilation, but failed in `SweetCPU.cpp:183`: `error: a type specifier is required for all declarations`.
+  - Cause: An extra closing brace `}` inside the `#if defined(ARM64_BOARD_CONFIG_SANTONI)` block in `0082-topaz-boot-on-gold-cpu.patch` prematurely terminated `SweetCPU::startAll()`, causing subsequent statements (`ml_cpu_init_completed()`, etc.) to be parsed as invalid top-level declarations.
+  - Also resolved whitespace difference in `0094-santoni-cortex-a53-codegen.patch` against `0085`.
+  - Fix: Removed extraneous `}` in `0082-topaz-boot-on-gold-cpu.patch`, aligned `0094` codegen patch, and verified complete compilation sequence.
 
 ### >>> UPDATE 2026-10-21: Historic Milestone Reached: Kernel Boot Marks 8-20 Verified on Physical Hardware! Resolution of NULL g_crypto_funcs Panic via Shared BearSSL / Staging Hooks <<<
 

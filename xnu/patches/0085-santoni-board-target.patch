@@ -54,7 +54,7 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
  # topaz: Cortex-A53/A73 are ARMv8.0 (no LSE atomics, RCpc, PAN or FP16). An explicit
  # -mcpu: -arch arm64 otherwise keeps clang's apple-m1 default and its LSE/RCpc features
  MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a53
-+MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI -DARM64_BOARD_CONFIG_SWEET 	-mcpu=cortex-a53
++MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI 	-mcpu=cortex-a53
  
  
  #
