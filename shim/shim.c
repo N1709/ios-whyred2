@@ -12,6 +12,7 @@
 #include "loader.h"
 #include "gic.h"
 #include "timer.h"
+#include "wdt.h"
 
 static volatile uint32_t irq_count;
 static volatile uint32_t last_intid;
@@ -190,6 +191,18 @@ void shim_main(uint64_t dtb)
 	uint64_t mmfr0 = rsr("id_aa64mmfr0_el1");
 	con_hex2("MMFR0", "lo=", (uint32_t)mmfr0, "tg16=", (mmfr0 >> 20) & 0xf);
 	con_hex2("MIDR", "el1=", (uint32_t)rsr("midr_el1"), "mpidr=", (uint32_t)rsr("mpidr_el1"));
+
+	/*
+	 * Report and stop the MSM8937 APPS watchdog before the payload copy.
+	 * LK itself never touches it, so this is the only chance to see what
+	 * the boot chain left armed.
+	 */
+	stage = "wdt";
+	struct wdt_state w0, w1;
+	uint32_t wdt_was = wdt_quiesce(&w0, &w1);
+	con_hex2("WDT", "en=", w0.en, "sts=", w0.sts);
+	con_hex2("WDT time", "bark=", w0.bark, "bite=", w0.bite);
+	con_hex2("WDT after", "en=", w1.en, "was=", wdt_was);
 	con_skip();
 
 	const char *why = loader_boot(dtb);

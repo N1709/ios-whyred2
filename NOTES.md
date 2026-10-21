@@ -1,5 +1,65 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## MSM8937 APPS watchdog: findings + shim handling (2026-10-21, latest)
+
+- **Question:** does santoni's LK/ABL leave the APPS watchdog armed when it jumps
+  to the shim/XNU, and how do we pet or disable it?
+- **Short answer (observation + inference, see caveats):** LK contains no APPS
+  watchdog code at all, so it neither arms nor disarms it; the Android kernel
+  arms it itself. The shim now reports the registers on screen and clears
+  `WDT_EN` both before the payload copy and immediately before `eret` to XNU,
+  because XNU has no Qualcomm watchdog driver yet.
+- **Register map (MSM8937 APPS/APCS watchdog, base `0x0b017000`, 4 KiB):**
+  | offset | name | use |
+  |---|---|---|
+  | `0x04` | `WDT0_RST` | write 1 = pet |
+  | `0x08` | `WDT0_EN` | bit0 enable, bit1 unmasked bark (`qcom,wakeup-enable`) |
+  | `0x0c` | `WDT0_STS` | `[20:1]` current count |
+  | `0x10` | `WDT0_BARK_TIME` | ticks (32.768 kHz sleep clock) |
+  | `0x14` | `WDT0_BITE_TIME` | ticks; bite is taken by the secure world -> SoC reset |
+  Sources: `resources/linux-msm89x7-7.1.3/arch/arm64/boot/dts/qcom/msm8937.dtsi`
+  (`watchdog@b017000`, `qcom,apss-wdt-qcs404` + `qcom,kpss-wdt`),
+  `resources/linux-msm89x7-7.1.3/drivers/watchdog/qcom-wdt.c`
+  (`reg_offset_data_kpss`), and the stock msm-3.18 driver
+  `drivers/soc/qcom/watchdog_v2.c` (`WDT0_RST/EN/STS/BARK/BITE =
+  0x04/0x08/0x0c/0x10/0x14`, default `WDT_HZ = 32765`). Note this is the
+  *kpss-wdt* layout, **not** the old `qcom,kpss-timer` block's
+  `0x38/0x40/0x44/0x4c/0x5c` layout (that one is the 0xb120000-style timer
+  block).
+- **LK/ABL behaviour:** Qualcomm LK (checked `efidroid/bootloader_lk`
+  `qcom/LA.BF64` and `qcom/LA.BR`, which has `platform/msm8916`/`msm8952`)
+  has no `wdt`/`watchdog` source file. `app/aboot/aboot.c:boot_linux()` calls
+  `platform_uninit()` just before the jump, and `platform/msm8952/platform.c`
+  `platform_uninit()` only calls `qtimer_uninit()`. So on this boot chain the
+  APPS watchdog is not armed by LK and not disabled by LK; the stock kernel
+  driver arms it at probe. Corroboration on hardware: phase-1/2 shim images
+  idled ~45 s at `RESET in 40s` without an AP watchdog bite, which the stock
+  Android settings (bark 11 s, pet 10 s, `qcom,wdt@b017000` in the msm-3.18
+  dtsi) would not allow if ABL had left it armed.
+  Caveat: santoni's actual ABL binary was not disassembled, and a boot chain
+  is PBL -> XBL -> ABL; this is inference from LK source + observed timing.
+  The new on-screen `WDT` lines turn it into a measurement on the next boot.
+- **Shim changes:** new `shim/wdt.h` + `shim/wdt.c` (`wdt_read`, `wdt_pet`,
+  `wdt_disable`, `wdt_quiesce`). `shim/shim.c` snapshots and quiesces before
+  `loader_boot()` and prints three lines:
+  `WDT en=... sts=...`, `WDT time bark=... bite=...`, `WDT after en=... was=...`.
+  `shim/loader.c` pets + clears `WDT_EN` again just before the D-cache clean
+  and the jump to XNU. `shim/build.sh` compiles/links `wdt.o`
+  and includes it in the ABS64 gate.
+- **Build/artifact:** host `gic_test`/`loader_test` pass; `out/Image`
+  208,528 B; repacked `shim/out/shim-boot.img` 16,398,336 B, SHA256
+  `059479dcf35108079f8d32a3cb8b68432de92f8287dab1834f3204875ccddfcb`  (same payload `out/payload.bin` = kernel 16,948,016 B SHA256
+  `6fecbf37c9d28f395d646eae4c6722f238ff8c6e6869510a58afb0d642e5e094`).
+- **Next action:** `fastboot boot shim/out/shim-boot.img`, photograph the red
+  WDT lines. Expected `en=00000000` (or `en=00000003` if ABL armed it) and
+  `after en=00000000`. If `after` is nonzero, the register is protected on the
+  NS path and we need the SCM secure-watchdog disable
+  (`SCM_SVC_BOOT`/`SCM_SVC_SEC_WDOG_DIS = 0x7`, arg 1, as in
+  `watchdog_v2.c:wdog_disable_set`) or a TZ-side change.
+- **Not done:** no SCM call in the shim yet (deliberately: only needed if the
+  register clear does not stick); no petting loop (we want it *off* until XNU
+  has a real Qualcomm WDT driver).
+
 ## Agent handoff / active work (2026-10-21, latest)
 
 - **CI Run 39584467087 SUCCESS & Boot Image 1cc2485 Packaged & Dispatched:**

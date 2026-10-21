@@ -18,17 +18,17 @@ CFLAGS="-target aarch64-linux-gnu -O2 -ffreestanding -nostdlib -fno-pic -fno-jum
 
 mkdir -p out
 
-for f in start.S shim.c console.c mmu.c fdt.c loader.c gic.c timer.c; do
+for f in start.S shim.c console.c mmu.c fdt.c loader.c gic.c timer.c wdt.c; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
 done
 
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$($READELF -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/gic.o out/timer.o | grep -c ABS64 || true)
+abs=$($READELF -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/gic.o out/timer.o out/wdt.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
 
 $LD -T shim.ld --build-id=none -N \
-	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/gic.o out/timer.o -o out/shim.elf
+	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/gic.o out/timer.o out/wdt.o -o out/shim.elf
 
 $OBJCOPY -O binary out/shim.elf out/Image
 

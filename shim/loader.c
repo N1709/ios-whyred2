@@ -11,6 +11,7 @@
 #include "console.h"
 #include "fdt.h"
 #include "loader.h"
+#include "wdt.h"
 
 #define BOOT_LINE_LENGTH	608
 #define PAGE_4K			0x1000UL
@@ -253,6 +254,14 @@ const char *loader_boot(uintptr_t dtb)
 	con_str("XNU", "jumping (fbcon clears screen)");
 
 #if !__STDC_HOSTED__
+	/*
+	 * Last chance to touch the APPS watchdog: the copy above can take a
+	 * while and XNU has no Qualcomm watchdog driver yet, so pet it once
+	 * and leave it disabled (LK leaves whatever it inherited untouched).
+	 */
+	wdt_pet();
+	wdt_disable();
+
 	/* Clean loaded segments and ADT from cache to PoC before jump */
 	uint64_t ctr;
 	__asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
