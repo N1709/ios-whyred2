@@ -6,6 +6,8 @@
   Phase 4 offline verification is now PASS for all five must-haves.** Physical
   device tests remain HUMAN_NEEDED. Report rewritten:
   `.planning/phases/04-.../04-GBV-VERIFICATION.md` (verdict `PASS (offline)`).
+  Commits `268cb9e` and `9a3eba3` pushed to `origin/santoni`.
+  CI build triggered: GitHub Actions run ID `39629129566`.
 - **Single proof command:** `bash tests/run_tests.sh` -> exit 0.
   - 3/3 host tests pass: `test_sdhci_mock`, `test_gpt_parser` (**11**
     assertions), `test_log_ring` (4 assertions, incl. 10 MiB wrap stress).
