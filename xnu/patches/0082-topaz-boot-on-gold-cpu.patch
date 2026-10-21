@@ -1,7 +1,15 @@
 diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 --- a/iokit/Kernel/arm/SweetCPU.cpp
 +++ b/iokit/Kernel/arm/SweetCPU.cpp
-@@ -147,5 +147,15 @@
+@@ -21,6 +21,7 @@
+ 
+ extern "C" void sweet_secondary_entry(void);
+ extern "C" boolean_t sweet_cpu_signal_is_enabled(unsigned int cpu);
++extern "C" vm_offset_t gicd_base;
+ 
+ class SweetCPU;
+ static SweetCPU *sweet_cpus[MAX_CPUS];
+@@ -147,5 +148,15 @@
 -	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
 -	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
 -		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
@@ -21,13 +29,12 @@ diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
 +	}
 +#endif
  	for (unsigned int i = 0; i < topology->num_cpus; i++) {
-@@ -231,10 +241,22 @@
+@@ -231,10 +242,21 @@
  	__builtin_arm_dsb(DSB_ISHST);
 +#if HAS_GIC_V3
  	__builtin_arm_wsr64("ICC_SGI1R_EL1", sgi);
  	__builtin_arm_isb(ISB_SY);
 +#else
-+	extern "C" vm_offset_t gicd_base;
 +	if (gicd_base) {
 +		if (logical == (unsigned int)cpu_number()) {
 +			*(volatile uint32_t *)(gicd_base + 0x0f00) = (2U << 24) | (SWEET_IPI_SGI & 0x0f);

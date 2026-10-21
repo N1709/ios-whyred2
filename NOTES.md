@@ -2,6 +2,12 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **CI Run 39576836538 Diagnosis & SweetCPU File-Scope Fix:**
+  - Build successfully applied all 145 patches and compiled the entire kernel (120,000+ lines including BearSSL, libpthread, HFS, pmap, bsd, osfmk, and IOKit), failing on exactly one final compile unit:
+    `SweetCPU.cpp:242:9: error: expected unqualified-id`
+  - Cause: In `SweetCPU.cpp`, `extern "C" vm_offset_t gicd_base;` was placed inside `SweetCPU::signalCPU()` member function body. In C++, `extern "C"` linkage specifications are invalid at function/block scope and must be declared at file/namespace scope.
+  - Fix: Moved `extern "C" vm_offset_t gicd_base;` to file scope (line 23 in `0082-topaz-boot-on-gold-cpu.patch`) alongside existing `sweet_secondary_entry` and `sweet_cpu_signal_is_enabled` declarations. Retained pure runtime guard `if (gicd_base) { ... }` in `signalCPU()`.
+
 - **CI Run 39575092980 Diagnosis & SweetCPU Syntax Fix:**
   - Build made it through patch application and reached compilation, but failed in `SweetCPU.cpp:183`: `error: a type specifier is required for all declarations`.
   - Cause: An extra closing brace `}` inside the `#if defined(ARM64_BOARD_CONFIG_SANTONI)` block in `0082-topaz-boot-on-gold-cpu.patch` prematurely terminated `SweetCPU::startAll()`, causing subsequent statements (`ml_cpu_init_completed()`, etc.) to be parsed as invalid top-level declarations.
