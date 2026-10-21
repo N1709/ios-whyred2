@@ -2,6 +2,39 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **Physical Boot Observation (Commit 930bd2e / ba377da) & SweetCPU Boot Core Fix:**
+  - Physical execution on Redmi 4X reached Mark 20 and beyond:
+    ```
+    SWEET EARLY 1: arm_init entered (MMU off)
+    SWEET EARLY 2: PE_init_platform done
+    SWEET EARLY 3: ml_parse_cpu_topology done
+    SWEET EARLY 4: cpu_bootstrap done
+    SWEET EARLY 5: kernel_startup_bootstrap done
+    SWEET EARLY 6: cpu_init done
+    SWEET EARLY 7: entering arm_vm_init
+    SWEET EARLY 8: leaving bootstrap TTB0
+    SWEET EARLY 9: kernel framebuffer VA live
+    SWEET EARLY 10: TTBR0 off; TLB flushed
+    SWEET EARLY 11: physmap table pointers rebound
+    SWEET EARLY 12: calling pmap_bootstrap
+    SWEET EARLY 13: pmap_bootstrap done
+    SWEET EARLY 14: early I/O page tables ready
+    SWEET EARLY 15: arm_vm_init returned
+    SWEET EARLY 16: calling serial_init
+    SWEET EARLY 19: serial_init returned
+    SWEET EARLY 20: kprintf startup complete
+    SWEET EARLY PANIC: SWEET CPU: expected boot MPIDR 0 and logical CPU 0 @SweetCPU.cpp:154
+    ```
+  - Milestone achieved: The `_sha1_init` / NULL `g_crypto_funcs` panic at Mark 20 is completely RESOLVED! BearSSL crypto is working. Display renders stage markers at screen bottom.
+  - Root Cause of SweetCPU Panic:
+    1. Qualcomm LK boots into EL1 on Core 4 (Cluster 1, `MPIDR = 0x100`).
+    2. `tools/mkadt.py` declared Cluster 0 (`0x000..0x003`) as `cpu0..cpu3`, making Core 4 (`0x100`) `cpu4` with `cpu-id = 4`.
+    3. `SweetCPU.cpp` requires the boot CPU to be logical `cpu0` (`cpu-id = 0`).
+    4. Commit `170877b` mistakenly added a check expecting `phys_id == 0` on Santoni.
+  - Fix Applied:
+    1. `tools/mkadt.py`: List Cluster 1 (`0x100..0x103`) as `cpu0..cpu3` with `cpu-id = 0..3` so boot core `0x100` is logical `cpu0` (`state = 'running'`).
+    2. `xnu/patches/0082-topaz-boot-on-gold-cpu.patch`: Removed the Santoni `phys_id == 0` guard in `SweetCPU::startAll()`, aligning it with Topaz's verified expectation (`boot MPIDR 0x100 and logical CPU 0`).
+
 - **CI Run 39580902738 SUCCESS & Boot Image ba377da Packaged:**
   - Build completed with 100% SUCCESS across all compilation and link stages!
   - Kernel artifact `kernel.development.santoni`: 16,948,016 bytes, SHA256 `370072fb2a7add1aa51f1db3582b515937453b4b968da47fae9a2e4a6c20b307`.

@@ -9,32 +9,25 @@ diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
  
  class SweetCPU;
  static SweetCPU *sweet_cpus[MAX_CPUS];
-@@ -147,5 +148,15 @@
+@@ -147,5 +148,8 @@
 -	/* The supplied ADT has cpu0 as the boot CPU and ascending A55 nodes. */
 -	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
 -		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
 -	}
 +	/*
-+	 * topaz: the ADT lists only the A73 (gold) cores and the shim boots xnu
-+	 * on gold CPU 0x100 (the silver cluster has no 16K granule).
++	 * topaz / santoni: the shim boots xnu on gold CPU 0x100.
 +	 */
-+#if defined(ARM64_BOARD_CONFIG_SANTONI)
-+	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
-+		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
-+	}
-+#else
 +	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0x100) {
 +		panic("SWEET CPU: expected boot MPIDR 0x100 and logical CPU 0, got 0x%x/%u",
 +		    topology->boot_cpu->phys_id, topology->boot_cpu->cpu_id);
 +	}
-+#endif
  	for (unsigned int i = 0; i < topology->num_cpus; i++) {
-@@ -231,10 +242,21 @@
+@@ -231,10 +235,21 @@
  	__builtin_arm_dsb(DSB_ISHST);
-+#if HAS_GIC_V3
+ +#if HAS_GIC_V3
  	__builtin_arm_wsr64("ICC_SGI1R_EL1", sgi);
  	__builtin_arm_isb(ISB_SY);
-+#else
+ +#else
 +	if (gicd_base) {
 +		if (logical == (unsigned int)cpu_number()) {
 +			*(volatile uint32_t *)(gicd_base + 0x0f00) = (2U << 24) | (SWEET_IPI_SGI & 0x0f);

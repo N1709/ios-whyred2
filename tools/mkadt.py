@@ -114,12 +114,15 @@ def build(seed=None, qemu=False, native=False):
         # with CSR_ALLOW_UNRESTRICTED_FS (vm_unix.c shared region checks).
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])])
 
-    # Qualcomm MSM8937 Octa-core Cortex-A53 (Cluster 0: Cores 0-3 @1.1GHz, Cluster 1: Cores 4-7 @1.4GHz)
+    # Qualcomm MSM8937 Octa-core Cortex-A53
+    # LK boots on Cluster 1 Core 0 (MPIDR 0x100).
+    # XNU and SweetCPU require the boot CPU to be logical CPU 0.
+    # List Cluster 1 (0x100-0x103) as cpu0-cpu3, and Cluster 0 (0x000-0x003) as cpu4-cpu7.
+    cpu_phys_ids = [0x100, 0x101, 0x102, 0x103, 0x000, 0x001, 0x002, 0x003]
     cpu_nodes = []
-    for i in range(8):
-        cluster = i >> 2
-        core = i & 3
-        phys_id = (cluster << 8) | core
+    for i, phys_id in enumerate(cpu_phys_ids):
+        cluster = phys_id >> 8
+        core = phys_id & 3
         clk = 1401600000 if cluster == 1 else 1094400000
         # By default, Core 4 (0x100) is marked running because LK boots on the high-performance cluster.
         # Bare-metal shim loader dynamically updates state based on live MPIDR_EL1.
