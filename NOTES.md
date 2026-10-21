@@ -1,6 +1,26 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## SDHCI clock-path fix (2026-10-22, latest): the HC datapath had no MCLK
+## SDHCI Qualcomm MSM v4 MMIO register routing fix (2026-10-22, latest): HC vs Core window split
+
+- **Hardware observation (photo `20261022_012915.jpg`, Redmi 4X, commit `e8552c0`):**
+  Takeover succeeded and logged `CORE_VENDOR_SPEC 0x00000000 (MCLK sel 0) -> POR 0x00000a9c`,
+  but subsequent read-back of `CORE_VENDOR_SPEC` still showed `0x00000000` (MCLK sel 0), and
+  `CMD_INHIBIT` remained perpetually stuck at 1 for CMD0 and CMD13 (`command 13 timed out (int_status 0x00000000, present 0x01f80001)`).
+- **MMIO split root cause analysis:**
+  Qualcomm SDCC1 hardware separates legacy MCI core registers (`core_mem` at 0x07824000) from standard SDHCI host controller registers (`hc_mem` at 0x07824900).
+  In Linux (`drivers/mmc/host/sdhci-msm.c`), the HC register block maps `hc_mem` and the Qualcomm MSM v4 vendor-specific registers (`CORE_VENDOR_SPEC` at 0x10c, `CORE_DLL_CONFIG` at 0x100, `CORE_DLL_STATUS` at 0x108) reside inside the HC register window at physical offsets 0x07824a00..0x07824a1c (HC base 0x07824900 + 0x100..0x11c, physical `CORE_VENDOR_SPEC` at `0x07824a0c`).
+  Writing `CORE_VENDOR_SPEC_POR_VAL` (0xa9c) to `core_mem + 0x10c` (physical 0x0782410c) landed in Qualcomm legacy MCI register space, where bits 9:8 are read-only 0. As a result, the HC command shift register remained unclocked and CMD_INHIBIT stayed permanently asserted.
+  Routing `CORE_VENDOR_SPEC`, `CORE_DLL_CONFIG`, and `CORE_DLL_STATUS` through `hc_rd`/`hc_wr` targets physical address `0x07824a0c`, correctly programming MCLK sel 2 into the host controller silicon.
+- **Commits & CI build verification:**
+  - Commits: `c52abc4` (`fix(04): route Qualcomm SDHCI vendor registers to HC MMIO window`) and `077816f` (`fix(04): restore exact hunk line count in patch 0142`).
+  - GitHub Actions CI Run ID: `39679960240` (`macos-14`, XNU build succeeded cleanly).
+  - Boot image packaged: `shim/out/shim-boot.img` (16,934,912 bytes, SHA256: `2d759c468ad79c4a4769a373b8d5a7bc0196a88dd4e0bb85401f2469ce7467e5`).
+  - Copied to target: `/storage/emulated/0/shim-boot.img` (verified byte size 16,934,912, SHA256 matches).
+- **Expected on next hardware boot:**
+  `CORE_VENDOR_SPEC 0x00000a9c (MCLK sel 2)` logged at `0x07824a0c` upon takeover, HC command shifter clocked, CMD_INHIBIT clearing immediately, successful CMD13 status response on RCA 2, and eMMC CID/CSD discovery.
+- **Next action:** User runs `fastboot boot /storage/emulated/0/shim-boot.img` (`rd=md0`, no `sweetlog=1`) and captures the boot log / screen photo to verify eMMC initialization and partition parsing.
+
+## SDHCI clock-path fix (2026-10-22, previous): the HC datapath had no MCLK
 
 - **Hardware observation (photo `20261022_002308.jpg`, Redmi 4X, commit
   df4395e):** takeover succeeded (`MCI_VERSION 0x1000004d`,
