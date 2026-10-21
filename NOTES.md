@@ -64,11 +64,26 @@
     (payload 16,721,952 B SHA256 `a7da701b...`), copied to
     `/storage/emulated/0/shim-boot.img` (same SHA256). `bash tests/run_tests.sh`
     inside `shim/build.sh` passed again.
-- **Next concrete action (HUMAN_NEEDED):** `fastboot boot /storage/emulated/0/shim-boot.img`
-  and photograph the console. Expect `IOFindBSDRoot`/`md0` to reach
-  `mockfs_mountroot` (no `errno = 19`), then the RAM-disk PID 1 banner and the
-  5 s `select` heartbeat. Unverified until observed: whether mountroot succeeds
-  on silicon, and whether the HFS `userdata` path (`rd=emmcroot0`) mounts later.
+- **Hardware Boot SUCCESS (Redmi 4X, 2026-10-21, 22:15):**
+  - Photo evidence: `/storage/emulated/0/DCIM/IOS/Phase 4/20261021_221537.jpg` and `20261021_221548.jpg`.
+  - Console log confirmed on hardware:
+    ```
+    Added memory device md0/rmd0 (01000000/12000000) at FFFFFF008904000 for 0000000000005000
+    BSD root: md0, major 1, minor 0
+    Serial keyboard started
+    vm_free_delayed_pages: initialized 0 free pages
+    VM Swap Subsystem is ON
+    No POST boot-arg set.
+    load_init_program: attempting to load /sbin/launchd
+    ========================================
+    *** SANTONI userspace: init running as PID 1 ***
+    SANTONI init: still alive (tick)
+    SANTONI init: still alive (tick)
+    ```
+  - **Verdict:** STOR-01 (Mach-O static init PID 1, RAM disk mockfs root, user/kernel boundary, EL0 syscalls) is **100% VERIFIED on physical silicon**!
+- **Next concrete action:**
+  - Test eMMC userdata HFS+ root boot (`rd=emmcroot0`) on physical hardware.
+  - Test persistent console log flusher (`sweetlog=1`) to SYSTEM partition.
 
 ## Agent handoff / active work (2026-10-21): Phase 4 Wave 3 gaps FIXED, offline PASS
 
