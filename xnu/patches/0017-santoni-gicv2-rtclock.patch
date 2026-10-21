@@ -18,6 +18,7 @@ index 4ec6989..06b362a 100644
 +#if defined(SANTONI) || defined(SWEET)
 +SECURITY_READ_ONLY_LATE(uint32_t) sweet_vtimer_intid = SWEET_VTIMER_INTID;
 +SECURITY_READ_ONLY_LATE(vm_offset_t) gicc_base = 0;
++SECURITY_READ_ONLY_LATE(vm_offset_t) gicd_base = 0;
 +#endif
 +
  void
@@ -45,8 +46,9 @@ index 4ec6989..06b362a 100644
 +			uint64_t gicd_size = ((uint64_t const *)prop)[1];
 +			uint64_t gicc_prop = ((uint64_t const *)prop)[2];
 +			uint64_t gicc_size = ((uint64_t const *)prop)[3];
-+			vm_offset_t gicd = ml_io_map(soc_base + gicd_prop, gicd_size);
++			gicd_base = ml_io_map(soc_base + gicd_prop, gicd_size);
 +			gicc_base = ml_io_map(soc_base + gicc_prop, gicc_size);
++			vm_offset_t gicd = gicd_base;
 +			if (gicd && gicc_base) {
 +				uint32_t typer = *(volatile uint32_t *)(gicd + 0x004);
 +				uint32_t it_lines = (typer & 0x1f) + 1;
@@ -123,13 +125,14 @@ index 4ec6989..06b362a 100644
  	 * ARM64 targets take as FIQs arrive here as Group 1 IRQs.
 --- a/pexpert/pexpert/arm/protos.h
 +++ b/pexpert/pexpert/arm/protos.h
-@@ -36,6 +36,10 @@
+@@ -36,6 +36,11 @@
  int uart_getc(void);
  
  void pe_init_fiq(void);
 +#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_SANTONI)
 +extern uint32_t sweet_vtimer_intid;
 +extern vm_offset_t gicc_base;
++extern vm_offset_t gicd_base;
 +#endif
  
  #ifdef PRIVATE

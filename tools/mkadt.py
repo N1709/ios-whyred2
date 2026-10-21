@@ -127,7 +127,7 @@ def build(seed=None, qemu=False, native=False):
         cn = node(f'cpu{i}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr('arm,cortex-a53') + cstr('ARM,v8')),
+            ('compatible', cstr('arm,cortex-a53') + cstr('qcom,kryo470') + cstr('ARM,v8')),
             ('reg', u32(phys_id)),
             ('cpu-id', u32(i)),
             ('cluster-id', u32(cluster)),
@@ -224,7 +224,7 @@ def build(seed=None, qemu=False, native=False):
     # (iPhone10,3). 'xiaomi,santoni' and qcom,msm8937 match our target silicon.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,santoni') + cstr('qcom,msm8937') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,santoni') + cstr('xiaomi,sweet') + cstr('qcom,msm8937') + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),

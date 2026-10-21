@@ -31,11 +31,7 @@ diff --git a/pexpert/pexpert/arm64/Makefile b/pexpert/pexpert/arm64/Makefile
 --- a/pexpert/pexpert/arm64/Makefile
 +++ b/pexpert/pexpert/arm64/Makefile
 @@ -18,6 +18,7 @@
- 	H13.h \
- 	VMAPPLE.h \
- 	BCM2837.h \
-+	SANTONI.h \
- 	SWEET.h
+ 	H13.h  	VMAPPLE.h  	BCM2837.h +	SANTONI.h  	SWEET.h
  
  
 diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
@@ -54,7 +50,7 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
  # topaz: Cortex-A53/A73 are ARMv8.0 (no LSE atomics, RCpc, PAN or FP16). An explicit
  # -mcpu: -arch arm64 otherwise keeps clang's apple-m1 default and its LSE/RCpc features
  MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a53
-+MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI 	-mcpu=cortex-a53
++MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI -DARM64_BOARD_CONFIG_SWEET -mcpu=cortex-a53
  
  
  #
@@ -140,7 +136,7 @@ new file mode 100644
 +#  BSD_RELEASE =    [ BSD_BASE ]
 +#  BSD_DEV =        [ BSD_BASE config_vnguard ]
 +#  BSD_DEBUG =      [ BSD_BASE config_vnguard ]
-+#  FILESYS_BASE =   [ devfs fdesc fifo fs_compression config_protect config_mnt_rootsnap config_rosv_startup config_mount_vm config_mount_prebootrecovery config_basesystemroot config_fse quota namedstreams config_imgsrc_access config_triggers config_ext_resolver config_searchfs config_volfs config_appledouble nullfs config_mnt_suid config_firmlinks config_dataless_files config_union_mounts config_file_leases ]
++#  FILESYS_BASE =   [ devfs fdesc fifo mockfs sweet_hfs fs_compression config_protect config_mnt_rootsnap config_rosv_startup config_mount_vm config_mount_prebootrecovery config_basesystemroot config_fse quota namedstreams config_imgsrc_access config_triggers config_searchfs config_volfs config_appledouble nullfs bindfs config_mnt_suid config_firmlinks config_dataless_files config_union_mounts config_file_leases ]
 +#  FILESYS_RELEASE= [ FILESYS_BASE ]
 +#  FILESYS_DEV =    [ FILESYS_BASE config_iocount_trace ]
 +#  FILESYS_DEBUG =  [ FILESYS_BASE config_iocount_trace ]
@@ -212,7 +208,7 @@ new file mode 100644
 +
 +options   CONFIG_FREEZE_SUSPENDED_MIN=4		# <xsmall>
 +
-+options	  CONFIG_MACH_APPROXIMATE_TIME
++options   CONFIG_MACH_APPROXIMATE_TIME
 +
 +options   CONFIG_KERNEL_INTEGRITY		# <kernel_integrity>
 +
@@ -222,3 +218,168 @@ new file mode 100644
 +
 +options   CONFIG_RESLIDE_SHARED_CACHE		# <reslide_shared_cache>
 +options   CONFIG_KERNEL_TBI		# <kernel_tbi>
+diff --git a/bsd/conf/Makefile.template b/bsd/conf/Makefile.template
+--- a/bsd/conf/Makefile.template
++++ b/bsd/conf/Makefile.template
+@@ -61,6 +61,21 @@
+ hfs_encodings.o_CFLAGS_ADD += -Dhfs_allocated=hfs_encodings_allocated
+ hfs_encodinghint.o_CFLAGS_ADD += -Dhfs_allocated=hfs_encodings_allocated
+ endif
++
++# santoni reuses sweet's bring-up code, so these providers are needed there too.
++ifeq ($(CURRENT_MACHINE_CONFIG),SANTONI)
++SWEET_PTHREAD_ROOT = $(SRCROOT)/bsd/pthread/sweet_libpthread
++SWEET_PTHREAD_INC = -I$(SWEET_PTHREAD_ROOT) -I$(SWEET_PTHREAD_ROOT)/private -I$(SWEET_PTHREAD_ROOT)/include
++sweet_pthread_init.o_INCFLAGS = $(SWEET_PTHREAD_INC)
++sweet_pthread_support.o_INCFLAGS = $(SWEET_PTHREAD_INC)
++sweet_pthread_synch.o_INCFLAGS = $(SWEET_PTHREAD_INC)
++
++SWEET_HFS_ROOT = $(SRCROOT)/bsd/sweet_hfs
++SWEET_HFS_OBJS = BTree.o BTreeAllocate.o BTreeMiscOps.o BTreeNodeOps.o BTreeNodeReserve.o BTreeScanner.o BTreeTreeOps.o BTreeWrapper.o CatalogUtilities.o FileExtentMapping.o FileIDsServices.o MacOSStubs.o UnicodeWrappers.o VolumeAllocation.o hfs_attrlist.o hfs_btreeio.o hfs_catalog.o hfs_chash.o hfs_cnode.o hfs_cprotect.o hfs_endian.o hfs_extents.o hfs_fsinfo.o hfs_hotfiles.o hfs_journal.o hfs_link.o hfs_lookup.o hfs_notification.o hfs_quota.o hfs_readwrite.o hfs_resize.o hfs_search.o hfs_vfsops.o hfs_vfsutils.o hfs_vnops.o hfs_xattr.o rangelist.o hfs_encodinghint.o hfs_encodings.o sweet_hfs_iokit.o
++$(foreach o,$(SWEET_HFS_OBJS),$(eval $(o)_CFLAGS_ADD += -include $(SWEET_HFS_ROOT)/sweet_hfs_compat.h -I$(SWEET_HFS_ROOT) -I$(SWEET_HFS_ROOT)/core))
++hfs_encodings.o_CFLAGS_ADD += -Dhfs_allocated=hfs_encodings_allocated
++hfs_encodinghint.o_CFLAGS_ADD += -Dhfs_allocated=hfs_encodings_allocated
++endif
+ 
+ #
+ # Directories for mig generated files
+diff --git a/libkern/conf/Makefile.template b/libkern/conf/Makefile.template
+--- a/libkern/conf/Makefile.template
++++ b/libkern/conf/Makefile.template
+@@ -63,6 +63,52 @@
+ sweet_enc64be.o_CFLAGS_ADD += -mgeneral-regs-only
+ corecrypto_sha2.o_CFLAGS_ADD += -mgeneral-regs-only
+ endif
++
++# santoni reuses sweet's bring-up code, so it needs the same providers.
++ifeq ($(CURRENT_MACHINE_CONFIG),SANTONI)
++SWEET_AES_ROOT = $(SRCROOT)/libkern/crypto/sweet_bearssl
++SWEET_AES_INC = -I$(SWEET_AES_ROOT)/inc -I$(SWEET_AES_ROOT)/src
++sweet_aes.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_aes_ct.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_aes_ct_enc.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_aes_ct_dec.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_aes_ct_cbcenc.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_aes_ct_cbcdec.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_aes.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_aes_ct.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_aes_ct_enc.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_aes_ct_dec.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_aes_ct_cbcenc.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_aes_ct_cbcdec.o_CFLAGS_ADD += -mgeneral-regs-only
++corecrypto_aes.o_CFLAGS_ADD += -mgeneral-regs-only
++# BearSSL MD5 behind the legacy MD5Init/Update/Final API (corecrypto_md5.c).
++sweet_md5.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_dec32le.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_enc32le.o_INCFLAGS = $(SWEET_AES_INC)
++corecrypto_md5.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_md5.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_dec32le.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_enc32le.o_CFLAGS_ADD += -mgeneral-regs-only
++corecrypto_md5.o_CFLAGS_ADD += -mgeneral-regs-only
++# BearSSL SHA-1 behind the legacy SHA1Init/Update/Final API (corecrypto_sha1.c).
++sweet_sha1.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_dec32be.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_enc32be.o_INCFLAGS = $(SWEET_AES_INC)
++corecrypto_sha1.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_sha1.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_dec32be.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_enc32be.o_CFLAGS_ADD += -mgeneral-regs-only
++corecrypto_sha1.o_CFLAGS_ADD += -mgeneral-regs-only
++# BearSSL SHA-384/512 for SHA384_*/SHA512_* (corecrypto_sha2.c).
++sweet_sha2big.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_dec64be.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_enc64be.o_INCFLAGS = $(SWEET_AES_INC)
++corecrypto_sha2.o_INCFLAGS = $(SWEET_AES_INC)
++sweet_sha2big.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_dec64be.o_CFLAGS_ADD += -mgeneral-regs-only
++sweet_enc64be.o_CFLAGS_ADD += -mgeneral-regs-only
++corecrypto_sha2.o_CFLAGS_ADD += -mgeneral-regs-only
++endif
+ 
+ # Runtime support functions don't interact well with LTO (9294679)
+ stack_protector.o_CFLAGS_ADD += $(CFLAGS_NOLTO_FLAG)
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -47,6 +47,18 @@
+     "     'IONameMatch'     = 'qcom,kryo470';"
+     "     'IOProbeScore'    = 10000:32;"
+     "   },"
++    "   {"
++    "     'IOClass'         = SweetPlatformExpert;"
++    "     'IOProviderClass' = IOPlatformExpertDevice;"
++    "     'IONameMatch'     = 'xiaomi,santoni';"
++    "     'IOProbeScore'    = 10000:32;"
++    "   },"
++    "   {"
++    "     'IOClass'         = SweetCPU;"
++    "     'IOProviderClass' = IOPlatformDevice;"
++    "     'IONameMatch'     = 'arm,cortex-a53';"
++    "     'IOProbeScore'    = 10000:32;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"
+diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+--- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
++++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
+@@ -70,6 +70,10 @@
+ 	if (name == NULL || maxLength <= 0) {
+ 		return false;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	strlcpy(name, "santoni", (size_t)maxLength);
++#else
+ 	strlcpy(name, "sweet", (size_t)maxLength);
++#endif
+ 	return true;
+ }
+ 
+@@ -78,6 +82,10 @@
+ 	if (name == NULL || maxLength <= 0) {
+ 		return false;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	strlcpy(name, "Redmi 4X", (size_t)maxLength);
++#else
+ 	strlcpy(name, "Redmi Note 10 Pro", (size_t)maxLength);
++#endif
+ 	return true;
+ }
+diff --git a/iokit/Kernel/arm/SweetCPU.cpp b/iokit/Kernel/arm/SweetCPU.cpp
+--- a/iokit/Kernel/arm/SweetCPU.cpp
++++ b/iokit/Kernel/arm/SweetCPU.cpp
+@@ -82,7 +82,11 @@
+ 	if (!IOCPU::start(provider)) {
+ 		return false;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	cpuName = OSSymbol::withCStringNoCopy("Cortex-A53");
++#else
+ 	cpuName = OSSymbol::withCStringNoCopy("Kryo 260");
++#endif
+ 	if (cpuName == NULL) {
+ 		return false;
+ 	}
+@@ -225,8 +229,20 @@
+ 	    (((mpidr >> 8) & 0xff) << 16) |
+ 	    ((uint64_t)SWEET_IPI_SGI << 24) | (1ULL << aff0);
+ 	__builtin_arm_dsb(DSB_ISHST);
++#if HAS_GIC_V3
+ 	__builtin_arm_wsr64("ICC_SGI1R_EL1", sgi);
+ 	__builtin_arm_isb(ISB_SY);
++#else
++	extern vm_offset_t gicd_base;
++	if (gicd_base) {
++		if (logical == (unsigned int)cpu_number()) {
++			*(volatile uint32_t *)(gicd_base + 0x0f00) = (2U << 24) | (SWEET_IPI_SGI & 0x0f);
++		} else {
++			*(volatile uint32_t *)(gicd_base + 0x0f00) = ((1U << logical) << 16) | (SWEET_IPI_SGI & 0x0f);
++		}
++		__builtin_arm_isb(ISB_SY);
++	}
++#endif
+ }
+ 
+ kern_return_t

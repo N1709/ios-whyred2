@@ -2,6 +2,54 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> UPDATE 2026-10-21: Historic Milestone Reached: Kernel Boot Marks 8-20 Verified on Physical Hardware! Resolution of NULL g_crypto_funcs Panic via Shared BearSSL / Staging Hooks <<<
+
+- **Physical Boot Observation (Commit a4f9f2b / image b7f2c61, photo 20261021_133650.jpg):**
+  - Physical execution on Redmi 4X (`santoni`) booted completely through `arm_vm_init`, pmap bootstrap, TTBR0 teardown, and serial console initialization:
+    ```
+    SWEET EARLY 12: calling pmap_bootstrap
+    SWEET EARLY 13: pmap_bootstrap done
+    SWEET EARLY 14: early I/O page tables ready
+    SWEET EARLY 15: arm_vm_init returned
+    SWEET EARLY 16: calling serial_init
+    SWEET EARLY 19: serial_init returned
+    SWEET EARLY 20: kprintf startup complete
+
+    SWEET EARLY PANIC: Kernel data abort. at pc 0xfffffff0078fc084, lr 0xfffffff00796aacc (saved state: 0xffffffffbe45c7a00)
+    x22: 0x0000000000000000
+    far: 0x0000000000000028
+    ```
+- **Disassembly & Root Cause Analysis:**
+  - `pc 0xfffffff0078fc084` resides in `_sha1_init` / `_SHA1Init` (`corecrypto_sha1.c`), called by `IOPlatformExpertDevice::generatePlatformUUID()` at `lr 0xfffffff00796aacc`.
+  - Disassembly of `_sha1_init`:
+    ```
+    fffffff0078fc080: ldr  x22, [x9, #0xa10]      ; loads _g_crypto_funcs
+    fffffff0078fc084: ldr  x20, [x22, #0x28]      ; dereferences g_crypto_funcs->ccsha1_di (FAR = 0x28)
+    ```
+  - On non-Apple hardware, `corecrypto.kext` is absent so `_g_crypto_funcs == NULL`.
+  - Upstream port provides BearSSL crypto (`sweet_sha1.c`, `sweet_md5.c`, `sweet_aes.c`, `sweet_sha2big.c`), but:
+    1. In `xnu/patches/0019-stage-libpthread.sh`, `0020-stage-bearssl.sh`, and `0026-stage-hfs.sh`, staging scripts had `[[ "${MACHINE_CONFIG:-}" == SWEET ]] || exit 0`, which caused BearSSL, pthread, and HFS sources to NOT be staged on `SANTONI` builds.
+    2. In `xnu/patches/0085-santoni-board-target.patch` and `0094-santoni-cortex-a53-codegen.patch`, `MACHINE_FLAGS_ARM64_SANTONI` omitted `-DARM64_BOARD_CONFIG_SWEET`, causing ~65 call sites gating non-Apple bring-up to fall back to stock Apple corecrypto paths.
+    3. `bsd/conf/Makefile.template` and `libkern/conf/Makefile.template` only defined object compilation and include flags for `ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)`.
+    4. `config/MASTER.arm64.santoni` omitted `mockfs`, `sweet_hfs`, and `bindfs` from `FILESYS_BASE`.
+    5. In `KernelConfigTables.cpp`, `SweetPlatformExpert` and `SweetCPU` only matched `xiaomi,sweet` and `qcom,kryo470`.
+    6. In `SweetCPU.cpp`, cross-CPU / self-SGI signaling used `ICC_SGI1R_EL1` (GICv3 system register), which traps on Cortex-A53 / MSM8937 GICv2.
+- **Fix Applied:**
+  1. `xnu/patches/0019-stage-libpthread.sh`, `0020-stage-bearssl.sh`, `0026-stage-hfs.sh`:
+     - Allowed `SANTONI` alongside `SWEET` so BearSSL, pthread, and HFS are properly staged during CI.
+  2. `xnu/patches/0085-santoni-board-target.patch` & `0094-santoni-cortex-a53-codegen.patch`:
+     - Added `-DARM64_BOARD_CONFIG_SWEET` to `MACHINE_FLAGS_ARM64_SANTONI` so all BearSSL crypto providers, built-in pthread, built-in HFS, and AMFI bypasses are active.
+  3. `xnu/patches/0085-santoni-board-target.patch`:
+     - Added `ifeq ($(CURRENT_MACHINE_CONFIG),SANTONI)` blocks to `bsd/conf/Makefile.template` and `libkern/conf/Makefile.template`.
+     - Added `mockfs sweet_hfs bindfs` to `FILESYS_BASE` in `config/MASTER.arm64.santoni`.
+     - Added `SweetPlatformExpert` (`xiaomi,santoni`) and `SweetCPU` (`arm,cortex-a53`) entries to `iokit/KernelConfigTables.cpp`.
+     - Extended `SweetPlatformExpert.cpp` to return target `santoni` and product `Redmi 4X` on `ARM64_BOARD_CONFIG_SANTONI`.
+     - Extended `SweetCPU.cpp` to use `Cortex-A53` as `cpuName`, and guarded `ICC_SGI1R_EL1` with `#if HAS_GIC_V3`, routing GICv2 self-IPI to `gicd_base + 0x0f00` (`GICD_SGIR`).
+  4. `xnu/patches/0017-santoni-gicv2-rtclock.patch`:
+     - Exported `gicd_base` globally in `pe_fiq.c` and `pexpert/arm/protos.h`.
+  5. `tools/mkadt.py`:
+     - Added fallback compatible strings `'xiaomi,sweet'` to root DT and `'qcom,kryo470'` to CPU nodes.
+
 ### >>> UPDATE 2026-10-21: Early Kernel Panic arm_vm_init.c:1842 Solved — Low Globals L2 Framebuffer Alias & 4K Page Shift Guard <<<
 
 - **Physical Boot Observation (Commit 43fb1e1 image):**
