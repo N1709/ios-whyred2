@@ -21,6 +21,17 @@
        - Kept `sweet_early` enabled on Santoni after Mark 20.
        - Updated `sweet_early_panic` to print even if disabled, and spin on Santoni with `wfe` so any panic remains permanently frozen on screen for inspection.
     3. `shim/build.sh`: Replaced `--cmdline "console=null"` with `--cmdline "debug=0x14e serial=3 -v keepsyms=1"` to enable verbose console output and halt on panic.
+  - **CI Build 39591752390 (Commit 04cfd92) SUCCESS:**
+    - 100% build success across all Mach, BSD, IOKit, and Driver stages.
+    - Kernel artifact: 16,948,016 bytes, SHA256 `66a2c715d1f66de8992d067ab06346c217e9596066ef81ad44df8965541c1dcb`.
+    - Boot Image: `shim/out/shim-boot.img`, 16,398,336 bytes, SHA256 `57541362b4d7d131929fe57b97db1a01b8ffbe76b6cd7830ef25570233d35d59`.
+    - Transferred to:
+      - Telegram: chat `5987149471` (message 132).
+      - Local storage: `/storage/emulated/0/shim-boot.img`.
+    - Next Action: User boots image on physical device via:
+      `fastboot boot shim/out/shim-boot.img` (or `fastboot boot /storage/emulated/0/shim-boot.img`).
+    - Expected Behavior: Output continues past Mark 20; `kprintf` lines scroll on screen, `SweetCPU` accepts 8 cores, and any panic halts cleanly on-screen without rebooting.
+
 
 
 - **Question:** does santoni's LK/ABL leave the APPS watchdog armed when it jumps
