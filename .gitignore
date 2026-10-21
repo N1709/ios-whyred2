@@ -11,6 +11,7 @@ shim/out/
 xnu/out/
 xnu/out-*/
 out/
+kdk-libs/
 __pycache__/
 *.log
 *.zip
