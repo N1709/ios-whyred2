@@ -2,6 +2,17 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **Phase 4 Planning Complete & Verified (`04-01-PLAN.md`, `04-02-PLAN.md`, `04-03-PLAN.md`):**
+  - **Milestone Status:** Phase 4 ("RAM Disk Root & SDHCI eMMC Storage Bring-up") is fully researched, pattern-mapped, and verified.
+  - **DeepSeek v4.1 Collaboration:**
+    - OpenCode DeepSeek v4.1 Flash Free rule added to `AGENTS.md` (commit `1151a24`).
+    - Register layout for MSM8937 SDCC1 mapped: HC MMIO at `0x07824900`, Core MMIO at `0x07824000` (verified against local Linux `msm8937.dtsi` lines 1843+).
+    - SDHCI bring-up decoupled: Phase 4 Plan 01 first verifies Mach VM userspace and syscall handling on silicon via in-memory RAM disk (`rd=md0` + `tools/santoni-init.S`) before touching physical storage.
+    - Plan 04-02 brings up polled PIO SDHCI driver (`xnu/patches/0142-santoni-sdhci-emmc-driver.patch`) retaining LK bootloader card state (TRAN, 50MHz, 8-bit).
+    - Plan 04-03 mounts `userdata` HFS+ (`sweet_hfs`) and wires persistent 4 MiB console log buffer (`xnu/patches/0143-santoni-persistent-console-log.patch`).
+  - **Plan Verification:** Passed GSD plan-checker with 0 blockers, 0 warnings across all 12 dimensions.
+  - **Next Concrete Action:** Execute Wave 1 / Plan 04-01: author `tools/santoni-init.S`, build Mach-O with `tools/mkinit.py`, inject RAM disk into `tools/mkpayload.py`, and package `shim/out/shim-boot.img` with `rd=md0`.
+
 - **Post-Touch IOKit Reboot Resolution & Zero-CI Repack (`sweetcpufreq=0 sweetbattery=0`):**
   - **Hardware Test Result (`20261021_174622*.jpg` in `/storage/emulated/0/DCIM/IOS/Phase 3/`):**
     - `0082-topaz-boot-on-gold-cpu.patch` and `0140-santoni-kprintf-early-console.patch` were successfully applied in CI run 39596534168 (commit 1cce356).
