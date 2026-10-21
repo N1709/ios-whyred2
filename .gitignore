@@ -11,3 +11,7 @@ xnu/out/
 xnu/out-*/
 out/
 __pycache__/
+*.log
+*.zip
+--dump
+video_frames/

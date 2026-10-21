@@ -82,7 +82,7 @@ new file mode 100644
 +
 +#define SANTONI                       1
 +#define SWEET                         1
-+#define SWEET_SMP_MAX_CPUS            1
++#define SWEET_SMP_MAX_CPUS            8
 +
 +#define ARM_ARCH_TIMER
 +#define __ARM_ARCH__                  8

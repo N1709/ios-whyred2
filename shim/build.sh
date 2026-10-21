@@ -71,7 +71,7 @@ python3 ../tools/mkbootimg.py \
 	--base 0x80000000 \
 	--pagesize 2048 \
 	--header_version 0 \
-	--cmdline "console=null"
+	--cmdline "debug=0x14e serial=3 -v keepsyms=1"
 
 # Host render of the console layout
 $HOST_CC -O2 -Wall -I. -o out/host_test console.c host_test.c && ./out/host_test

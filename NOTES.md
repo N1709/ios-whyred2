@@ -1,6 +1,27 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## MSM8937 APPS watchdog: findings + shim handling (2026-10-21, latest)
+## Agent handoff / active work (2026-10-21, latest)
+
+- **Post-Mark 20 Diagnostics & kprintf Console Fix:**
+  - **Video / Physical Hardware Observation (`20261021_161607_1.mp4`):**
+    - Kernel reached `SWEET EARLY 20: kprintf startup complete`!
+    - Display showed black top rows (marks 1-20) and a red block on the lower half with green stage bars.
+    - Rebooted after ~4 seconds with no on-screen text.
+  - **Root Cause Analysis:**
+    1. **Red Block:** It is simply the untouched background fill from the bootloader shim (`con_clear(RED)` in `shim.c`). Because `sweet_early` only clears rows that it writes to, rows 1-20 (y=0..640) were cleared to black, while rows 21-39 (y=640..1280) remained red.
+    2. **Silent Reboot & Missing Output:**
+       - Mark 20 was the very last `sweet_early_mark` in XNU. Everything after Mark 20 outputs through `kprintf()`.
+       - In `pe_serial.c` (`fbcon_probe`), the stride check `fbcon_stride < fbcon_width * 4` failed on Santoni (24-bit BGR: `stride 2160 < width*4 2880`), so `fbcon_probe()` silently bailed without registering any serial console. `kprintf()` had nowhere to output.
+       - In `SANTONI.h`, `SWEET_SMP_MAX_CPUS` was defined as `1`, but `tools/mkadt.py` created 8 CPU nodes (`0x100..0x103, 0x000..0x003`). When IOKit matched the CPUs right after Mark 20, `SweetCPU::start()` hit `topology->num_cpus (8) > SWEET_SMP_MAX_CPUS (1)` and panicked.
+       - Because `kprintf` was blind and `shim/build.sh` passed `--cmdline "console=null"`, the panic wasn't visible, and the 5-second panic timeout rebooted the device.
+  - **Fixes Applied:**
+    1. `xnu/patches/0085-santoni-board-target.patch`: Changed `SWEET_SMP_MAX_CPUS` from 1 to 8 in `SANTONI.h` to match all 8 Cortex-A53 cores.
+    2. `xnu/patches/0140-santoni-kprintf-early-console.patch`:
+       - Registered `santoni_early_serial_functions` in `pe_serial.c` using `sweet_early_putc` so all `kprintf`, `printf`, and IOKit logs stream directly onto the 24bpp physical screen.
+       - Kept `sweet_early` enabled on Santoni after Mark 20.
+       - Updated `sweet_early_panic` to print even if disabled, and spin on Santoni with `wfe` so any panic remains permanently frozen on screen for inspection.
+    3. `shim/build.sh`: Replaced `--cmdline "console=null"` with `--cmdline "debug=0x14e serial=3 -v keepsyms=1"` to enable verbose console output and halt on panic.
+
 
 - **Question:** does santoni's LK/ABL leave the APPS watchdog armed when it jumps
   to the shim/XNU, and how do we pet or disable it?
