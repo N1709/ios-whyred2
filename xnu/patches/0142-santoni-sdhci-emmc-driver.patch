@@ -1,0 +1,948 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -108,7 +108,8 @@
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
+ bsd/dev/sweet_i2c1.c			standard
+ bsd/dev/sweet_cpufreq.c			standard
++bsd/dev/santoni_sdhci.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
+diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -787,3 +787,24 @@
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++//
++//	SANTONI: root on a GPT partition of the internal eMMC 5.1
++//	(bsd/dev/santoni_sdhci.c)
++//
++	if (strcmp(rdBootVar, "emmcroot0") == 0) {
++		extern int santoni_sdhci_rootdev(dev_t *dev);
++		OSSafeReleaseNULL(matching);
++		int emmc_error = santoni_sdhci_rootdev(root);
++		if (emmc_error) {
++			panic("IOFindBSDRoot: SANTONI eMMC root %s unavailable: %d",
++			    rdBootVar, emmc_error);
++		}
++		strlcpy(rootName, rdBootVar, rootNameSize);
++		IOLog("BSD root: %s, major %d, minor %d\n", rootName, major(*root),
++		    minor(*root));
++		*oflags = 0;
++		goto iofrootx;
++	}
++#endif
++
+ //
+ //	Now check if we are trying to root on a memory device
+ //
+diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/santoni_sdhci.c
+@@ -0,0 +1,903 @@
++/*
++ * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
++ *
++ * The Qualcomm LK bootloader already powered, clocked and identified the
++ * internal eMMC through SDCC1 and hands it over in Transfer State (TRAN) on
++ * an 8-bit bus. This driver reuses that state instead of reimplementing the
++ * GCC clock tree and SPMI regulators: it maps the single 0x1000 MMIO window
++ * at 0x07824000 (Qualcomm vendor core registers at +0x000, standard SDHCI
++ * host controller registers at +0x900) and issues polled commands, one at a
++ * time, with PIO transfers through the SDHCI buffer port.
++ *
++ * SDHCI_RESET_ALL (0x01) is never issued and SDHCI_CLOCK_CONTROL (0x2C) is
++ * never written: both would undo the bootloader's clock setup and lock the
++ * NoC. The driver only resets the command and data paths (0x06) and clears
++ * the DMA select so transfers use the FIFO. All DMA-free, so the only cache
++ * maintenance is the (conservative) clean/invalidate of the bounce buffer.
++ *
++ * One GPT partition is found by name (boot-arg emmcroot=, default
++ * "userdata") and exposed as the BSD disk emmcroot0 (remmcroot0 character
++ * device), 512-byte logical sectors. Root on it with rd=emmcroot0. Writes
++ * are refused unless boot-arg emmcrw=1 is given, and always stay inside the
++ * selected partition.
++ */
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/buf.h>
++#include <sys/conf.h>
++#include <sys/disk.h>
++#include <sys/errno.h>
++#include <sys/proc.h>
++#include <sys/uio.h>
++#include <miscfs/devfs/devfs.h>
++#include <kern/locks.h>
++#include <kern/clock.h>
++#include <machine/machine_routines.h>
++#include <arm/caches_internal.h>
++#include <vm/pmap.h>
++#include <vm/vm_kern.h>
++#include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
++#include <libkern/libkern.h>
++
++extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
++/* osfmk/arm/machine_routines.h, not exported to the BSD layer */
++extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++
++/* ------------------------------------------------- SDHCI standard registers */
++#define SDHCI_BLOCK_SIZE        0x04
++#define SDHCI_BLOCK_COUNT       0x06
++#define SDHCI_ARGUMENT          0x08
++#define SDHCI_TRANSFER_MODE     0x0c
++#define SDHCI_COMMAND           0x0e
++#define SDHCI_RESPONSE          0x10
++#define SDHCI_BUFFER            0x20
++#define SDHCI_PRESENT_STATE     0x24
++#define SDHCI_HOST_CONTROL      0x28
++#define SDHCI_CLOCK_CONTROL     0x2c
++#define SDHCI_CLOCK_CARD_EN     0x0004
++#define SDHCI_SOFTWARE_RESET    0x2f
++#define SDHCI_INT_STATUS        0x30
++#define SDHCI_INT_ENABLE        0x34
++#define SDHCI_SIGNAL_ENABLE     0x38
++
++#define SDHCI_MAKE_BLKSZ(dma, blksz) (((dma) << 12) | ((blksz) & 0xfff))
++
++#define SDHCI_TRNS_BLK_CNT_EN   0x0002
++#define SDHCI_TRNS_READ         0x0010
++#define SDHCI_TRNS_MULTI        0x0020
++
++#define SDHCI_CMD_RESP_LONG     0x01
++#define SDHCI_CMD_RESP_SHORT    0x02
++#define SDHCI_CMD_RESP_SHORT_BUSY 0x03
++#define SDHCI_CMD_CRC            0x08
++#define SDHCI_CMD_INDEX          0x10
++#define SDHCI_CMD_DATA           0x20
++#define SDHCI_MAKE_CMD(c, f)     ((((c) & 0xff) << 8) | ((f) & 0xff))
++
++#define SDHCI_CMD_INHIBIT       0x00000001u
++#define SDHCI_DATA_INHIBIT      0x00000002u
++
++#define SDHCI_CTRL_DMA_MASK     0x18u
++
++#define SDHCI_RESET_ALL         0x01
++#define SDHCI_RESET_CMD         0x02
++#define SDHCI_RESET_DATA        0x04
++
++#define SDHCI_INT_CC            0x00000001u
++#define SDHCI_INT_TC            0x00000002u
++#define SDHCI_INT_BWR           0x00000010u
++#define SDHCI_INT_BRR           0x00000020u
++#define SDHCI_INT_ERR           0x00008000u
++
++/* ------------------------------------------ Qualcomm MSM v4 core registers */
++#define SDHCI_HC_OFFSET         0x900           /* HC base - core base */
++#define CORE_HC_MODE            0x78
++#define CORE_HC_MODE_EN         0x00000001u
++#define CORE_FF_CLK_SW_RST_DIS  0x00002000u
++#define CORE_PWRCTL_STATUS      0xdc
++#define CORE_PWRCTL_MASK        0xe0
++#define CORE_PWRCTL_CLEAR       0xe4
++#define CORE_PWRCTL_CTL         0xe8
++
++/* --------------------------------------------------------------- transfers */
++#define SDHCI_BLOCK             512u
++#define BOUNCE_SIZE             (1u << 20)
++#define DMA_BOUNCE              0x0000
++#define CMD_TIMEOUT_NS          (100ull * NSEC_PER_MSEC)
++#define DATA_TIMEOUT_NS         (2ull * NSEC_PER_SEC)
++
++static struct {
++	vm_offset_t regs;                       /* core base, HC at +0x900 */
++	vm_offset_t dma;                        /* kernel VA of the bounce buffer */
++	uint64_t dma_pa;
++	char part[64];                          /* GPT partition name */
++	uint64_t first_block, nblocks;          /* partition, in 512-byte sectors */
++	uint32_t secsize;                       /* logical sector size for BSD */
++	bool writable;                          /* boot-arg emmcrw=1 */
++	int bmajor, cmajor;
++	dev_t bdev;
++	bool ready;
++} se;
++
++static LCK_GRP_DECLARE(santoni_sdhci_grp, "santoni_sdhci");
++static LCK_MTX_DECLARE(santoni_sdhci_lock, &santoni_sdhci_grp);
++
++static inline uint32_t
++hc_rd(uint32_t off)
++{
++	return *(volatile uint32_t *)(se.regs + SDHCI_HC_OFFSET + off);
++}
++
++static inline void
++hc_wr(uint32_t off, uint32_t val)
++{
++	*(volatile uint32_t *)(se.regs + SDHCI_HC_OFFSET + off) = val;
++}
++
++static inline uint16_t
++hc_rd16(uint32_t off)
++{
++	return *(volatile uint16_t *)(se.regs + SDHCI_HC_OFFSET + off);
++}
++
++static inline void
++hc_wr16(uint32_t off, uint16_t val)
++{
++	*(volatile uint16_t *)(se.regs + SDHCI_HC_OFFSET + off) = val;
++}
++
++static inline uint8_t
++hc_rd8(uint32_t off)
++{
++	return *(volatile uint8_t *)(se.regs + SDHCI_HC_OFFSET + off);
++}
++
++static inline void
++hc_wr8(uint32_t off, uint8_t val)
++{
++	*(volatile uint8_t *)(se.regs + SDHCI_HC_OFFSET + off) = val;
++}
++
++static inline uint32_t
++core_rd(uint32_t off)
++{
++	return *(volatile uint32_t *)(se.regs + off);
++}
++
++static inline void
++core_wr(uint32_t off, uint32_t val)
++{
++	*(volatile uint32_t *)(se.regs + off) = val;
++}
++
++/* PIO is CPU-driven, but the bounce buffer is shared with every later user of
++ * this driver; keep it clean/invalidated like the UFS driver does for DMA. */
++static void
++dma_sync(uint32_t len, bool is_read)
++{
++	flush_dcache64((addr64_t)(se.dma_pa + DMA_BOUNCE), len, is_read);
++}
++
++static int
++sdhci_poll_state(uint32_t mask, uint64_t timeout_ns)
++{
++	uint64_t deadline;
++
++	nanoseconds_to_absolutetime(timeout_ns, &deadline);
++	deadline += mach_absolute_time();
++	while (hc_rd(SDHCI_PRESENT_STATE) & mask) {
++		if (mach_absolute_time() > deadline) {
++			return ETIMEDOUT;
++		}
++		delay(1);
++	}
++	return 0;
++}
++
++/*
++ * Issue one command and wait for Command Complete. Errors clear the whole
++ * status register so a stale error bit cannot poison the next command.
++ */
++static int
++sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
++    uint32_t *resp)
++{
++	uint64_t deadline;
++	int error;
++
++	error = sdhci_poll_state(SDHCI_CMD_INHIBIT, CMD_TIMEOUT_NS);
++	if (error) {
++		return EBUSY;
++	}
++
++	hc_wr(SDHCI_ARGUMENT, arg);
++	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
++	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(index, flags));
++
++	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++	for (;;) {
++		uint32_t st = hc_rd(SDHCI_INT_STATUS);
++
++		if (st & SDHCI_INT_ERR) {
++			hc_wr(SDHCI_INT_STATUS, st);
++			printf("SANTONI SDHCI: command %u failed (status 0x%08x)\n",
++			    index, st);
++			return EIO;
++		}
++		if (st & SDHCI_INT_CC) {
++			hc_wr(SDHCI_INT_STATUS, SDHCI_INT_CC);
++			if (resp) {
++				*resp = hc_rd(SDHCI_RESPONSE);
++			}
++			return 0;
++		}
++		if (mach_absolute_time() > deadline) {
++			printf("SANTONI SDHCI: command %u timed out\n", index);
++			return ETIMEDOUT;
++		}
++		delay(1);
++	}
++}
++
++/* Wait for one data interrupt (BRR for reads, BWR for writes); clear it. */
++static int
++sdhci_wait_data(uint32_t bit)
++{
++	uint64_t deadline;
++
++	nanoseconds_to_absolutetime(DATA_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++	for (;;) {
++		uint32_t st = hc_rd(SDHCI_INT_STATUS);
++
++		if (st & SDHCI_INT_ERR) {
++			hc_wr(SDHCI_INT_STATUS, st);
++			return EIO;
++		}
++		if (st & bit) {
++			hc_wr(SDHCI_INT_STATUS, bit);
++			return 0;
++		}
++		if (mach_absolute_time() > deadline) {
++			return ETIMEDOUT;
++		}
++		delay(1);
++	}
++}
++
++static int
++sdhci_wait_transfer_complete(void)
++{
++	uint64_t deadline;
++
++	nanoseconds_to_absolutetime(DATA_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++	for (;;) {
++		uint32_t st = hc_rd(SDHCI_INT_STATUS);
++
++		if (st & SDHCI_INT_ERR) {
++			hc_wr(SDHCI_INT_STATUS, st);
++			return EIO;
++		}
++		if (st & SDHCI_INT_TC) {
++			hc_wr(SDHCI_INT_STATUS, SDHCI_INT_TC);
++			return 0;
++		}
++		if (mach_absolute_time() > deadline) {
++			return ETIMEDOUT;
++		}
++		delay(1);
++	}
++}
++
++static int
++sdhci_stop_transmission(void)
++{
++	return sdhci_cmd(12, 0, 0,
++	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
++}
++
++/*
++ * Polled PIO read of count 512-byte blocks. index is 18 (multi-block, needs
++ * CMD12) or 8/17 (single block). Data is assembled from the FIFO port, 128
++ * words per block.
++ */
++static int
++sdhci_read_pio(uint8_t index, uint32_t arg, uint32_t count, void *buf)
++{
++	uint16_t tr_mode;
++	uint32_t *dst = (uint32_t *)buf;
++	int error;
++
++	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
++		return EINVAL;
++	}
++	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
++	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)(index == 18 ? count : 1));
++
++	tr_mode = SDHCI_TRNS_BLK_CNT_EN | SDHCI_TRNS_READ;
++	if (index == 18) {
++		tr_mode |= SDHCI_TRNS_MULTI;
++	}
++	error = sdhci_cmd(index, arg, tr_mode,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
++	    SDHCI_CMD_DATA, NULL);
++	if (error) {
++		return error;
++	}
++
++	for (uint32_t b = 0; b < count; b++) {
++		error = sdhci_wait_data(SDHCI_INT_BRR);
++		if (error) {
++			if (index == 18) {
++				(void)sdhci_stop_transmission();
++			}
++			return error;
++		}
++		for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
++			dst[b * (SDHCI_BLOCK / 4) + i] = hc_rd(SDHCI_BUFFER);
++		}
++	}
++	error = sdhci_wait_transfer_complete();
++	if (error) {
++		if (index == 18) {
++			(void)sdhci_stop_transmission();
++		}
++		return error;
++	}
++	if (index == 18) {
++		return sdhci_stop_transmission();
++	}
++	return 0;
++}
++
++/* Polled PIO write of count 512-byte blocks (CMD25, terminated with CMD12). */
++static int
++sdhci_write_pio(uint32_t lba, uint32_t count, const void *buf)
++{
++	const uint32_t *src = (const uint32_t *)buf;
++	int error;
++
++	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
++		return EINVAL;
++	}
++	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
++	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
++
++	error = sdhci_cmd(25, lba,
++	    SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
++	    SDHCI_CMD_DATA, NULL);
++	if (error) {
++		return error;
++	}
++
++	for (uint32_t b = 0; b < count; b++) {
++		error = sdhci_wait_data(SDHCI_INT_BWR);
++		if (error) {
++			(void)sdhci_stop_transmission();
++			return error;
++		}
++		for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
++			hc_wr(SDHCI_BUFFER, src[b * (SDHCI_BLOCK / 4) + i]);
++		}
++	}
++	error = sdhci_wait_transfer_complete();
++	if (error) {
++		(void)sdhci_stop_transmission();
++		return error;
++	}
++	return sdhci_stop_transmission();
++}
++
++static int
++sdhci_read_response128(uint8_t index, uint32_t out[4])
++{
++	int error = sdhci_cmd(index, 0, 0,
++	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
++	if (error) {
++		return error;
++	}
++	for (int i = 0; i < 4; i++) {
++		out[i] = hc_rd(SDHCI_RESPONSE + 4 * i);
++	}
++	return 0;
++}
++
++/*
++ * Take the controller over from LK. Verify the vendor core is in HC mode with
++ * the feedback-clock software reset disabled, then reset only the command and
++ * data paths. SDHCI_CLOCK_CONTROL (0x2C) is only read for the log: writing it
++ * (or issuing RESET_ALL) would wipe the clock configuration the bootloader
++ * programmed through GCC.
++ */
++static int
++sdhci_take_over(void)
++{
++	uint32_t hc_mode = core_rd(CORE_HC_MODE);
++	uint16_t clk;
++	uint64_t deadline;
++
++	if (!(hc_mode & CORE_HC_MODE_EN)) {
++		printf("SANTONI SDHCI: core not in HC mode (0x%08x)\n", hc_mode);
++		return ENXIO;
++	}
++	if (!(hc_mode & CORE_FF_CLK_SW_RST_DIS)) {
++		printf("SANTONI SDHCI: enabling feedback clock (HC_MODE 0x%08x)\n",
++		    hc_mode);
++		core_wr(CORE_HC_MODE, hc_mode | CORE_FF_CLK_SW_RST_DIS);
++	}
++
++	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
++	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++	while (hc_rd8(SDHCI_SOFTWARE_RESET) &
++	    (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) {
++		if (mach_absolute_time() > deadline) {
++			printf("SANTONI SDHCI: reset did not complete\n");
++			return ETIMEDOUT;
++		}
++		delay(1);
++	}
++
++	/* PIO: select the (unused) SDMA field, preserve bus width and speed. */
++	hc_wr8(SDHCI_HOST_CONTROL,
++	    (uint8_t)(hc_rd8(SDHCI_HOST_CONTROL) & ~SDHCI_CTRL_DMA_MASK));
++
++	hc_wr(SDHCI_INT_ENABLE, 0);
++	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
++	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
++
++	clk = hc_rd16(SDHCI_CLOCK_CONTROL);
++	if (!(clk & SDHCI_CLOCK_CARD_EN)) {
++		printf("SANTONI SDHCI: card clock not enabled by the bootloader "
++		    "(0x%04x)\n", clk);
++		return ENXIO;
++	}
++	return 0;
++}
++
++static int
++sdhci_card_check(void)
++{
++	uint32_t cid[4] = { 0 }, csd[4] = { 0 }, r1 = 0;
++	uint32_t sec_count = 0;
++	char pnm[6];
++	int error;
++
++	error = sdhci_cmd(13, 0, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
++	if (error) {
++		return error;
++	}
++	if (((r1 >> 9) & 0xf) != 4) {           /* TRAN */
++		printf("SANTONI SDHCI: card is not in transfer state (R1 0x%08x)\n", r1);
++		return ENXIO;
++	}
++
++	error = sdhci_read_response128(10, cid);
++	if (error) {
++		return error;
++	}
++	error = sdhci_read_response128(9, csd);
++	if (error) {
++		return error;
++	}
++
++	/* CID: MID[127:120], PNM[103:64] (5 ASCII), PRV[63:56], PSN[55:32] */
++	pnm[0] = (char)(cid[0] & 0xff);
++	pnm[1] = (char)(cid[1] >> 24);
++	pnm[2] = (char)(cid[1] >> 16);
++	pnm[3] = (char)(cid[1] >> 8);
++	pnm[4] = (char)cid[1];
++	pnm[5] = 0;
++	for (int i = 0; i < 5; i++) {
++		if (pnm[i] < 0x20 || pnm[i] > 0x7e) {
++			pnm[i] = '.';
++		}
++	}
++	printf("SANTONI SDHCI: eMMC MID 0x%02x OID 0x%04x PNM \"%s\" "
++	    "rev %u.%u S/N 0x%08x CSD 0x%08x\n",
++	    (cid[0] >> 24) & 0xff, (cid[0] >> 8) & 0xffff, pnm,
++	    (cid[2] >> 24) & 0xf, (cid[2] >> 20) & 0xf, cid[2], csd[0]);
++
++	/* Extended CSD (CMD8): SEC_COUNT is the last 32-bit little-endian
++	 * field at offset 212, in 512-byte units. */
++	dma_sync(SDHCI_BLOCK, TRUE);
++	error = sdhci_read_pio(8, 0, 1, (void *)(se.dma + DMA_BOUNCE));
++	if (error) {
++		printf("SANTONI SDHCI: no extended CSD (%d), continuing\n", error);
++	} else {
++		dma_sync(SDHCI_BLOCK, TRUE);
++		memcpy(&sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
++	}
++	if (sec_count) {
++		printf("SANTONI SDHCI: eMMC 5.1, %llu MiB (%u x 512-byte sectors)\n",
++		    (unsigned long long)((uint64_t)sec_count * SDHCI_BLOCK >> 20),
++		    sec_count);
++	}
++	return 0;
++}
++
++static int
++santoni_sdhci_read_blocks(uint64_t lba, uint32_t count, void *buf)
++{
++	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK || lba > UINT32_MAX) {
++		return EINVAL;
++	}
++	return sdhci_read_pio(18, (uint32_t)lba, count, buf);
++}
++
++static int
++santoni_sdhci_write_blocks(uint64_t lba, uint32_t count, const void *buf)
++{
++	uint64_t off;
++
++	if (!se.writable) {
++		return EROFS;
++	}
++	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK ||
++	    lba < se.first_block || lba > UINT32_MAX) {
++		goto refuse;
++	}
++	off = lba - se.first_block;
++	if (off >= se.nblocks || count > se.nblocks - off) {
++		goto refuse;
++	}
++	return sdhci_write_pio((uint32_t)lba, count, buf);
++
++refuse:
++	printf("SANTONI SDHCI: refusing write of %u blocks at 0x%llx "
++	    "(outside \"%s\")\n", count, (unsigned long long)lba, se.part);
++	return EPERM;
++}
++
++static int
++santoni_sdhci_find_partition(const char *want)
++{
++	const uint8_t *b = (const uint8_t *)(se.dma + DMA_BOUNCE);
++	uint64_t entry_lba;
++	uint32_t nent, esz;
++	int error;
++
++	error = santoni_sdhci_read_blocks(1, 1, (void *)b);
++	if (error) {
++		return error;
++	}
++	if (memcmp(b, "EFI PART", 8) != 0) {
++		printf("SANTONI SDHCI: eMMC has no GPT\n");
++		return ENXIO;
++	}
++	memcpy(&entry_lba, b + 72, 8);
++	memcpy(&nent, b + 80, 4);
++	memcpy(&esz, b + 84, 4);
++	if (esz != 128 || nent == 0 || nent * esz > BOUNCE_SIZE) {
++		printf("SANTONI SDHCI: unsupported GPT entries %u x %u\n", nent, esz);
++		return ENXIO;
++	}
++	error = santoni_sdhci_read_blocks(entry_lba,
++	    (nent * esz + SDHCI_BLOCK - 1) / SDHCI_BLOCK, (void *)b);
++	if (error) {
++		return error;
++	}
++	for (uint32_t i = 0; i < nent; i++) {
++		const uint8_t *e = b + i * esz;
++		char name[37];
++		unsigned c;
++
++		for (c = 0; c < 36; c++) {
++			uint16_t ch = (uint16_t)(e[56 + 2 * c] | e[57 + 2 * c] << 8);
++			if (ch == 0 || ch > 0x7f) {
++				break;
++			}
++			name[c] = (char)ch;
++		}
++		name[c] = 0;
++		if (strcmp(name, want) != 0) {
++			continue;
++		}
++		uint64_t first, last;
++
++		memcpy(&first, e + 32, 8);
++		memcpy(&last, e + 40, 8);
++		if (last < first) {
++			return ENXIO;
++		}
++		se.first_block = first;
++		se.nblocks = last - first + 1;
++		return 0;
++	}
++	printf("SANTONI SDHCI: no GPT partition named \"%s\"\n", want);
++	return ENOENT;
++}
++
++static int
++santoni_sdhci_open(__unused dev_t dev, int flags, __unused int devtype,
++    __unused struct proc *p)
++{
++	if (!se.ready) {
++		return ENXIO;
++	}
++	return (flags & FWRITE) && !se.writable ? EROFS : 0;
++}
++
++static int
++santoni_sdhci_close(__unused dev_t dev, __unused int flags,
++    __unused int devtype, __unused struct proc *p)
++{
++	return 0;
++}
++
++static void
++santoni_sdhci_strategy(buf_t bp)
++{
++	int error = 0;
++	caddr_t vaddr = NULL;
++	uint64_t off = (uint64_t)buf_blkno(bp) * se.secsize;
++	uint32_t count = buf_count(bp);
++	uint64_t part_bytes = se.nblocks * SDHCI_BLOCK;
++	bool rd = (buf_flags(bp) & B_READ) != 0;
++
++	buf_setresid(bp, count);
++	if (!rd && !se.writable) {
++		error = EROFS;
++		goto done;
++	}
++	if (off > part_bytes || count > part_bytes - off) {
++		error = EINVAL;
++		goto done;
++	}
++	if (count == 0) {
++		goto done;
++	}
++	if (buf_map(bp, &vaddr)) {
++		error = EIO;
++		goto done;
++	}
++
++	lck_mtx_lock(&santoni_sdhci_lock);
++	for (uint32_t done = 0; done < count;) {
++		uint64_t pos = off + done;
++		uint64_t lba = pos / SDHCI_BLOCK;
++		uint32_t skip = (uint32_t)(pos % SDHCI_BLOCK);
++		uint32_t want = MIN(count - done, (uint32_t)BOUNCE_SIZE - skip);
++		uint32_t blocks = (skip + want + SDHCI_BLOCK - 1) / SDHCI_BLOCK;
++		char *bounce = (char *)(se.dma + DMA_BOUNCE);
++
++		if (rd) {
++			error = santoni_sdhci_read_blocks(se.first_block + lba,
++			    blocks, bounce);
++			if (!error) {
++				memcpy(vaddr + done, bounce + skip, want);
++			}
++		} else {
++			if (skip || (want % SDHCI_BLOCK)) {
++				error = santoni_sdhci_read_blocks(se.first_block + lba,
++				    blocks, bounce);
++			}
++			if (!error) {
++				memcpy(bounce + skip, vaddr + done, want);
++				error = santoni_sdhci_write_blocks(
++				    se.first_block + lba, blocks, bounce);
++			}
++		}
++		if (error) {
++			break;
++		}
++		done += want;
++		buf_setresid(bp, count - done);
++	}
++	lck_mtx_unlock(&santoni_sdhci_lock);
++	buf_unmap(bp);
++
++done:
++	if (error) {
++		buf_seterror(bp, error);
++	}
++	buf_biodone(bp);
++}
++
++static int
++santoni_sdhci_ioctl(__unused dev_t dev, u_long cmd, caddr_t data,
++    __unused int flag, __unused struct proc *p, int is_char)
++{
++	uint32_t *f = (uint32_t *)data;
++	uint64_t *o = (uint64_t *)data;
++
++	switch (cmd) {
++	case DKIOCGETBLOCKSIZE:
++		*f = se.secsize;
++		return 0;
++	case DKIOCSETBLOCKSIZE:
++		if (is_char) {
++			return ENODEV;
++		}
++		if (*f < DEV_BSIZE || *f > SDHCI_BLOCK || (*f & (*f - 1))) {
++			return EINVAL;
++		}
++		se.secsize = *f;
++		return 0;
++	case DKIOCGETPHYSICALBLOCKSIZE:
++		*f = SDHCI_BLOCK;
++		return 0;
++	case DKIOCGETBLOCKCOUNT:
++		*o = se.nblocks * SDHCI_BLOCK / se.secsize;
++		return 0;
++	case DKIOCISWRITABLE:
++		*f = se.writable ? 1 : 0;
++		return 0;
++	case DKIOCGETMAXBLOCKCOUNTREAD:
++		*o = BOUNCE_SIZE / se.secsize;
++		return 0;
++	case DKIOCGETMAXBLOCKCOUNTWRITE:
++		*o = se.writable ? BOUNCE_SIZE / se.secsize : 0;
++		return 0;
++	case DKIOCGETMAXSEGMENTCOUNTREAD:
++	case DKIOCGETMAXSEGMENTCOUNTWRITE:
++		*o = 1;
++		return 0;
++	default:
++		return ENOTTY;
++	}
++}
++
++static int
++santoni_sdhci_bioctl(dev_t dev, u_long cmd, caddr_t data, int flag,
++    struct proc *p)
++{
++	return santoni_sdhci_ioctl(dev, cmd, data, flag, p, 0);
++}
++
++static int
++santoni_sdhci_cioctl(dev_t dev, u_long cmd, caddr_t data, int flag,
++    struct proc *p)
++{
++	return santoni_sdhci_ioctl(dev, cmd, data, flag, p, 1);
++}
++
++static int
++santoni_sdhci_psize(__unused dev_t dev)
++{
++	return se.ready ?
++	       (int)MIN(se.nblocks * SDHCI_BLOCK / se.secsize, (uint64_t)INT_MAX) :
++	       -1;
++}
++
++static int
++santoni_sdhci_read(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return physio(santoni_sdhci_strategy, NULL, dev, B_READ, minphys, uio,
++	    (int)se.secsize);
++}
++
++static int
++santoni_sdhci_write(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	if (!se.writable) {
++		return EROFS;
++	}
++	return physio(santoni_sdhci_strategy, NULL, dev, B_WRITE, minphys, uio,
++	    (int)se.secsize);
++}
++
++static const struct bdevsw santoni_sdhci_bdevsw = {
++	.d_open     = santoni_sdhci_open,
++	.d_close    = santoni_sdhci_close,
++	.d_strategy = santoni_sdhci_strategy,
++	.d_ioctl    = santoni_sdhci_bioctl,
++	.d_dump     = eno_dump,
++	.d_psize    = santoni_sdhci_psize,
++	.d_type     = D_DISK,
++};
++
++static const struct cdevsw santoni_sdhci_cdevsw = {
++	.d_open       = santoni_sdhci_open,
++	.d_close      = santoni_sdhci_close,
++	.d_read       = santoni_sdhci_read,
++	.d_write      = santoni_sdhci_write,
++	.d_ioctl      = santoni_sdhci_cioctl,
++	.d_stop       = eno_stop,
++	.d_reset      = eno_reset,
++	.d_ttys       = NULL,
++	.d_select     = eno_select,
++	.d_mmap       = eno_mmap,
++	.d_strategy   = eno_strat,
++	.d_reserved_1 = eno_getc,
++	.d_reserved_2 = eno_putc,
++	.d_type       = D_DISK,
++};
++
++static int
++santoni_sdhci_init(void)
++{
++	DTEntry node;
++	uintptr_t const *reg = NULL;
++	unsigned int size = 0;
++	int error, rw = 0;
++
++	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
++	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
++	    size < 2 * sizeof(uintptr_t)) {
++		printf("SANTONI SDHCI: no /santoni-sdhci node in the device tree\n");
++		return ENXIO;
++	}
++	if (reg[1] < 0x1000) {
++		printf("SANTONI SDHCI: /santoni-sdhci reg window too small "
++		    "(0x%llx)\n", (unsigned long long)reg[1]);
++		return ENXIO;
++	}
++	strlcpy(se.part, "userdata", sizeof(se.part));
++	PE_parse_boot_argn("emmcroot", se.part, sizeof(se.part));
++	if (PE_parse_boot_argn("emmcrw", &rw, sizeof(rw))) {
++		se.writable = (rw != 0);
++	}
++	se.secsize = DEV_BSIZE;
++
++	se.regs = ml_io_map(reg[0], reg[1]);
++	if (kmem_alloc_contig(kernel_map, &se.dma, BOUNCE_SIZE, PAGE_MASK, 0, 0,
++	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) !=
++	    KERN_SUCCESS) {
++		printf("SANTONI SDHCI: no contiguous bounce buffer\n");
++		return ENOMEM;
++	}
++	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)se.dma);
++	if (!pn) {
++		return ENOMEM;
++	}
++	se.dma_pa = ptoa_64(pn);
++
++	lck_mtx_lock(&santoni_sdhci_lock);
++	error = sdhci_take_over();
++	if (!error) {
++		error = sdhci_card_check();
++	}
++	if (!error) {
++		error = santoni_sdhci_find_partition(se.part);
++	}
++	lck_mtx_unlock(&santoni_sdhci_lock);
++	if (error) {
++		return error;
++	}
++
++	se.bmajor = bdevsw_add(-1, &santoni_sdhci_bdevsw);
++	if (se.bmajor < 0) {
++		return ENXIO;
++	}
++	se.cmajor = cdevsw_add_with_bdev(-1, &santoni_sdhci_cdevsw, se.bmajor);
++	if (se.cmajor < 0) {
++		return ENXIO;
++	}
++	se.bdev = makedev(se.bmajor, 0);
++	devfs_make_node(se.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640,
++	    "emmcroot0");
++	devfs_make_node(makedev(se.cmajor, 0), DEVFS_CHAR, UID_ROOT,
++	    GID_OPERATOR, 0640, "remmcroot0");
++	se.ready = true;
++	printf("SANTONI SDHCI: \"%s\" first block 0x%llx, %llu MiB, %s\n",
++	    se.part, (unsigned long long)se.first_block,
++	    (unsigned long long)(se.nblocks * SDHCI_BLOCK >> 20),
++	    se.writable ? "writable (emmcrw=1)" : "read-only");
++	return 0;
++}
++
++/* Root device for rd=emmcroot0 (IOFindBSDRoot). */
++int santoni_sdhci_rootdev(dev_t *dev);
++
++int
++santoni_sdhci_rootdev(dev_t *dev)
++{
++	if (!se.ready) {
++		int error = santoni_sdhci_init();
++		if (error) {
++			return error;
++		}
++	}
++	*dev = se.bdev;
++	return 0;
++}
++
++#endif /* ARM64_BOARD_CONFIG_SANTONI */

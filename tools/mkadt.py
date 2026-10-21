@@ -199,6 +199,22 @@ def build(seed=None, qemu=False, native=False):
         ('depth', u32(24)),
     ])
 
+    # Internal eMMC 5.1 controller (SDCC1) for bsd/dev/santoni_sdhci.c. At the
+    # root, like /sweet-ufs, so reg[] is an absolute physical address and not
+    # translated by /arm-io's "ranges". The 0x1000 window starting at the
+    # Qualcomm core block also contains the standard SDHCI host controller
+    # registers at 0x07824900 (+0x900, 0x500 bytes); hc-reg mirrors the
+    # msm8937.dtsi sdhc_1 split for documentation.
+    sdhci = node('santoni-sdhci', [
+        ph(),
+        ('compatible', cstr('qcom,sdhci-msm-v4') + cstr('generic-sdhci')),
+        ('device_type', cstr('sdhci')),
+        ('reg', u64(0x07824000, 0x1000)),
+        ('hc-reg', u64(0x07824900, 0x500)),
+        ('bus-width', u32(8)),
+        ('non-removable', b''),
+    ])
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -234,7 +250,7 @@ def build(seed=None, qemu=False, native=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, sdhci] + product)
 
 
 if __name__ == '__main__':
