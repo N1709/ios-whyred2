@@ -31,6 +31,20 @@
        - Keeps `sweet_early` enabled past Mark 20 on Santoni (`#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(SANTONI)`).
        - Updates `sweet_early_panic` to print even if disabled, and spins in `wfe` on Santoni so any panic remains permanently visible on screen.
     3. `shim/build.sh`: Added `disable_kprintf_output=0 -enable_kprintf_spam` to kernel command line.
+  - **CI Build 39596534168 (Commit 1cce356) SUCCESS:**
+    - Kernel build succeeded with both patches applied. Verified in Mach-O disassembly:
+      - `santoni_early_serial_functions` registered in `gPESF` at `_serial_init` (`0xfffffff007a1aa20`).
+      - `_santoni_early_serial_init` explicitly clears `disable_kprintf_output` and `disable_serial_output`.
+      - `_sweet_early_panic` spins in `wfe` without checking `early_disabled`.
+      - `SweetCPU::startAll` compares `boot_cpu->phys_id` against `0x100` (`cmp w9, #0x100`), avoiding panic.
+    - Kernel artifact: 16,798,488 bytes, SHA256 `67684e98540df6663cad2ba9c59649abe3d3a6f5ae1ca8a4d481b5a272e54ab9`.
+    - Boot Image: `shim/out/shim-boot.img`, 16,398,336 bytes, SHA256 `c0016f69835ab7c4c0a436324f4195cd7f73951c895f7cd1c066bf66bf10db88`.
+    - Dispatched to:
+      - Telegram: chat `5987149471` (message 133).
+      - Local storage: `/storage/emulated/0/shim-boot.img`.
+    - Next Action: User tests on physical device via:
+      `fastboot boot shim/out/shim-boot.img` (or `fastboot boot /storage/emulated/0/shim-boot.img`).
+    - Expected Behavior: Output continues past Mark 20; `kprintf` lines scroll on screen, `SweetCPU` brings up cores, and any panic halts cleanly on-screen with `wfe` without rebooting.
 
 
 
