@@ -2,6 +2,29 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> UPDATE 2026-10-21: Immediate Reboot After "jumping" Solved — TrustZone XPU Trap Removed <<<
+
+- **Root Cause of Post-"jumping" Device Reset:**
+  - When the shim branched to `_start_first_cpu`, instruction 7 in `start.s` was `str x11, [0x85ff0000]`.
+  - On Qualcomm MSM8937, `0x85ff0000` is part of `qseecom_mem` (`0x85b00000..0x86300000`, TrustZone/QSEE secure memory), which is hardware-protected by Qualcomm Extended Protection Units (XPU).
+  - Non-Secure EL1 writes to TrustZone memory trigger a hardware security violation, causing an immediate SError watchdog reset before Stage 0 could even draw to the display.
+  - Additionally, `MEM_SIZE` was configured as 1.5 GiB, which crossed the 1 GiB L2 table boundary in 4 KiB translation and caused page table allocation beyond the 4 zeroed pages of `_bootstrap_pagetables`.
+- **Fix Applied:**
+  - Author commit `9d4223a`: Removed the store to `0x85ff0000` from `xnu/patches/0082-santoni-4k-entry.patch` and capped early `MEM_SIZE` to `0x28000000` (640 MiB) in `tools/mkadt.py` so bootstrap page tables fit entirely within the 4 zeroed pages.
+  - CI Build Run `39555441649`: Completed with 100% SUCCESS.
+  - Verified `kernel.development.santoni`: Instruction 7 is gone; `_start_first_cpu` now executes straight into Stage 0 framebuffer writes.
+  - Repackaged `shim/out/shim-boot.img` (16,293,888 bytes, Android boot v0 with valid `SWEETXNU` payload).
+- **Physical Device Boot Verification Procedure:**
+  1. Boot via fastboot:
+     ```bash
+     fastboot boot shim/out/shim-boot.img
+     ```
+  2. Expected screen sequence:
+     - **Red screen:** Bare-metal shim loader active (`SHIM santoni bare-metal shim`, `SEGS n=10`, `BOOTARG pa=0x9a06b000`, `JUMP 0x99424488`).
+     - **White bar across top:** `start.s` Stage 0 physical entry (MMU off).
+     - **Blue bar across top:** `start.s` Stage 1 MMU active (4K pmap bootstrap live).
+     - **Darwin kernel console:** Screen blits kernel banner: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
+
 ### >>> UPDATE 2026-10-21: Root Cause Diagnosed & Fixed — Raw Mach-O vs SWEETXNU Payload Packaging <<<
 
 - **Root Cause of Fallthrough to Phase 2 Screen:**
