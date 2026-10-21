@@ -72,8 +72,16 @@
   including a new `test_card_ladder()` with RCA-2, RCA-1, sleep, standby and
   card-absent cases, all patch checks, plus STOR-07 assertions that the RCA
   form is shipped and the old `arg = 0` form is gone).
-- **Hardware status:** not yet booted with this fix (user was away; no
-  `fastboot boot` run). No device state changed.
+- **Artifact state (df4395e):** green CI run 39655026585, kernel 17,299,992 B SHA256
+  `0f2917852633cf8c571fdad543691d4b360eeea1cbc3d03fb08d281c06c45150`;
+  `shim/out/shim-boot.img` 16,934,912 B SHA256
+  `f06f0665fdd44a0655785165bc3f8d7b3a1d166ca500d8b3d808d29cd5378998`,
+  same SHA on `/storage/emulated/0/shim-boot.img`.
+- **Hardware status:** Ready for fastboot boot. Boot image staged at
+  `/storage/emulated/0/shim-boot.img`. Expected on boot: card answers CMD13
+  on RCA 2 (or ladder fallback), prints 6-char PNM & CID/CSD decoded with
+  CRC-strip shift, discovers system + userdata GPT partitions, tests sector 0
+  read, and launches PID 1 init.
 
 ## Audit (2026-10-21, previous): 0142/0143 symbols + SDHCI registers, 3 findings
 
