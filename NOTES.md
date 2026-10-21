@@ -2,6 +2,30 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> UPDATE 2026-10-21: Phase 3 Plan 04 (Shim Loader 4K Handoff & Boot Image Packaging) EXECUTED & COMMITTED <<<
+
+- **Plan 03-04 Status:** EXECUTED, VERIFIED, AND COMMITTED (Physical hardware verification awaiting user test)
+- **Deliverables:**
+  - `shim/loader.c`: Unrolls Mach-O segments, stages santoni ADT and iBoot `boot_args` with 4 KiB page alignment (`PAGE_4K 0x1000UL`), cleans D-cache lines to Point of Coherence (`dc cvac`), executes full memory barriers (`dsb sy; ic iallu; dsb sy; isb`), and branches to `entry_pa` with `x0 = boot_args PA`. Enforces segment count bounds (`nsegs <= 32`) and validates physical RAM destination ranges (T-03-07, T-03-08).
+  - `shim/loader_test.c`: Host unit test verifying 4K page alignment of ADT and `boot_args`, 720x1280 24-bit framebuffer parameters (`FB_BASE 0x90001000`, `FB_STRIDE 2160`), `Revision == 2 && Version == 2`, and error returns for oversized segment counts or destinations outside physical RAM.
+  - `shim/build.sh`: Free of `ABS64` relocations across all C objects; compiles and runs `out/loader_test` in the build verification pipeline; accepts optional payload argument as mkbootimg `--ramdisk` to avoid corrupting Qualcomm LK appended DTB table offset; packages `out/shim-boot.img`.
+  - `shim/out/shim-boot.img`: Validated Android boot image v0 format (`ANDROID!` magic).
+- **Commits Added in Plan 03-04:**
+  - `25c505b`: `feat(03-04): clean dcache to PoC and validate 4K boot_args in shim loader` (Author: orhunnx)
+  - `f3247d9`: `feat(03-04): wire loader_test and ramdisk payload packaging in shim/build.sh` (Author: console-ramoops)
+- **Physical Device Boot Verification Procedure (Awaiting User Test):**
+  1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
+  2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
+  3. Verify screen sequence:
+     - Red screen: SHIM santoni phase 3 diagnostic telemetry.
+     - White rectangular bar: `start.s` Stage 0 physical entry (MMU off).
+     - Blue rectangular bar: `start.s` Stage 1 MMU active (4K pmap bootstrap).
+     - Darwin kernel banner printed to screen: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
+- **Next Concrete Action:**
+  - Physical device verification: execute `fastboot boot shim/out/shim-boot.img` on hardware.
+  - Complete Phase 03 milestone verification.
+
+
 ### >>> UPDATE 2026-10-21: Phase 3 Plan 03 (Architecture Conformance & CI Workflow) EXECUTED & COMMITTED <<<
 
 - **Plan 03-03 Status:** EXECUTED, VERIFIED, AND COMMITTED
