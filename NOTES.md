@@ -2,6 +2,33 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **Phase 4 Plan 02 (SDHCI MSM v4 eMMC driver + ADT nub) EXECUTED & COMMITTED:**
+  - **Deliverables:**
+    1. `tests/test_sdhci_mock.c`: host mock of the SDHCI MSM v4 register file
+       (HC 0x07824900 at core+0x900), command handshake, PIO FIFO, and take-over
+       path; covers CMD13/10/9, CMD18 + CMD12, CMD25, error/timeout/inhibit paths.
+    2. `xnu/patches/0142-santoni-sdhci-emmc-driver.patch`: `bsd/dev/santoni_sdhci.c`
+       (polled PIO, `/dev/emmcroot0` + `/dev/remmcroot0`, GPT `userdata` slicing,
+       `emmcrw=1` write gate), `bsd/conf/files`, and the `IOKitBSDInit.cpp`
+       `rd=emmcroot0` hook. Only `RESET_CMD|RESET_DATA`, never `RESET_ALL`, and
+       0x2C is read only (LK clock/GCC state preserved).
+    3. `tools/mkadt.py`: root `/santoni-sdhci` node, `reg = <0x07824000 0x1000>`,
+       `hc-reg = <0x07824900 0x500>`, `qcom,sdhci-msm-v4`.
+  - **Commits:** `ed76a6d` (mock test), `fbc7f7d` (driver patch + ADT),
+    plus the 04-02 summary/docs commit.
+  - **Verified locally:** mock test passes under `clang -O2 -Wall` and `-Wextra`;
+    `python3 tools/mkadt.py out/santoni_test.adt --dump` shows `santoni-sdhci`;
+    `git apply --check` and `patch -p1 --forward --dry-run` both accept 0142.
+  - **Not yet run:** 0142 has not been compiled by CI and the driver has not
+    touched silicon. The mock test is not wired into `shim/build.sh`/CI.
+  - **Next Concrete Action:**
+    1. Push and let the xnu workflow build SANTONI with 0142; fix any compile
+       errors in `bsd/dev/santoni_sdhci.c`.
+    2. `fastboot boot` a payload whose cmdline carries `rd=emmcroot0` (read-only)
+       and capture the `SANTONI SDHCI:` CID/CSD/capacity and GPT partition lines.
+    3. Execute Phase 4 Plan 03 (HFS+ root mount + persistent console log) only
+       after those lines look sane.
+
 - **Phase 4 Plan 01 (RAM Disk Root & Static Mach-O PID 1 Init) EXECUTED & COMMITTED:**
   - **Milestone Achieved:** STOR-01 verified end-to-end. Static arm64 Mach-O PID 1 init authored, wrapped, injected into payload as RAMDisk, and packaged into bootable Android boot.img with `rd=md0`.
   - **Commits:**
