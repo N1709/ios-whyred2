@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,1506 @@
+@@ -0,0 +1,1641 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -67,11 +67,12 @@ new file mode 100644
 + * SDHCI_RESET_ALL (0x01) is never issued: it would wipe the clock
 + * programming the bootloader did through GCC. The driver does switch the
 + * vendor core from the bootloader's legacy MCI mode into SDHCI HC mode
-+ * (CORE_HC_MODE, core + 0x78) and only ever opens the SDHCI card-clock gate
-+ * when the divider the bootloader left behind is already valid. It resets
-+ * only the command and data paths (0x06) and clears the DMA select so
-+ * transfers use the FIFO. All DMA-free, so the only cache maintenance is the
-+ * (conservative) clean/invalidate of the bounce buffer.
++ * (CORE_HC_MODE, core + 0x78), selects the free-running MCLK the HC datapath
++ * runs on (CORE_VENDOR_SPEC, core + 0x10c) and only ever opens the SDHCI
++ * card-clock gate when the divider the bootloader left behind is already
++ * valid. It resets only the command and data paths (0x06) and clears the DMA
++ * select so transfers use the FIFO. All DMA-free, so the only cache
++ * maintenance is the (conservative) clean/invalidate of the bounce buffer.
 + *
 + * One GPT partition is found by name (boot-arg emmcroot=, default
 + * "userdata") and exposed as the BSD disk emmcroot0 (remmcroot0 character
@@ -185,12 +186,33 @@ new file mode 100644
 +/*
 + * core + 0x10c: vendor clock/DLL control. Linux (sdhci_msm_probe()) resets it
 + * to CORE_VENDOR_SPEC_POR_VAL before it enables HC mode; bits 9:8 select the
-+ * clock the HC block uses (2 = free-running MCLK), bit 1 is CORE_CLK_PWRSAVE.
++ * clock the HC block itself runs on (2 = free-running MCLK, 3 = MCLK/2 for
++ * HS400), bit 1 is CORE_CLK_PWRSAVE, bit 18 enables HC_SELECT_IN. The POR
++ * value already selects free-running MCLK; msm_hc_select_default() re-asserts
++ * that selection and clears HC_SELECT_IN before every rate change.
 + */
 +#define CORE_VENDOR_SPEC        0x10c
 +#define CORE_VENDOR_SPEC_POR_VAL 0xa9cu
 +#define CORE_HC_MCLK_SEL_MASK   (3u << 8)
 +#define CORE_HC_MCLK_SEL_DFLT   (2u << 8)
++#define CORE_HC_SELECT_IN_EN    0x00040000u     /* BIT(18) */
++#define CORE_HC_SELECT_IN_MASK  (7u << 19)
++/*
++ * core + 0x100: DLL configuration (sdhci-msm.c msm_init_cm_dll()).
++ * CORE_CK_OUT_EN hands the card clock to the DLL output; CORE_DLL_EN arms the
++ * DLL, RST/PDN hold it down. Selecting a DLL that is not running is the same
++ * as driving no card clock at all, so the output source must follow the DLL
++ * state. Linux only sets CK_OUT_EN as the last step of msm_init_cm_dll(),
++ * which runs for HS200/HS400 tuning - not on the default/high-speed path.
++ */
++#define CORE_DLL_CONFIG         0x100
++#define CORE_DLL_STATUS         0x108
++#define CORE_DLL_LOCK           0x00000080u     /* BIT(7) */
++#define CORE_DLL_EN             0x00010000u     /* BIT(16) */
++#define CORE_CK_OUT_EN          0x00040000u     /* BIT(18) */
++#define CORE_DLL_PDN            0x20000000u     /* BIT(29) */
++#define CORE_DLL_RST            0x40000000u     /* BIT(30) */
++#define CORE_DLL_OFF            (CORE_DLL_RST | CORE_DLL_PDN)
 +/* Legacy MCI window the bootloader drove (LK mmc.c MMC_BOOT_MCI_POWER/CLK). */
 +#define CORE_MCI_POWER          0x000
 +#define CORE_MCI_CLK            0x004
@@ -631,23 +653,27 @@ new file mode 100644
 + * write has landed by the time the bus write is acknowledged, so the read-back
 + * both flushes the posted write and proves the bit. No settling delay is
 + * required before touching the +0x900 window. FF_CLK_SW_RST_DIS is written in
-+ * the same access as HC_MODE_EN: it stops the core from resetting itself while
-+ * the SDCLK feedback is not toggling, which would silently clear HC mode again.
++ * a second access, only after HC_MODE_EN has latched, exactly as Linux does
++ * it: the hardware log from commit df4395e shows HC_MODE 0x00000001 after a
++ * single combined write, i.e. bit 13 was dropped. Bit 13 is what stops the
++ * core from resetting itself whenever the SDCLK feedback is not toggling,
++ * which is the state the controller is in until a card clock is out - so a
++ * dropped bit 13 can hold the command state machine in reset forever.
 + */
 +static int
 +sdhci_enter_hc_mode(void)
 +{
-+	const uint32_t want = CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS;
 +	uint32_t hc_mode = core_rd(CORE_HC_MODE);
 +	uint16_t host_version;
 +
-+	if ((hc_mode & want) == want) {
++	if ((hc_mode & (CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS)) ==
++	    (CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS)) {
 +		return 0;
 +	}
 +
 +	printf("SANTONI SDHCI: HC_MODE 0x%08x, enabling HC mode\n", hc_mode);
-+	/* Keep any other vendor bits the bootloader left in the register. */
-+	core_wr(CORE_HC_MODE, hc_mode | want);
++	/* Step 1: HC_MODE_EN, keeping any other vendor bits LK left. */
++	core_wr(CORE_HC_MODE, (hc_mode & ~CORE_HC_MODE_EN) | CORE_HC_MODE_EN);
 +	hc_mode = core_rd(CORE_HC_MODE);
 +
 +	if (!(hc_mode & CORE_HC_MODE_EN)) {
@@ -665,13 +691,77 @@ new file mode 100644
 +		printf("SANTONI SDHCI: HC_MODE_EN reads back 0 but the HC "
 +		    "window answers (HOST_VERSION 0x%04x)\n", host_version);
 +	}
++	/* Step 2: the free-running-clock reset guard, after bit 0 is in. */
++	core_wr(CORE_HC_MODE, hc_mode | CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS);
++	hc_mode = core_rd(CORE_HC_MODE);
 +	if (!(hc_mode & CORE_FF_CLK_SW_RST_DIS)) {
 +		printf("SANTONI SDHCI: FF_CLK_SW_RST_DIS did not stick "
-+		    "(HC_MODE 0x%08x)\n", hc_mode);
++		    "(HC_MODE 0x%08x): the core may self-reset while SDCLK "
++		    "feedback is stopped\n", hc_mode);
 +	}
 +	printf("SANTONI SDHCI: HC mode enabled (HC_MODE 0x%08x, "
 +	    "HOST_VERSION 0x%04x)\n", hc_mode, hc_rd16(SDHCI_HOST_VERSION));
 +	return 0;
++}
++
++/*
++ * HC block clock source. CORE_VENDOR_SPEC[9:8] selects the clock the HC
++ * datapath runs on; LK leaves it at 0 because it only ever drove the legacy
++ * MCI block. With selection 0 the register file still answers (bus clock) and
++ * CLOCK_CONTROL can report INT_EN|INT_STABLE, but a command written to 0x0e
++ * never leaves the shifter: PRESENT_STATE keeps CMD_INHIBIT set and no
++ * completion is ever posted - the exact failure in the df4395e boot log,
++ * including CMD0, which needs no card at all.
++ *
++ * Linux writes CORE_VENDOR_SPEC_POR_VAL in sdhci_msm_probe(), then re-selects
++ * free-running MCLK and disables HC_SELECT_IN from msm_hc_select_default()
++ * before programming any rate. Takeover does the POR write before HC mode and
++ * this selection right after it, so both happen before the first command.
++ */
++static void
++sdhci_select_hc_clock(void)
++{
++	uint32_t vs = core_rd(CORE_VENDOR_SPEC);
++
++	vs &= ~CORE_HC_MCLK_SEL_MASK;
++	vs |= CORE_HC_MCLK_SEL_DFLT;
++	vs &= ~(CORE_HC_SELECT_IN_EN | CORE_HC_SELECT_IN_MASK);
++	core_wr(CORE_VENDOR_SPEC, vs);
++	vs = core_rd(CORE_VENDOR_SPEC);
++	printf("SANTONI SDHCI: HC clock source MCLK sel %u (VENDOR_SPEC "
++	    "0x%08x)\n", (vs & CORE_HC_MCLK_SEL_MASK) >> 8, vs);
++}
++
++/*
++ * Card-clock output stage (core + 0x100). CORE_CK_OUT_EN selects the DLL as
++ * the source of SDCLK; a DLL held in reset, powered down or unlocked cannot
++ * drive it, so the output must fall back to bypass. Linux never sets
++ * CK_OUT_EN outside msm_init_cm_dll() (HS200/HS400 tuning), so bypass is the
++ * correct state for the 400 kHz identification and 52 MHz high-speed path this
++ * driver uses - unless LK left a locked DLL running. Log the register either
++ * way: it is the one clock register the previous boot log never showed.
++ */
++static void
++sdhci_clock_output(void)
++{
++	uint32_t dll = core_rd(CORE_DLL_CONFIG);
++	uint32_t status = core_rd(CORE_DLL_STATUS);
++	bool dll_live = (dll & CORE_DLL_EN) && !(dll & CORE_DLL_OFF) &&
++	    (status & CORE_DLL_LOCK);
++	uint32_t want = dll_live ? (dll | CORE_CK_OUT_EN) :
++	    (dll & ~CORE_CK_OUT_EN);
++
++	printf("SANTONI SDHCI: CORE_DLL_CONFIG 0x%08x CORE_DLL_STATUS 0x%08x "
++	    "(DLL_EN %u, PDN %u, RST %u, LOCK %u, CK_OUT_EN %u)\n", dll, status,
++	    (dll & CORE_DLL_EN) ? 1u : 0u, (dll & CORE_DLL_PDN) ? 1u : 0u,
++	    (dll & CORE_DLL_RST) ? 1u : 0u, (status & CORE_DLL_LOCK) ? 1u : 0u,
++	    (dll & CORE_CK_OUT_EN) ? 1u : 0u);
++	if (want != dll) {
++		core_wr(CORE_DLL_CONFIG, want);
++		printf("SANTONI SDHCI: card clock output %s (CORE_DLL_CONFIG "
++		    "0x%08x)\n", dll_live ? "selected from the locked DLL" :
++		    "bypasses the powered-down DLL", core_rd(CORE_DLL_CONFIG));
++	}
 +}
 +
 +/*
@@ -684,7 +774,7 @@ new file mode 100644
 +{
 +	uint16_t clk;
 +	uint8_t ctrl;
-+	uint32_t mci_clk, mci_power;
++	uint32_t mci_clk, mci_power, vendor;
 +	int error;
 +
 +	error = sdhci_core_check();
@@ -698,10 +788,28 @@ new file mode 100644
 +	 */
 +	mci_power = core_rd(CORE_MCI_POWER);
 +	mci_clk = core_rd(CORE_MCI_CLK);
++	/*
++	 * Vendor clock register before HC mode, in Linux's order
++	 * (sdhci_msm_probe: POR value, then HC_MODE_EN, then
++	 * FF_CLK_SW_RST_DIS). LK never writes it, so on this hand-off it still
++	 * selects "no clock" for the HC datapath.
++	 */
++	vendor = core_rd(CORE_VENDOR_SPEC);
++	printf("SANTONI SDHCI: CORE_VENDOR_SPEC 0x%08x (MCLK sel %u, "
++	    "PWRSAVE %u) -> POR 0x%08x\n", vendor,
++	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8, (vendor >> 1) & 1u,
++	    CORE_VENDOR_SPEC_POR_VAL);
++	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
 +	error = sdhci_enter_hc_mode();
 +	if (error) {
 +		return error;
 +	}
++	/*
++	 * The POR value already carries MCLK select 2, but re-assert the
++	 * selection the way sdhci_msm_set_clock() does before every rate
++	 * change: this is the clock the command shifter runs on.
++	 */
++	sdhci_select_hc_clock();
 +
 +	error = sdhci_reset_paths();
 +	if (error) {
@@ -723,7 +831,17 @@ new file mode 100644
 +		    "(HOST_CONTROL 0x%02x)\n", ctrl);
 +	}
 +
-+	hc_wr(SDHCI_INT_ENABLE, 0);
++	/*
++	 * Polled operation: status enable all ones, signal enable zero.
++	 *
++	 * SDHCI sets a status bit when the event happens, independent of this
++	 * register (spec 2.2.16/2.2.17; QEMU's sdhci_read() returns the raw
++	 * status as well), so 0x0 does not blind the polled loop and cannot be
++	 * why CMD_INHIBIT stayed set. All ones costs nothing while
++	 * SIGNAL_ENABLE is 0 - no interrupt is routed - and keeps the loop
++	 * correct on cores that do gate the status bit behind this register.
++	 */
++	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
 +	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
 +	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
 +
@@ -741,10 +859,17 @@ new file mode 100644
 +			 * without touching the frequency select, so the SDCLK
 +			 * rate LK programmed is preserved.
 +			 */
-+			clk |= SDHCI_CLOCK_CARD_EN;
-+			hc_wr16(SDHCI_CLOCK_CONTROL, clk);
++			uint16_t want = clk | SDHCI_CLOCK_CARD_EN;
++
++			hc_wr16(SDHCI_CLOCK_CONTROL, want);
++			clk = hc_rd16(SDHCI_CLOCK_CONTROL);
 +			printf("SANTONI SDHCI: card clock gate was closed, "
 +			    "enabled (CLOCK_CONTROL 0x%04x)\n", clk);
++			if (!(clk & SDHCI_CLOCK_CARD_EN)) {
++				printf("SANTONI SDHCI: card clock gate did not "
++				    "latch (CLOCK_CONTROL 0x%04x)\n", clk);
++				return ENXIO;
++			}
 +		} else {
 +			/*
 +			 * No valid divider: LK ran SDCC1 entirely through the
@@ -759,6 +884,13 @@ new file mode 100644
 +			return ENXIO;
 +		}
 +	}
++
++	/*
++	 * Route the card clock out: a locked DLL LK left behind, or the
++	 * bypass path. A dead DLL selected as the source is indistinguishable
++	 * from "no SDCLK reaches the card".
++	 */
++	sdhci_clock_output();
 +
 +	/*
 +	 * Log the vendor state the bootloader left behind: these are the
@@ -863,7 +995,8 @@ new file mode 100644
 + *
 + *   1. CMD13 with RCA 2              - the LK/ABL address
 + *   2. CMD13 with RCA 1              - the other address on a one-card bus
-+ *   3. CORE_VENDOR_SPEC <- POR       - what Linux sdhci_msm_probe() writes
++ *   3. CORE_VENDOR_SPEC <- POR and   - what Linux writes at probe and on
++ *      the HC MCLK re-selected        every rate change, re-asserted here
 + *   4. CMD5 awake, RCA 2 then RCA 1  - the card may be asleep
 + *   5. CMD0                          - clock test; resets the card, so last
 + */
@@ -891,12 +1024,13 @@ new file mode 100644
 +	}
 +
 +	/*
-+	 * Rung 3: core + 0x10c selects the clock feeding the HC block (bits
-+	 * 9:8) and holds CORE_CLK_PWRSAVE (bit 1). Linux resets it to the POR
-+	 * value before it enables HC mode and never trusts the bootloader;
-+	 * LK does not write it at all. Nothing has answered, so this cannot
-+	 * cost a working card, and both values are logged so the boot log can
-+	 * prove whether it mattered.
++	 * Rung 3: re-assert the vendor clock state. core + 0x10c selects the
++	 * clock feeding the HC block (bits 9:8) and holds CORE_CLK_PWRSAVE
++	 * (bit 1); Linux resets it to the POR value at probe and re-selects
++	 * free-running MCLK on every rate change. Takeover already did both,
++	 * so this rung can only help if the core lost it again (for example
++	 * because FF_CLK_SW_RST_DIS did not stick and the core self-reset).
++	 * Nothing has answered, so it cannot cost a working card.
 +	 */
 +	vendor = core_rd(CORE_VENDOR_SPEC);
 +	printf("SANTONI SDHCI: CORE_VENDOR_SPEC 0x%08x (MCLK sel %u, "
@@ -904,6 +1038,7 @@ new file mode 100644
 +	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8, (vendor >> 1) & 1u,
 +	    CORE_VENDOR_SPEC_POR_VAL, hc_rd16(SDHCI_CLOCK_CONTROL));
 +	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
++	sdhci_select_hc_clock();
 +	(void)sdhci_reset_paths();
 +	if (sdhci_send_status(SANTONI_CARD_RCA, &r1) == 0) {
 +		se.rca = SANTONI_CARD_RCA;

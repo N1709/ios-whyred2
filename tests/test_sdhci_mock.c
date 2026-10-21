@@ -18,6 +18,7 @@
  */
 #include <assert.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -116,6 +117,16 @@
 #define CORE_VENDOR_SPEC_POR_VAL 0xa9cu
 #define CORE_HC_MCLK_SEL_MASK  (3u << 8)
 #define CORE_HC_MCLK_SEL_DFLT  (2u << 8)
+#define CORE_HC_SELECT_IN_EN   0x00040000u
+#define CORE_HC_SELECT_IN_MASK (7u << 19)
+#define CORE_DLL_CONFIG        0x100
+#define CORE_DLL_STATUS        0x108
+#define CORE_DLL_LOCK          0x00000080u
+#define CORE_DLL_EN            0x00010000u
+#define CORE_CK_OUT_EN         0x00040000u
+#define CORE_DLL_PDN           0x20000000u
+#define CORE_DLL_RST           0x40000000u
+#define CORE_DLL_OFF           (CORE_DLL_RST | CORE_DLL_PDN)
 #define CORE_MCI_POWER         0x000
 #define CORE_MCI_CLK           0x004
 
@@ -239,6 +250,38 @@ mock_load_block(void)
 	m.int_status |= m.data_read ? SDHCI_INT_BRR : SDHCI_INT_BWR;
 }
 
+static inline uint32_t core_rd(uint32_t off);
+
+/*
+ * Is the HC datapath clocked? The standard register file always answers (it is
+ * on the bus clock), which is why the photographed boot log could read
+ * HOST_VERSION/CLOCK_CONTROL while nothing worked. The command/data state
+ * machine additionally needs:
+ *   1. VENDOR_SPEC[9:8] = 2, the free-running MCLK the HC block runs on, and
+ *   2. a live source for the card clock: CK_OUT_EN=0 is the bypass path and
+ *      always works; CK_OUT_EN=1 hands SDCLK to the DLL, which therefore has to
+ *      be enabled, out of reset/power-down and locked.
+ * That is exactly the state of the df4395e hardware log: HC_MODE 1,
+ * CLOCK_CONTROL 0x0007, VENDOR_SPEC 0x0, and every command - including CMD0,
+ * which needs no card - stuck with CMD_INHIBIT 1 and INT_STATUS 0.
+ */
+static int
+mock_hc_clocked(void)
+{
+	uint32_t vs = core_rd(CORE_VENDOR_SPEC);
+	uint32_t dll = core_rd(CORE_DLL_CONFIG);
+	uint32_t status = core_rd(CORE_DLL_STATUS);
+
+	if ((vs & CORE_HC_MCLK_SEL_MASK) != CORE_HC_MCLK_SEL_DFLT) {
+		return 0;
+	}
+	if ((dll & CORE_CK_OUT_EN) && (!(dll & CORE_DLL_EN) ||
+	    (dll & CORE_DLL_OFF) || !(status & CORE_DLL_LOCK))) {
+		return 0;
+	}
+	return 1;
+}
+
 static void
 mock_start_data(uint32_t lba, uint16_t count, int read)
 {
@@ -337,6 +380,16 @@ mock_command(uint16_t val)
 	}
 	m.cmd_count++;
 
+	/*
+	 * No functional clock: the 48 bits never leave the shifter, the
+	 * controller keeps CMD_INHIBIT asserted and never posts Command
+	 * Complete - the card being absent or powered off is irrelevant here,
+	 * CMD0 behaves the same.
+	 */
+	if (!mock_hc_clocked()) {
+		m.present_state |= SDHCI_CMD_INHIBIT;
+		return;
+	}
 	if (m.stall_cmd) {
 		return;                 /* no completion: driver must time out */
 	}
@@ -424,7 +477,16 @@ mock_hc_read(uint32_t off)
 		}
 		return m.present_state;
 	case SDHCI_INT_STATUS:
-		return m.int_status;
+		/*
+		 * Strict model: a status bit is only visible while it is
+		 * enabled at 0x34/0x36. The SDHCI spec sets the bit when the
+		 * event happens regardless of the enable registers (QEMU's
+		 * sdhci_read() returns the raw status too), but there are MSM/
+		 * DWC cores where the enable gates the read, so the driver must
+		 * not depend on the looser behaviour. The driver therefore
+		 * leaves 0x34 all ones and only 0x38 at zero (no IRQ routed).
+		 */
+		return m.int_status & mock_rd32(SDHCI_INT_ENABLE);
 	case SDHCI_BUFFER:
 		return mock_buf_read();
 	default:
@@ -465,6 +527,10 @@ mock_hc_write(uint32_t off, uint32_t val)
 	case SDHCI_SOFTWARE_RESET:
 		m.reset_writes++;
 		m.reset_value = (uint16_t)val;
+		/* A command-path reset releases a stuck CMD_INHIBIT. */
+		if (val & SDHCI_RESET_CMD) {
+			m.present_state &= ~SDHCI_CMD_INHIBIT;
+		}
 		mock_hc[off] = 0;       /* reset self-clears when complete */
 		break;
 	case SDHCI_CLOCK_CONTROL:
@@ -549,21 +615,22 @@ sdhci_core_check(void)
 
 /*
  * LK leaves the core in legacy MCI mode (HC_MODE 0x0), so the SDHCI window at
- * +0x900 is not decoded until HC_MODE_EN | FF_CLK_SW_RST_DIS is written and
- * read back. If bit 0 is write-only on the core, a live HC window is the proof
- * that the switch happened.
+ * +0x900 is not decoded until HC_MODE_EN is written. FF_CLK_SW_RST_DIS is a
+ * second write, after bit 0 has latched, exactly like Linux sdhci_msm_probe():
+ * a single combined write was measured on hardware to drop bit 13. If bit 0 is
+ * write-only on the core, a live HC window is the proof the switch happened.
  */
 static int
 sdhci_enter_hc_mode(void)
 {
-	const uint32_t want = CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS;
 	uint32_t hc_mode = core_rd(CORE_HC_MODE);
 	uint16_t host_version;
 
-	if ((hc_mode & want) == want) {
+	if ((hc_mode & (CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS)) ==
+	    (CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS)) {
 		return 0;
 	}
-	core_wr(CORE_HC_MODE, hc_mode | want);
+	core_wr(CORE_HC_MODE, (hc_mode & ~CORE_HC_MODE_EN) | CORE_HC_MODE_EN);
 	hc_mode = core_rd(CORE_HC_MODE);
 	if (!(hc_mode & CORE_HC_MODE_EN)) {
 		host_version = hc_rd16(SDHCI_HOST_VERSION);
@@ -571,7 +638,36 @@ sdhci_enter_hc_mode(void)
 			return ENXIO;
 		}
 	}
+	core_wr(CORE_HC_MODE, hc_mode | CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS);
 	return 0;
+}
+
+/* Linux msm_hc_select_default(): free-running MCLK, HC_SELECT_IN off. */
+static void
+sdhci_select_hc_clock(void)
+{
+	uint32_t vs = core_rd(CORE_VENDOR_SPEC);
+
+	vs &= ~CORE_HC_MCLK_SEL_MASK;
+	vs |= CORE_HC_MCLK_SEL_DFLT;
+	vs &= ~(CORE_HC_SELECT_IN_EN | CORE_HC_SELECT_IN_MASK);
+	core_wr(CORE_VENDOR_SPEC, vs);
+}
+
+/* Card-clock output follows the DLL: live+locked -> its output, else bypass. */
+static void
+sdhci_clock_output(void)
+{
+	uint32_t dll = core_rd(CORE_DLL_CONFIG);
+	uint32_t status = core_rd(CORE_DLL_STATUS);
+	bool dll_live = (dll & CORE_DLL_EN) && !(dll & CORE_DLL_OFF) &&
+	    (status & CORE_DLL_LOCK);
+	uint32_t want = dll_live ? (dll | CORE_CK_OUT_EN) :
+	    (dll & ~CORE_CK_OUT_EN);
+
+	if (want != dll) {
+		core_wr(CORE_DLL_CONFIG, want);
+	}
 }
 
 /* Take the controller over from the bootloader. */
@@ -580,9 +676,15 @@ sdhci_take_over(void)
 {
 	uint16_t clk;
 
-	if (sdhci_core_check() != 0 || sdhci_enter_hc_mode() != 0) {
+	if (sdhci_core_check() != 0) {
 		return ENXIO;
 	}
+	/* Vendor clock register before HC mode, Linux's order. */
+	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
+	if (sdhci_enter_hc_mode() != 0) {
+		return ENXIO;
+	}
+	sdhci_select_hc_clock();
 
 	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 	uint64_t deadline = host_now_ns() + 100000000ull;
@@ -597,8 +699,8 @@ sdhci_take_over(void)
 	hc_wr8(SDHCI_HOST_CONTROL, (uint8_t)(hc_rd8(SDHCI_HOST_CONTROL) &
 	    ~SDHCI_CTRL_DMA_MASK));
 
-	/* Polled operation: no interrupt sources. */
-	hc_wr(SDHCI_INT_ENABLE, 0);
+	/* Polled operation: status enabled, interrupt signal not routed. */
+	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
 	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
 
@@ -609,7 +711,12 @@ sdhci_take_over(void)
 			return ENXIO;
 		}
 		hc_wr16(SDHCI_CLOCK_CONTROL, clk | SDHCI_CLOCK_CARD_EN);
+		clk = hc_rd16(SDHCI_CLOCK_CONTROL);
+		if (!(clk & SDHCI_CLOCK_CARD_EN)) {
+			return ENXIO;
+		}
 	}
+	sdhci_clock_output();
 	return 0;
 }
 
@@ -975,17 +1082,21 @@ reset_mock(void)
 	 * mode is off and the standard window is not decoded yet. The legacy
 	 * path left the card clock running at a valid divider and the eMMC on
 	 * an 8-bit bus. */
-	core_wr(CORE_MCI_VERSION, 0x10000042u);          /* SUBSYS_MAJOR 1 */
-	core_wr(CORE_GENERICS, 0x20000000u);
+	core_wr(CORE_MCI_VERSION, 0x1000004du);          /* measured on hardware */
+	core_wr(CORE_GENERICS, 0x24100041u);
 	core_wr(CORE_HC_MODE, 0x00000000u);
 	core_wr(CORE_PWRCTL_MASK, 0x00000000u);
-	/* LK never writes the vendor clock register: leave a non-POR value so
-	 * the ladder's POR rung is observable. */
-	core_wr(CORE_VENDOR_SPEC, 0x000001c0u);
-	core_wr(CORE_MCI_CLK, 0x0000000bu);
-	core_wr(CORE_MCI_POWER, 0x0000000fu);
+	/* LK never writes the vendor clock register (0x00000000 on hardware):
+	 * MCLK select 0, so the HC datapath has no functional clock until
+	 * takeover selects it. */
+	core_wr(CORE_VENDOR_SPEC, 0x00000000u);
+	/* DLL untouched by LK: neither enabled nor selected (bypass). */
+	core_wr(CORE_DLL_CONFIG, 0x00000000u);
+	core_wr(CORE_DLL_STATUS, 0x00000000u);
+	core_wr(CORE_MCI_CLK, 0x90000000u);              /* legacy MCI clock */
+	core_wr(CORE_MCI_POWER, 0x00000041u);
 	m.rca = SANTONI_CARD_RCA;
-	mock_wr16(SDHCI_HOST_VERSION, 0x0002);            /* SDHCI 3.0 */
+	mock_wr16(SDHCI_HOST_VERSION, 0x4d02);           /* vendor 0x4d, 3.0 */
 	mock_wr16(SDHCI_CLOCK_CONTROL,
 	    SDHCI_CLOCK_INT_EN | SDHCI_CLOCK_INT_STABLE | SDHCI_CLOCK_CARD_EN);
 	mock_hc[SDHCI_HOST_CONTROL] = SDHCI_CTRL_8BITBUS | SDHCI_CTRL_DMA_MASK;
@@ -1030,6 +1141,19 @@ test_registers(void)
 	assert(SDHCI_CLOCK_INT_STABLE == 0x2);
 	assert(SDHCI_CLOCK_CARD_EN == 0x4);
 
+	/* Vendor clock / DLL registers (sdhci_msm_mci_offset) */
+	assert(CORE_DLL_CONFIG == 0x100);
+	assert(CORE_DLL_STATUS == 0x108);
+	assert(CORE_DLL_LOCK == (1u << 7));
+	assert(CORE_DLL_EN == (1u << 16));
+	assert(CORE_CK_OUT_EN == (1u << 18));
+	assert(CORE_DLL_PDN == (1u << 29));
+	assert(CORE_DLL_RST == (1u << 30));
+	assert(CORE_HC_SELECT_IN_EN == (1u << 18));
+	assert((CORE_VENDOR_SPEC_POR_VAL & CORE_HC_MCLK_SEL_MASK) ==
+	    CORE_HC_MCLK_SEL_DFLT);
+	assert((CORE_VENDOR_SPEC_POR_VAL & CORE_HC_SELECT_IN_EN) == 0);
+
 	/* One 0x1000 MMIO window maps core + HC (0x900) including its 0x500 */
 	assert(SDHCI_HC_OFFSET == 0x900);
 	assert(SDHCI_HC_OFFSET + SDHCI_HC_SIZE <= SDHCI_CORE_SIZE);
@@ -1063,11 +1187,20 @@ test_take_over(void)
 	/* 8-bit bus preserved, DMA select cleared for PIO. */
 	assert((hc_rd8(SDHCI_HOST_CONTROL) & SDHCI_CTRL_8BITBUS) != 0);
 	assert((hc_rd8(SDHCI_HOST_CONTROL) & SDHCI_CTRL_DMA_MASK) == 0);
-	/* Polled: interrupts masked and pending status cleared. */
-	assert(hc_rd(SDHCI_INT_ENABLE) == 0);
+	/* Polled: status enabled so the loop can see completions, but the
+	 * interrupt signal is not routed anywhere. */
+	assert(hc_rd(SDHCI_INT_ENABLE) == 0xffffffffu);
 	assert(hc_rd(SDHCI_SIGNAL_ENABLE) == 0);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
 	assert(hc_rd16(SDHCI_BLOCK_SIZE) == 0);
+
+	/* The vendor clock register is at its POR value before HC mode is
+	 * enabled, and free-running MCLK is selected for the HC datapath. */
+	assert(core_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_POR_VAL);
+	assert((core_rd(CORE_VENDOR_SPEC) & CORE_HC_MCLK_SEL_MASK) ==
+	    CORE_HC_MCLK_SEL_DFLT);
+	assert((core_rd(CORE_VENDOR_SPEC) & CORE_HC_SELECT_IN_EN) == 0);
+	assert(mock_hc_clocked());
 
 	/* A closed card-clock gate is reopened, divider left untouched. */
 	reset_mock();
@@ -1099,6 +1232,87 @@ test_take_over(void)
 	reset_mock();
 	m.hc_mode_write_ignored = 1;
 	assert(sdhci_take_over() == 0);
+}
+
+static void
+test_clock_path(void)
+{
+	uint32_t resp = 0;
+	const uint16_t cmd13 = (uint16_t)SDHCI_MAKE_CMD(13,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX);
+
+	/*
+	 * Model check against the photographed hand-off: VENDOR_SPEC 0x0 means
+	 * MCLK select 0, and a command then never leaves the shifter. CMD0 is
+	 * the witness - it needs no response and no card, so a timeout here is
+	 * the controller, not the card.
+	 */
+	reset_mock();
+	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
+	hc_wr(SDHCI_INT_STATUS, 0xffffffffu);
+	hc_wr16(SDHCI_ARGUMENT, 0);
+	hc_wr16(SDHCI_TRANSFER_MODE, 0);
+	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(0, 0));
+	assert((hc_rd(SDHCI_PRESENT_STATE) & SDHCI_CMD_INHIBIT) != 0);
+	assert(hc_rd(SDHCI_INT_STATUS) == 0);
+	reset_mock();
+
+	/* Same with the HC clock selected but SDCLK taken from a DLL that is
+	 * not running: still no clock, still no completion. */
+	core_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL);
+	core_wr(CORE_DLL_CONFIG, CORE_CK_OUT_EN);
+	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
+	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(0, 0));
+	assert((hc_rd(SDHCI_PRESENT_STATE) & SDHCI_CMD_INHIBIT) != 0);
+	assert(hc_rd(SDHCI_INT_STATUS) == 0);
+
+	/* Takeover selects free-running MCLK before the first command, so the
+	 * same CMD13 that used to time out now completes. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	assert((core_rd(CORE_VENDOR_SPEC) & CORE_HC_MCLK_SEL_MASK) ==
+	    CORE_HC_MCLK_SEL_DFLT);
+	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
+	assert(resp == 0x00000900u);
+
+	/* A locked DLL left running by LK: its output is the card clock. */
+	reset_mock();
+	core_wr(CORE_DLL_CONFIG, CORE_DLL_EN);
+	core_wr(CORE_DLL_STATUS, CORE_DLL_LOCK);
+	assert(sdhci_take_over() == 0);
+	assert((core_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) != 0);
+	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
+
+	/* A DLL held in reset must not be the clock source: fall back to
+	 * bypass instead of driving a dead clock to the card. */
+	reset_mock();
+	core_wr(CORE_DLL_CONFIG, CORE_CK_OUT_EN | CORE_DLL_RST);
+	assert(sdhci_take_over() == 0);
+	assert((core_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) == 0);
+	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
+
+	/* An enabled but unlocked DLL is not usable either. */
+	reset_mock();
+	core_wr(CORE_DLL_CONFIG, CORE_DLL_EN | CORE_CK_OUT_EN);
+	assert(sdhci_take_over() == 0);
+	assert((core_rd(CORE_DLL_CONFIG) & CORE_CK_OUT_EN) == 0);
+
+	/* The status model gates 0x30 on 0x34, so the driver must leave the
+	 * enable all ones; clearing it reproduces the "INT_STATUS 0x00000000"
+	 * of the hardware log and every command times out. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	assert(hc_rd(SDHCI_INT_ENABLE) == 0xffffffffu);
+	assert(hc_rd(SDHCI_SIGNAL_ENABLE) == 0);
+	hc_wr(SDHCI_INT_ENABLE, 0);
+	hc_wr16(SDHCI_COMMAND, cmd13);
+	assert(hc_rd(SDHCI_INT_STATUS) == 0);
+	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) ==
+	    ETIMEDOUT);
 }
 
 static void
@@ -1388,6 +1602,7 @@ main(void)
 {
 	test_registers();
 	test_take_over();
+	test_clock_path();
 	test_cmd13_status();
 	test_cid_csd();
 	test_card_ladder();

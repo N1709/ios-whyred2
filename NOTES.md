@@ -1,6 +1,78 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Hardware result + RCA audit (2026-10-22, latest): CMD13 arg was 0, card RCA is 2
+## SDHCI clock-path fix (2026-10-22, latest): the HC datapath had no MCLK
+
+- **Hardware observation (photo `20261022_002308.jpg`, Redmi 4X, commit
+  df4395e):** takeover succeeded (`MCI_VERSION 0x1000004d`,
+  `GENERICS 0x24100041`, `HC_MODE 0x00000001`, `HOST_VERSION 0x4d02`,
+  `CLOCK_CONTROL 0x0003` -> `0x0007`, `PRESENT_STATE 0x01F80000`,
+  `POWER_CONTROL 0x0B`, `VENDOR_SPEC 0x00000000`, `MCI_CLK 0x90000000`), but
+  **every** command - CMD13 RCA 2/1, CMD5, CMD12 and finally CMD0 - timed out
+  with `INT_STATUS 0x00000000` and `CMD_INHIBIT 1`. CMD0 is the witness: it
+  needs no response and no card, so a timeout there is the controller, not the
+  eMMC.
+- **Two attacks from Gemini, settled (no yes-man):**
+  1. **`SDHCI_INT_ENABLE = 0` blinds the polled loop: premise wrong, change
+     accepted anyway.** SDHCI sets a status bit when the event happens,
+     independent of the Status Enable register; enable only gates the interrupt
+     line (spec 2.2.16/2.2.17; QEMU `sdhci_read()` returns
+     `norintsts | errintsts << 16` raw). It also cannot explain the log: a
+     masked CC bit would still let the command finish and clear CMD_INHIBIT,
+     and PRESENT_STATE said 1. Nevertheless 0x34 is now `0xffffffff` and 0x38
+     stays 0: free (no IRQ is routed) and immune to cores that do gate the
+     status bit. The mock now models the strict (gated) core.
+  2. **`CORE_VENDOR_SPEC` before `HC_MODE_EN`: accepted, and it is the
+     root cause.** Bits 9:8 select the clock the HC block *itself* runs on.
+     LK left `VENDOR_SPEC 0x0` (selection 0 = no clock) because it only drove
+     the legacy MCI block, which is why the register file answered (bus clock)
+     while the command shifter never advanced. Linux writes
+     `CORE_VENDOR_SPEC_POR_VAL (0xa9c)` in `sdhci_msm_probe()` *before* HC
+     mode and re-selects `CORE_HC_MCLK_SEL_DFLT` in `msm_hc_select_default()`
+     on every rate change; the driver now does both.
+  3. **`CORE_CK_OUT_EN`: the write is right but the diagnosis is wrong -
+     rejected as stated, implemented as a conditional.** "Never touched it, so
+     it was 0" does not follow from the source (the register was never read).
+     More important: Linux only sets `CK_OUT_EN` as the last step of
+     `msm_init_cm_dll()`, which runs for HS200/HS400 tuning - never for the
+     400 kHz identification/52 MHz path this driver uses. Setting it on a DLL
+     that LK left in reset/power-down selects a dead clock. `sdhci_clock_output()`
+     now logs `CORE_DLL_CONFIG`/`CORE_DLL_STATUS` and follows the DLL: output
+     selected only for `DLL_EN && !(RST|PDN) && LOCK`, otherwise forced back to
+     bypass.
+  4. **New finding from the same log (neither of us listed it):** the old
+     single combined `HC_MODE_EN | FF_CLK_SW_RST_DIS` write did not stick
+     (`HC_MODE 0x00000001`, bit 13 lost). `sdhci_enter_hc_mode()` now mirrors
+     Linux: `HC_MODE_EN`, read back, then `FF_CLK_SW_RST_DIS`, read back, and
+     logs loudly if bit 13 is still dropped (the core may then self-reset
+     while the SDCLK feedback is stopped).
+- **What changed:** `xnu/patches/0142...` new-file hunk `+1,1641`
+  (was 1506): new `CORE_DLL_CONFIG/STATUS/LOCK/EN/CK_OUT_EN/PDN/RST`,
+  `CORE_HC_SELECT_IN_EN/MASK`; `sdhci_enter_hc_mode()` two-step;
+  new `sdhci_select_hc_clock()` (`VENDOR_SPEC` POR before HC mode, MCLK sel 2 +
+  HC_SELECT_IN cleared after it); new `sdhci_clock_output()`; takeover sets
+  `INT_ENABLE 0xffffffff`, reads back the card-clock gate and fails closed if
+  it does not latch; ladder rung 3 now re-asserts POR + MCLK select.
+  `tests/test_sdhci_mock.c`: models `INT_ENABLE` gating of `INT_STATUS` and the
+  HC clock (MCLK select + DLL output), reproduces the photographed failure
+  (CMD0/CMD13 stuck with CMD_INHIBIT), new `test_clock_path()`.
+  `tests/run_tests.sh`: STOR-06 updated, new STOR-08 group.
+- **Verified offline:** `bash tests/run_tests.sh` exit 0 (3 host suites,
+  all 150 patches exact, STOR-03..STOR-08). 0142 rebuilds 1641 lines and 0143's
+  `bsd/dev/santoni_sdhci.c` hunks still apply on top of it (`git apply
+  --check` in a scratch tree). No `CORE_*`/`SDHCI_*` identifier used by the
+  driver is undefined, braces/parens/brackets balance.
+- **NOT verified:** CI has not compiled this yet and nothing has touched
+  silicon. `CORE_VENDOR_SPEC` POR is written before HC mode exactly as Linux
+  does it, but the 0xa9c bits other than 9:8 are still unproven on this core.
+- **Expected on the next boot (each line a verdict):** `CORE_VENDOR_SPEC
+  0x00000000 (MCLK sel 0) -> POR 0x00000a9c`; `HC mode enabled (HC_MODE
+  0x00002001, ...)` - bit 13 must be present now; `HC clock source MCLK sel 2`;
+  `CORE_DLL_CONFIG ... (DLL_EN .., CK_OUT_EN ..)`; then either `card answered
+  CMD13 on RCA 2`, or the same timeout with the new registers to read.
+- **Next action:** commit, push, run the `xnu` workflow, `fastboot boot` the
+  green image (`rd=md0`, no `sweetlog=1`), photograph the new clock lines.
+
+## Hardware result + RCA audit (2026-10-22, previous): CMD13 arg was 0, card RCA is 2
 
 - **Hardware observation (Gemini, commit 98c5c3d, non-destructive `rd=md0`
   boot):** SDCC1 takeover worked (MCI_VERSION 0x1000004d, GENERICS 0x24100041,
