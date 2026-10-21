@@ -1,0 +1,54 @@
+diff --git a/bsd/kern/ubc_subr.c b/bsd/kern/ubc_subr.c
+--- a/bsd/kern/ubc_subr.c
++++ b/bsd/kern/ubc_subr.c
+@@ -4210,7 +4210,14 @@ cs_validate_page(
+ 	if (cd == NULL) {
+ 		return CS_VALIDATION_BITMAP_MISSING;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	/*
++	 * iOS 16 dyld shared cache uses 16 KiB hash units (pageSize == 14).
++	 * Allow pageSize == 14 on Santoni's 4 KiB translation granule.
++	 */
++	if (cd->pageSize != PAGE_SHIFT && cd->pageSize != 14) {
++		return CS_VALIDATION_BITMAP_MISSING;
++	}
++#else
+ 	if (cd->pageSize != PAGE_SHIFT) {
+ 		return CS_VALIDATION_BITMAP_MISSING;
+ 	}
++#endif
+@@ -4350,6 +4357,14 @@ ubc_cs_blob_add(
+ 		return EINVAL;
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	/*
++	 * Bail early during unsigned boot to prevent hashing beyond the
++	 * mapped 4 KiB page boundary when pageSize (14) > PAGE_SHIFT (12).
++	 */
++	if (cd != NULL && cd->pageSize > PAGE_SHIFT) {
++		return 0;
++	}
++#endif
++
+ 	/*
+diff --git a/osfmk/vm/vm_shared_region.c b/osfmk/vm/vm_shared_region.c
+--- a/osfmk/vm/vm_shared_region.c
++++ b/osfmk/vm/vm_shared_region.c
+@@ -380,6 +380,13 @@ vm_shared_region_enter(
+ 	sub_map = shared_region->sr_submap;
+ 	assert(sub_map != VM_MAP_NULL);
+ 
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	/*
++	 * Allow 16 KiB-signed iOS 16 dyld shared cache to execute on
++	 * Santoni's 4 KiB Cortex-A53 translation granule without code-signing traps.
++	 */
++	vm_map_cs_enforcement_set(sub_map, false);
++#endif
++
+ 	/*
+ 	 * Map the submap into the task's map.
+ 	 */
