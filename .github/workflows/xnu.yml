@@ -11,12 +11,12 @@ on:
         default: DEVELOPMENT
       machine_config:
         description: xnu MACHINE_CONFIG
-        default: SWEET
+        default: SANTONI
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
   push:
-    branches: [main]
+    branches: [main, santoni]
     paths:
       - "xnu/patches/**"
       - ".github/workflows/xnu.yml"
@@ -31,7 +31,7 @@ env:
   DXB_SHA: 663906528d1cd5ea8fde7de6f16de73db9511549
   MACOS_VERSION: ${{ inputs.macos_version || '13.5' }}
   KERNEL_CONFIG: ${{ inputs.kernel_config || 'DEVELOPMENT' }}
-  MACHINE_CONFIG: ${{ inputs.machine_config || 'SWEET' }}
+  MACHINE_CONFIG: ${{ inputs.machine_config || 'SANTONI' }}
   # ccache: xnu is ~2000 compiles; a patch usually changes a few of them
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_BASEDIR: ${{ github.workspace }}
