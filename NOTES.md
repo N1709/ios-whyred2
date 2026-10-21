@@ -2,17 +2,26 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Phase 3 CI SANTONI.h Hunk Header Normalization & Build Resumed <<<
+### >>> UPDATE 2026-10-21: Phase 3 CI Fix — Enable kperf and kpc in MASTER.arm64.santoni <<<
 
-- **Issues Diagnosed via CI Run 39545532713:**
-  - `6_Build.txt` showed zero compilation errors across Mach, BSD, and Skywalk.
-  - Failure occurred during `installhdrs` in `unifdef`:
-    `unifdef: .../SANTONI.h: 31: Premature EOF (#if line 1 depth 1)`
-    `make[6]: *** [.../SANTONI.h] Error 1`
-  - Root Cause: In `0085-santoni-board-target.patch`, when `SWEET_IPI_SGI` was added to `SANTONI.h`, the hunk header was `@@ -0,0 +1,29 @@` instead of `@@ -0,0 +1,30 @@`. `patch` read only 29 lines and dropped the closing `#endif /* _PEXPERT_ARM64_SANTONI_H */`, triggering premature EOF.
+- **Issues Diagnosed via CI Run 39546456467:**
+  - `installhdrs` passed cleanly with zero header errors.
+  - All source files across Mach, BSD, Skywalk, IOKit, and Libkern compiled cleanly and archived into their respective `.a` libraries.
+  - Only two compilation units failed:
+    - `osfmk/kperf/kperf_kpc.h:43`: error: use of undeclared identifier 'KPC_MAX_COUNTERS' (in `ast.c`)
+    - `osfmk/kern/processor.c:151`: error: use of undeclared identifier 'kperf_timer_expire', 'RUNNING_TIMER_KPERF'
+  - **Root Cause:**
+    - `kperf` and `kpc` were omitted from `PERF_DBG_BASE` in `config/MASTER.arm64.santoni`.
+    - XNU's core scheduler in `osfmk/kern/processor.c` unconditionally defines:
+      `static timer_call_func_t running_timer_funcs[] = { [RUNNING_TIMER_QUANTUM] = thread_quantum_expire, [RUNNING_TIMER_KPERF] = kperf_timer_expire };`
+      and asserts the array length equals `RUNNING_TIMER_MAX`. Thus, XNU cannot build without `kperf`.
+    - In `kperf_kpc.h`, `<kern/kpc.h>` (which defines `KPC_MAX_COUNTERS`) is only included when `#if KPC` is true, but `struct kpcdata` is unconditionally defined.
+    - Upstream `MASTER.arm64.sweet` defines `PERF_DBG_BASE = [ ... kperf kpc ]` with the comment:
+      `# kperf/kpc stay (xnu does not build without kperf); osfmk/arm64/kpc.c is a stub with no hardware counters.`
+      The backend `osfmk/arm64/kpc.c` (provided by patch 0008) is completely hardware-neutral and stubs all PMU counters with 0 / `ENOTSUP`.
 - **Fix Applied & Verified:**
-  - `xnu/patches/0085-santoni-board-target.patch`: Corrected hunk header to `@@ -0,0 +1,30 @@` and stripped trailing whitespace from empty comment lines.
-  - Verified clean `git apply` on runner tree: `SANTONI.h` is intact with all 30 lines including `#endif`.
+  - In `xnu/patches/0085-santoni-board-target.patch`: Added `kperf kpc` to `PERF_DBG_BASE` in `config/MASTER.arm64.santoni`.
+  - Verified clean `git apply --check` against xnu source tree.
 - **Physical Device Boot Verification Procedure (Awaiting User Test):**
   1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
   2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
@@ -22,7 +31,7 @@
      - Blue rectangular bar: `start.s` Stage 1 MMU active (4K pmap bootstrap).
      - Darwin kernel banner printed to screen: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
 - **Next Concrete Action:**
-  - Commit fixes, push to `origin/santoni`, and trigger GitHub Actions build.
+  - Commit fixes, push to `origin/santoni`, and monitor the triggered GitHub Actions build to completion.
   - Physical device verification: execute `fastboot boot shim/out/shim-boot.img` on hardware when user wakes up.
 
 - **Plan 03-04 Status:** EXECUTED, VERIFIED, AND COMMITTED (Physical hardware verification awaiting user test)
