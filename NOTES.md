@@ -2,22 +2,22 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Phase 3 CI Patch Alignment & Runner Buildtree Normalization EXECUTED & COMMITTED <<<
+### >>> UPDATE 2026-10-21: Phase 3 CI arm64e Codegen Fix Applied & Verified <<<
 
-- **Issues Diagnosed via CI Run 39537533285 Runner Buildtree:**
-  - `0082-santoni-4k-entry.patch`, `0084-santoni-4k-user-va.patch`, `0093-santoni-39bit-kernel-va.patch`, and `0097-santoni-zone-va-size.patch` applied cleanly on the runner.
-  - `0085-santoni-board-target.patch` failed on `MakeInc.def:62` because `0081-topaz-armv8.0-no-lse-no-pan.patch` had replaced `-march=armv8.2-a+crypto` with `-mcpu=cortex-a53`.
-  - `0094-santoni-cortex-a53-codegen.patch` failed because `0085` was skipped.
-  - `0096-santoni-commpage-llsc.patch` was a redundant duplicate of `0081` (which already converted commpage `casa` to ARMv8.0 `ldaxr`/`stxr`/`clrex`).
-  - `0098-santoni-early-console.patch` failed on `sweet_early.c` because `0012` had turned `EARLY_FB` into a variable (`early_fb`) and changed stage bounds.
-  - `--recount` flag in `.github/workflows/xnu.yml` caused git 2.43.0 on macOS runner to fail with `warning: recount: unexpected line: 2.43.0` on upstream topaz patches.
-- **Fixes Applied & Verified on Actual Runner Buildtree:**
-  - `xnu/patches/0085-santoni-board-target.patch`: Re-aligned unified diff against runner's post-0081 `MakeInc.def`, `board_config.h`, and `Makefile`. Verified 100% clean application.
-  - `xnu/patches/0094-santoni-cortex-a53-codegen.patch`: Re-aligned with post-0085 `MakeInc.def`. Verified 100% clean application.
-  - `xnu/patches/0096-santoni-commpage-llsc.patch`: Removed duplicate patch file.
-  - `xnu/patches/0098-santoni-early-console.patch`: Re-aligned with post-0012 `sweet_early.c`. Verified 100% clean application.
-  - `.github/workflows/xnu.yml`: Removed `--recount` sed to prevent git 2.43.0 signature line parsing error.
-  - Full sequential test on downloaded macOS runner `xnu` checkout: All remaining patches applied cleanly with 0 errors.
+- **Issues Diagnosed via CI Run 39542305416:**
+  - Build failed on `bsd/dev/dtrace/dtrace.c` (and several earlier units including `randomdev.c`, `memdev.c`, `systrace_args.c`) with:
+    `fatal error: error in backend: arm64e LR authentication requires ptrauth`
+  - Clang was invoked with `-mcpu=cortex-a53 -march=armv8-a+crypto -arch arm64e`.
+  - Root Cause: In `xnu/makedefs/MakeInc.def` (introduced by `0004-sweet-machine-config.patch`):
+    `ifneq ($(CURRENT_MACHINE_CONFIG),SWEET)`
+    `export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e`
+    For `CURRENT_MACHINE_CONFIG=SANTONI`, this check evaluated to true, forcing `arm64e` codegen and Link Return pointer authentication on Cortex-A53 (ARMv8.0 without ptrauth/PAC).
+- **Fix Applied & Verified:**
+  - `xnu/patches/0085-santoni-board-target.patch`: Added hunk to `makedefs/MakeInc.def` line 262 changing the check to:
+    `ifeq ($(filter SWEET SANTONI,$(CURRENT_MACHINE_CONFIG)),)`
+    `export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e`
+    For `SANTONI` (as for `SWEET`), `ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG` remains plain `arm64`.
+  - Verified clean `git apply --check` against the live runner build tree artifact.
 - **Physical Device Boot Verification Procedure (Awaiting User Test):**
   1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
   2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
@@ -27,7 +27,7 @@
      - Blue rectangular bar: `start.s` Stage 1 MMU active (4K pmap bootstrap).
      - Darwin kernel banner printed to screen: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
 - **Next Concrete Action:**
-  - Push commit to `origin/santoni` and monitor GitHub Actions CI build.
+  - Commit fix, push to `origin/santoni`, and trigger GitHub Actions build.
   - Physical device verification: execute `fastboot boot shim/out/shim-boot.img` on hardware when user wakes up.
 
 - **Plan 03-04 Status:** EXECUTED, VERIFIED, AND COMMITTED (Physical hardware verification awaiting user test)
