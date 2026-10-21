@@ -2,22 +2,15 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Phase 3 CI arm64e Codegen Fix Applied & Verified <<<
+### >>> UPDATE 2026-10-21: Phase 3 CI Kernel Build Fixes (kperf drop, IPI SGI, early_fb, start.s asm) EXECUTED <<<
 
-- **Issues Diagnosed via CI Run 39542305416:**
-  - Build failed on `bsd/dev/dtrace/dtrace.c` (and several earlier units including `randomdev.c`, `memdev.c`, `systrace_args.c`) with:
-    `fatal error: error in backend: arm64e LR authentication requires ptrauth`
-  - Clang was invoked with `-mcpu=cortex-a53 -march=armv8-a+crypto -arch arm64e`.
-  - Root Cause: In `xnu/makedefs/MakeInc.def` (introduced by `0004-sweet-machine-config.patch`):
-    `ifneq ($(CURRENT_MACHINE_CONFIG),SWEET)`
-    `export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e`
-    For `CURRENT_MACHINE_CONFIG=SANTONI`, this check evaluated to true, forcing `arm64e` codegen and Link Return pointer authentication on Cortex-A53 (ARMv8.0 without ptrauth/PAC).
-- **Fix Applied & Verified:**
-  - `xnu/patches/0085-santoni-board-target.patch`: Added hunk to `makedefs/MakeInc.def` line 262 changing the check to:
-    `ifeq ($(filter SWEET SANTONI,$(CURRENT_MACHINE_CONFIG)),)`
-    `export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := arm64e`
-    For `SANTONI` (as for `SWEET`), `ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG` remains plain `arm64`.
-  - Verified clean `git apply --check` against the live runner build tree artifact.
+- **Issues Diagnosed via CI Run 39544062100:**
+  - `arm64e` PAC / ptrauth error was **100% resolved** (`dtrace.c`, `randomdev.c`, `memdev.c`, `systrace_args.c` all compiled cleanly with `-arch arm64`).
+  - Remaining 4 build issues across 10 objects diagnosed and resolved:
+    1. `sweet_early.c`: `early_fb` was undeclared for `SANTONI` because `0098` had `#define EARLY_FB ((volatile uint8_t *)...)` in the `#if defined(SANTONI)` branch, leaving `sweet_early_relocate()` with an undeclared `early_fb`. Fixed in `0098` by defining `static volatile uint8_t *early_fb` and casting in `sweet_early_relocate()`.
+    2. `SweetCPU.cpp:230`: `SWEET_IPI_SGI` undeclared. Fixed in `0085` by adding `#define SWEET_IPI_SGI 1` to `pexpert/arm64/SANTONI.h`.
+    3. `kperf` objects (`ast.o`, `action.o`, `kperf.o`, `pet.o`, `kptimer.o`, `kperf_kpc.o`, `lazy.o`): `KPC_MAX_COUNTERS` undeclared because Apple's proprietary Silicon PMU `kpc` is dropped on ARM targets without Apple PMU. Fixed in `0085` by dropping `kperf` from `PERF_DBG_BASE` in `config/MASTER.arm64.santoni`, exactly as `MASTER.arm64.sweet` did in `0007`.
+    4. `start.s:880`: `MOV64 w1, 0x000000ff` failed in assembler with `expected 'lsl' with optional integer 0 or 16` because 32-bit register `w1` cannot take `lsl #32`/`#48`. Fixed in `0082` by using `mov w1, #0xff`.
 - **Physical Device Boot Verification Procedure (Awaiting User Test):**
   1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
   2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
@@ -27,7 +20,7 @@
      - Blue rectangular bar: `start.s` Stage 1 MMU active (4K pmap bootstrap).
      - Darwin kernel banner printed to screen: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
 - **Next Concrete Action:**
-  - Commit fix, push to `origin/santoni`, and trigger GitHub Actions build.
+  - Commit fixes, push to `origin/santoni`, and trigger GitHub Actions build.
   - Physical device verification: execute `fastboot boot shim/out/shim-boot.img` on hardware when user wakes up.
 
 - **Plan 03-04 Status:** EXECUTED, VERIFIED, AND COMMITTED (Physical hardware verification awaiting user test)
