@@ -47,8 +47,7 @@
   touched silicon since the failing boot. The next xnu workflow run must show
   `mockfs_vfsops.o` and `hfs_vfsops.o` being compiled and no
   `Skipping patch ...0085`.
-- **Committed as** `fix(04): enable mockfs and sweet_hfs in MASTER.arm64.santoni`
-  (hash recorded in the follow-up `docs(04)` commit).
+- **Committed as** `1a22d71` `fix(04): enable mockfs and sweet_hfs in MASTER.arm64.santoni`
 - **Next concrete action:** let the push-triggered `xnu` workflow finish, rebuild
   `shim/out/shim-boot.img` from that kernel, then `fastboot boot` it and expect
   the `rd=md0` mount to succeed (mockfs root) and the RAM-disk PID 1 banner
