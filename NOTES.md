@@ -2,35 +2,35 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-- **Post-Mark 20 Diagnostics & kprintf Console Fix:**
-  - **Video / Physical Hardware Observation (`20261021_161607_1.mp4`):**
-    - Kernel reached `SWEET EARLY 20: kprintf startup complete`!
-    - Display showed black top rows (marks 1-20) and a red block on the lower half with green stage bars.
-    - Rebooted after ~4 seconds with no on-screen text.
-  - **Root Cause Analysis:**
-    1. **Red Block:** It is simply the untouched background fill from the bootloader shim (`con_clear(RED)` in `shim.c`). Because `sweet_early` only clears rows that it writes to, rows 1-20 (y=0..640) were cleared to black, while rows 21-39 (y=640..1280) remained red.
-    2. **Silent Reboot & Missing Output:**
-       - Mark 20 was the very last `sweet_early_mark` in XNU. Everything after Mark 20 outputs through `kprintf()`.
-       - In `pe_serial.c` (`fbcon_probe`), the stride check `fbcon_stride < fbcon_width * 4` failed on Santoni (24-bit BGR: `stride 2160 < width*4 2880`), so `fbcon_probe()` silently bailed without registering any serial console. `kprintf()` had nowhere to output.
-       - In `SANTONI.h`, `SWEET_SMP_MAX_CPUS` was defined as `1`, but `tools/mkadt.py` created 8 CPU nodes (`0x100..0x103, 0x000..0x003`). When IOKit matched the CPUs right after Mark 20, `SweetCPU::start()` hit `topology->num_cpus (8) > SWEET_SMP_MAX_CPUS (1)` and panicked.
-       - Because `kprintf` was blind and `shim/build.sh` passed `--cmdline "console=null"`, the panic wasn't visible, and the 5-second panic timeout rebooted the device.
+- **Post-Mark 20 Hardware Test & Silent Reboot Diagnostics (`20261021_170715_1.mp4`):**
+  - **Observation on Hardware (`20261021_170715_1.mp4`, 9.87s duration):**
+    - Kernel cleanly executed Marks 1-20: `SWEET EARLY 20: kprintf startup complete`.
+    - No `kprintf` or panic logs appeared after Mark 20.
+    - At ~9.5 seconds, device rebooted to splash screen.
+  - **Root Cause Analysis (Disassembly & Patch Engine Validation):**
+    1. **Patch Skip in Runner (The Silent Failure):**
+       - The darwin-xnu-build script (`dxb/build.sh`) applies patches using `patch -p1 --forward --dry-run`. If a patch fails dry-run or is malformed, `dxb` prints a warning and skips the patch, continuing the build rather than failing.
+       - Both `xnu/patches/0082-topaz-boot-on-gold-cpu.patch` and `xnu/patches/0140-santoni-kprintf-early-console.patch` were malformed (incorrect hunk line counts / missing headers).
+       - Consequently, GNU `patch` rejected both, and `dxb` skipped them completely during CI build 39591752390!
+    2. **Why SweetCPU::startAll Panicked:**
+       - Because patch 0082 was skipped, `SweetCPU::startAll` still contained `if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");`.
+       - On Santoni, the boot CPU is Cluster 1 Core 0 (`MPIDR 0x100`, logical CPU 0).
+       - Because `phys_id == 0x100 != 0`, `SweetCPU::startAll` panicked immediately upon starting secondaries right after Mark 20.
+    3. **Why Panic Was Blind and Device Rebooted:**
+       - Because patch 0140 was skipped:
+         a) `santoni_early_serial_functions` was not in the kernel; `fbcon_probe` fell through to Sweet's 32bpp check (`stride < width * 4`) and failed on Santoni's 24bpp display (`stride 2160 < width*4 2880`). `_serial_init` returned 0, so `PE_kputc` fell back to unbuffered console write without display hardware.
+         b) `sweet_early_disable()` was executed at Mark 20, turning off early display output.
+         c) In DEVELOPMENT kernels, `disable_kprintf_output` defaults to 1 unless `-enable_kprintf_spam` is passed in boot-args.
+         d) `sweet_early_panic` bailed because `early_disabled == 1`, so the panic message was completely discarded.
+         e) After XNU panic timeout (~5-9s) or APCS watchdog bite, device rebooted.
   - **Fixes Applied:**
-    1. `xnu/patches/0085-santoni-board-target.patch`: Changed `SWEET_SMP_MAX_CPUS` from 1 to 8 in `SANTONI.h` to match all 8 Cortex-A53 cores.
-    2. `xnu/patches/0140-santoni-kprintf-early-console.patch`:
-       - Registered `santoni_early_serial_functions` in `pe_serial.c` using `sweet_early_putc` so all `kprintf`, `printf`, and IOKit logs stream directly onto the 24bpp physical screen.
-       - Kept `sweet_early` enabled on Santoni after Mark 20.
-       - Updated `sweet_early_panic` to print even if disabled, and spin on Santoni with `wfe` so any panic remains permanently frozen on screen for inspection.
-    3. `shim/build.sh`: Replaced `--cmdline "console=null"` with `--cmdline "debug=0x14e serial=3 -v keepsyms=1"` to enable verbose console output and halt on panic.
-  - **CI Build 39591752390 (Commit 04cfd92) SUCCESS:**
-    - 100% build success across all Mach, BSD, IOKit, and Driver stages.
-    - Kernel artifact: 16,948,016 bytes, SHA256 `66a2c715d1f66de8992d067ab06346c217e9596066ef81ad44df8965541c1dcb`.
-    - Boot Image: `shim/out/shim-boot.img`, 16,398,336 bytes, SHA256 `57541362b4d7d131929fe57b97db1a01b8ffbe76b6cd7830ef25570233d35d59`.
-    - Transferred to:
-      - Telegram: chat `5987149471` (message 132).
-      - Local storage: `/storage/emulated/0/shim-boot.img`.
-    - Next Action: User boots image on physical device via:
-      `fastboot boot shim/out/shim-boot.img` (or `fastboot boot /storage/emulated/0/shim-boot.img`).
-    - Expected Behavior: Output continues past Mark 20; `kprintf` lines scroll on screen, `SweetCPU` accepts 8 cores, and any panic halts cleanly on-screen without rebooting.
+    1. `xnu/patches/0082-topaz-boot-on-gold-cpu.patch`: Rebuilt cleanly with standard git diff format; verified with GNU `patch -p1 --forward --dry-run` (returns 0). Boot CPU accepts MPIDR 0x100 and logical CPU 0.
+    2. `xnu/patches/0140-santoni-kprintf-early-console.patch`: Rebuilt cleanly with standard git diff format; verified with GNU `patch -p1 --forward --dry-run` (returns 0).
+       - Registers `santoni_early_serial_functions` directly into `gPESF`.
+       - Explicitly clears `disable_kprintf_output = false` and `disable_serial_output = false`.
+       - Keeps `sweet_early` enabled past Mark 20 on Santoni (`#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(SANTONI)`).
+       - Updates `sweet_early_panic` to print even if disabled, and spins in `wfe` on Santoni so any panic remains permanently visible on screen.
+    3. `shim/build.sh`: Added `disable_kprintf_output=0 -enable_kprintf_spam` to kernel command line.
 
 
 
