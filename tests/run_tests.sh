@@ -69,6 +69,25 @@ python3 tools/check_patch.py "$P144" -q \
 	--added-contains 'osfmk/vm/vm_shared_region.c:vm_map_cs_enforcement_set(vm_shared_region_vm_map(shared_region), false);'
 echo "ok   0144 allows pageSize 14, skips 16 KiB hashing, disables CS enforcement"
 
+echo "== STOR-06: SDHCI consensus fixes (CMD12-after-BLK_CNT_EN, DATA_INHIBIT, ==="
+echo "==          recover, R2 reversal, SEC_COUNT fence, idempotent probe)      =="
+python3 tools/check_patch.py "$P142" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_recover(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:hc_rd(SDHCI_RESPONSE + 4 * (3 - i))' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:se.sec_count = sec_count;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:lba + (uint64_t)count > se.sec_count' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:static bool attempted;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:int init_error;' \
+	--added-contains 'iokit/bsddev/IOKitBSDInit.cpp:santoni_sdhci_probe();' \
+	--added-contains 'iokit/bsddev/IOKitBSDInit.cpp:IOLog("SANTONI: eMMC probe failed' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:return sdhci_stop_transmission();'
+echo "ok   0142 fixes DATA_INHIBIT, CMD12/recover, R2 order, SEC_COUNT and probe"
+python3 tools/check_patch.py "$P143" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:uint32_t on = 0;' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:uint32_t on = 1;'
+echo "ok   0143 defaults the console log OFF (sweetlog=1 enables it)"
+
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).
 if [ -n "${XNU_SRC:-}" ]; then

@@ -1,6 +1,45 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-21, latest): root mount ENODEV (19) fixed - MOCKFS was never in MASTER.arm64.santoni
+## Agent handoff / active work (2026-10-21, latest): SDHCI consensus fixes (7 defects) in 0142/0143, offline PASS
+
+- **Consensus reached with Gemini: all 7 defects accepted and fixed (uncommitted
+  at time of writing).** Changed:
+  1. `sdhci_cmd` now waits on `(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)`.
+  2. Multiblock read/write success path issues **no CMD12** when BLK_CNT_EN is
+     active (the card stops itself); it returns 0.
+  3. New `sdhci_recover()`: reset CMD|DATA, wait self-clear, W1C INT_STATUS,
+     best-effort CMD12, W1C INT_STATUS. Called on every read/write error path.
+  4. `sdhci_read_response128()` reverses `RESPONSE[3..0] -> out[0..3]` (R2 is
+     least-significant-word first); CID PRV/S-N print follows the new order.
+  5. `se.sec_count` saved from EXT_CSD byte 212; read/write blocks reject
+     `lba + count > se.sec_count` when the capacity is known.
+  6. `santoni_sdhci_probe(void)` is idempotent (`static bool attempted;
+     static int init_error;`); `santoni_sdhci_rootdev()` calls it and then
+     re-checks `se.ready` before returning the dev.
+  7. `IOKitBSDInit.cpp` unconditionally calls `santoni_sdhci_probe()` before
+     `IOFindBSDRoot`; failure only `IOLog`s and continues (RAM-disk boot must
+     not panic). `rd=emmcroot0` still panics if the root is unavailable.
+  8. `0143` default logging state is now `uint32_t on = 0;`: the persistent
+     console log only starts with `sweetlog=1`, protecting SYSTEM.
+- `tools/santoni-init.S`: after the PID 1 banner it opens `/dev/remmcroot0`
+  (O_RDONLY), reads 512 bytes, hex-formats the first 8 as
+  `SANTONI userspace: read eMMC LBA 0: [xx xx xx xx xx xx xx xx]` on the
+  console, closes the fd and falls into the heartbeat loop.
+- **Verified offline:** `bash tests/run_tests.sh` -> exit 0 (3 host tests,
+  STOR-03..STOR-06, all **150** patches). `tests/test_sdhci_mock` updated to
+  match the driver (no CMD12 on success, recover on error, DATA_INHIBIT,
+  R2 reversal) and passes. The 0142 new-file hunk and the 0143 santoni section
+  round-trip through `git apply` and reproduce the reconstructed sources
+  byte-for-byte; braces/parens balance ignoring comments and strings.
+  `santoni-init.S` assembles with `clang -target arm64-apple-ios16.0` and
+  `tools/mkinit.py` packs the Mach-O (no relocations).
+- **NOT verified yet:** no CI compile, nothing on silicon. Next concrete
+  action: run the xnu workflow (expect `santoni_sdhci.c` to compile and no
+  `Skipping patch ...0142/0143`), repack `shim/out/shim-boot.img`, then
+  `fastboot boot` it and look for the new userspace eMMC hex line and a
+  `rd=emmcroot0` mount attempt.
+
+## Agent handoff / active work (2026-10-21, previous): root mount ENODEV (19) fixed - MOCKFS was never in MASTER.arm64.santoni
 
 - **Hardware observation (shim-boot.img, Redmi 4X, 2026-10-21):** the kernel boots,
   `IOFindBSDRoot` registers `md0` (major 1, minor 0), then the console shows

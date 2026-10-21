@@ -12,8 +12,11 @@
  */
 #define SYS_write	4
 #define SYS_open	5
+#define SYS_read	3
+#define SYS_close	6
 #define SYS_getpid	20
 #define SYS_select	93
+#define O_RDONLY	0
 #define O_RDWR		2
 
 	.text
@@ -58,6 +61,76 @@ _start:
 	sub	x2, x2, x1
 	bl	write_console
 
+	/*
+	 * eMMC root probe: read LBA 0 of /dev/remmcroot0 (the raw character
+	 * device, present because IOKitBSDInit probed the controller) and print
+	 * the first 8 bytes. Missing device (rd=md0) just skips this.
+	 */
+	adr	x0, emmc_path
+	mov	x1, #O_RDONLY
+	mov	x2, #0
+	mov	x16, #SYS_open
+	svc	#0x80
+	b.cs	emmc_done
+
+	mov	x20, x0			/* fd */
+
+	sub	sp, sp, #544		/* [0..511] read buf, [512..535] hex */
+	mov	x0, x20
+	mov	x1, sp
+	mov	x2, #512
+	mov	x16, #SYS_read
+	svc	#0x80
+	b.cs	emmc_close
+
+	adr	x1, emmc_msg
+	adr	x2, emmc_msg_end
+	sub	x2, x2, x1
+	bl	write_console
+
+	/* hex-format sp[0..7] as "xx xx xx xx xx xx xx xx" at sp+512 */
+	add	x5, sp, #512
+	mov	x6, x5			/* cursor */
+	mov	x4, sp			/* source */
+	mov	x3, #8			/* counter */
+emmc_hex:
+	ldrb	w7, [x4], #1
+	lsr	w9, w7, #4
+	and	w9, w9, #0xf
+	cmp	w9, #9
+	b.ls	1f
+	add	w9, w9, #39		/* 'a' - '0' - 10 */
+1:	add	w9, w9, #'0'
+	strb	w9, [x6], #1
+	and	w9, w7, #0xf
+	cmp	w9, #9
+	b.ls	2f
+	add	w9, w9, #39
+2:	add	w9, w9, #'0'
+	strb	w9, [x6], #1
+	mov	w9, #' '
+	strb	w9, [x6], #1
+	subs	x3, x3, #1
+	b.ne	emmc_hex
+	mov	w9, #0
+	strb	w9, [x6, #-1]		/* drop the trailing space */
+
+	mov	x1, x5
+	mov	x2, #23
+	bl	write_console
+
+	adr	x1, emmc_tail
+	adr	x2, emmc_tail_end
+	sub	x2, x2, x1
+	bl	write_console
+
+emmc_close:
+	add	sp, sp, #544
+	mov	x0, x20
+	mov	x16, #SYS_close
+	svc	#0x80
+
+emmc_done:
 tick:
 	/* select(0, NULL, NULL, NULL, &5s) as a portable sleep */
 	mov	x0, #0
@@ -99,3 +172,11 @@ hello_tail:
 alive:
 	.ascii	"SANTONI init: still alive (tick)\n"
 alive_end:
+emmc_path:
+	.asciz	"/dev/remmcroot0"
+emmc_msg:
+	.ascii	"SANTONI userspace: read eMMC LBA 0: ["
+emmc_msg_end:
+emmc_tail:
+	.ascii	"]\n"
+emmc_tail_end:

@@ -1,5 +1,4 @@
 diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
-index 6b64ddb..b84b400 100644
 --- a/bsd/dev/santoni_sdhci.c
 +++ b/bsd/dev/santoni_sdhci.c
 @@ -47,6 +47,10 @@
@@ -13,7 +12,7 @@ index 6b64ddb..b84b400 100644
  
  extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
  /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
-@@ -1025,9 +1029,138 @@ santoni_sdhci_init(void)
+@@ -1076,7 +1080,136 @@
  	    se.part, (unsigned long long)se.first_block,
  	    (unsigned long long)(se.nblocks * SDHCI_BLOCK >> 20),
  	    se.writable ? "writable (emmcrw=1)" : "read-only");
@@ -21,8 +20,8 @@ index 6b64ddb..b84b400 100644
 +	/* Private console log area on SYSTEM, if the partition is there. */
 +	santoni_log_start();
  	return 0;
- }
- 
++}
++
 +/*
 + * Persistent console log ("santonilog").
 + * Filming the phone screen is impractical for non-visual and early daemon
@@ -38,7 +37,7 @@ index 6b64ddb..b84b400 100644
 + * Writes go through santoni_sdhci_write_log_blocks(), which is fenced to this
 + * 8193-sector area and does not need emmcrw=1, so the mounted HFS+ root on
 + * USERDATA is never touched. Extracted from recovery via
-+ * tools/sweet-log-pull.sh. Disabled with boot-arg sweetlog=0.
++ * tools/sweet-log-pull.sh. Enabled only by boot-arg sweetlog=1; default off.
 + */
 +#define SANTONI_LOG_SIZE          (4u << 20)
 +#define SANTONI_LOG_BLOCKS        (1 + SANTONI_LOG_SIZE / SDHCI_BLOCK)
@@ -136,7 +135,7 @@ index 6b64ddb..b84b400 100644
 +static void
 +santoni_log_start(void)
 +{
-+	uint32_t on = 1;
++	uint32_t on = 0;
 +	thread_t thread;
 +
 +	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
@@ -147,11 +146,9 @@ index 6b64ddb..b84b400 100644
 +	    KERN_SUCCESS) {
 +		thread_deallocate(thread);
 +	}
-+}
-+
- /* Root device for rd=emmcroot0 (IOFindBSDRoot). */
- int santoni_sdhci_rootdev(dev_t *dev);
+ }
  
+ /*
 diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
 index d97cba8..6d1b177 100644
 --- a/osfmk/console/serial_console.c

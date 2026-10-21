@@ -108,8 +108,8 @@
 #define SDHCI_MAX_BLOCKS (SDHCI_BOUNCE / SDHCI_BLOCK)
 
 #define MOCK_CARD_BLOCKS 16u
-#define CMD_TIMEOUT_US   20000u
-#define CMD_INHIBIT_US   5000u
+#define CMD_TIMEOUT_US   50000u
+#define CMD_INHIBIT_US   50000u
 
 /* -------------------------------------------------------------- host timing */
 
@@ -531,7 +531,8 @@ static int
 sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
     uint32_t *resp)
 {
-	int error = sdhci_poll_state(SDHCI_CMD_INHIBIT, CMD_INHIBIT_US);
+	int error = sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,
+	    CMD_INHIBIT_US);
 	if (error) {
 		return EBUSY;
 	}
@@ -563,27 +564,28 @@ sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
 }
 
 static int
-sdhci_read_cid_csd(uint32_t cid[4], uint32_t csd[4])
+sdhci_read_response128(uint8_t index, uint32_t out[4])
 {
-	int error = sdhci_cmd(10, 0,
-	    SDHCI_TRNS_BLK_CNT_EN, SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC |
-	    SDHCI_CMD_INDEX, NULL);
+	int error = sdhci_cmd(index, 0, 0,
+	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
 	if (error) {
 		return error;
 	}
+	/* RESPONSE[0] is bits 31:0; callers want out[0] = bits 127:96. */
 	for (int i = 0; i < 4; i++) {
-		cid[i] = hc_rd(SDHCI_RESPONSE + 4 * i);
-	}
-	error = sdhci_cmd(9, 0,
-	    SDHCI_TRNS_BLK_CNT_EN, SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC |
-	    SDHCI_CMD_INDEX, NULL);
-	if (error) {
-		return error;
-	}
-	for (int i = 0; i < 4; i++) {
-		csd[i] = hc_rd(SDHCI_RESPONSE + 4 * i);
+		out[i] = hc_rd(SDHCI_RESPONSE + 4 * (3 - i));
 	}
 	return 0;
+}
+
+static int
+sdhci_read_cid_csd(uint32_t cid[4], uint32_t csd[4])
+{
+	int error = sdhci_read_response128(10, cid);
+	if (error) {
+		return error;
+	}
+	return sdhci_read_response128(9, csd);
 }
 
 /* Poll one data interrupt (BRR for reads, BWR for writes) and clear it. */
@@ -641,6 +643,24 @@ sdhci_stop_transmission(void)
 	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
 }
 
+/* Reset the command and data paths, clear status, then best-effort CMD12. */
+static int
+sdhci_recover(void)
+{
+	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+	uint64_t deadline = host_now_ns() + CMD_INHIBIT_US * 1000ull;
+	while (hc_rd8(SDHCI_SOFTWARE_RESET) & (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) {
+		if (host_now_ns() > deadline) {
+			break;
+		}
+		host_delay_us(5);
+	}
+	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
+	(void)sdhci_stop_transmission();
+	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
+	return 0;
+}
+
 static int
 sdhci_read_blocks_pio(uint64_t lba, uint32_t count, void *buf)
 {
@@ -655,6 +675,7 @@ sdhci_read_blocks_pio(uint64_t lba, uint32_t count, void *buf)
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
 	    SDHCI_CMD_DATA, NULL);
 	if (error) {
+		sdhci_recover();
 		return error;
 	}
 
@@ -664,7 +685,7 @@ sdhci_read_blocks_pio(uint64_t lba, uint32_t count, void *buf)
 
 		error = sdhci_wait_data(SDHCI_INT_BRR, &saw_error);
 		if (error) {
-			(void)sdhci_stop_transmission();
+			sdhci_recover();
 			return error;
 		}
 		for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
@@ -673,10 +694,11 @@ sdhci_read_blocks_pio(uint64_t lba, uint32_t count, void *buf)
 	}
 	error = sdhci_wait_transfer_complete();
 	if (error) {
-		(void)sdhci_stop_transmission();
+		sdhci_recover();
 		return error;
 	}
-	return sdhci_stop_transmission();
+	/* BLK_CNT_EN stops the card at the block count: no CMD12 on success. */
+	return 0;
 }
 
 static int
@@ -693,6 +715,7 @@ sdhci_write_blocks_pio(uint64_t lba, uint32_t count, const void *buf)
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
 	    SDHCI_CMD_DATA, NULL);
 	if (error) {
+		sdhci_recover();
 		return error;
 	}
 
@@ -702,7 +725,7 @@ sdhci_write_blocks_pio(uint64_t lba, uint32_t count, const void *buf)
 
 		error = sdhci_wait_data(SDHCI_INT_BWR, &saw_error);
 		if (error) {
-			(void)sdhci_stop_transmission();
+			sdhci_recover();
 			return error;
 		}
 		for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
@@ -711,10 +734,11 @@ sdhci_write_blocks_pio(uint64_t lba, uint32_t count, const void *buf)
 	}
 	error = sdhci_wait_transfer_complete();
 	if (error) {
-		(void)sdhci_stop_transmission();
+		sdhci_recover();
 		return error;
 	}
-	return sdhci_stop_transmission();
+	/* BLK_CNT_EN stops the card at the block count: no CMD12 on success. */
+	return 0;
 }
 
 /* -------------------------------------------------------------- test suite */
@@ -843,11 +867,13 @@ test_cid_csd(void)
 	assert(m.cmd_count == 2);
 	assert(m.trace[0].cmd == 10);
 	assert(m.trace[1].cmd == 9);
-	/* 128-bit responses are read back from 0x10..0x1C */
-	assert(cid[0] == 0x15010044u);
-	assert(cid[1] == 0x33413831u);
-	assert(csd[0] == 0xd00f590au);
-	assert(csd[3] == 0x00000000u);
+	/* R2 is stored least-significant-word first in RESPONSE[0]: the driver
+	 * reverses it so out[0] is bits 127:96 (RESPONSE+12). */
+	assert(cid[3] == 0x15010044u);
+	assert(cid[2] == 0x33413831u);
+	assert(cid[0] == 0x00000000u);
+	assert(csd[3] == 0xd00f590au);
+	assert(csd[1] == 0x3b9aca00u);
 }
 
 static void
@@ -874,12 +900,8 @@ test_read_pio(void)
 	/* Data really came from the addressed card sectors. */
 	assert(memcmp(buf, mock_card + 2 * SDHCI_BLOCK, sizeof(buf)) == 0);
 
-	/* Multi-block read is always terminated with CMD12. */
-	assert(m.cmd_count == 2);
-	assert(m.trace[1].cmd == 12);
-	assert(m.trace[1].arg == 0);
-	assert(m.trace[1].tr_mode == 0);
-	assert(m.trace[1].word == 0x0c1b);            /* R1b, CRC, index */
+	/* BLK_CNT_EN stops the card itself: no CMD12 on the success path. */
+	assert(m.cmd_count == 1);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
 }
 
@@ -902,7 +924,8 @@ test_write_pio(void)
 	assert(m.trace[0].tr_mode == 0x22);     /* MULTI | BLK_CNT_EN, no READ */
 	assert(m.trace[0].word == 0x193a);
 	assert(memcmp(mock_card + 7 * SDHCI_BLOCK, buf, sizeof(buf)) == 0);
-	assert(m.trace[1].cmd == 12);
+	/* No CMD12 after a successful BLK_CNT_EN transfer. */
+	assert(m.cmd_count == 1);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
 }
 
@@ -937,7 +960,8 @@ test_errors(void)
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == EIO);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
 
-	/* Data error during a read: no silent success, CMD12 still sent */
+	/* Data error during a read: recover resets CMD|DATA, then a best-effort
+	 * CMD12 leaves the card out of its data state. */
 	reset_mock();
 	assert(sdhci_take_over() == 0);
 	{
@@ -945,6 +969,7 @@ test_errors(void)
 
 		m.fail_data = 1;
 		assert(sdhci_read_blocks_pio(0, 2, buf) == EIO);
+		assert(m.reset_writes >= 1);
 		assert(m.trace[m.cmd_count - 1].cmd == 12);
 	}
 
@@ -967,6 +992,15 @@ test_errors(void)
 	m.inhibit_polls = 5;
 	assert(sdhci_cmd(13, 0, 0,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == 0);
+
+	/* DATA_INHIBIT (PRESENT_STATE bit 1) is waited on as well: a stuck data
+	 * path must fail closed with EBUSY, not issue the command. */
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+	m.present_state = SDHCI_DATA_INHIBIT;
+	assert(sdhci_cmd(13, 0, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &resp) == EBUSY);
+	assert(m.cmd_count == 0);
 }
 
 int
