@@ -21,6 +21,9 @@
      not panic). `rd=emmcroot0` still panics if the root is unavailable.
   8. `0143` default logging state is now `uint32_t on = 0;`: the persistent
      console log only starts with `sweetlog=1`, protecting SYSTEM.
+  9. `0098` console text scale changed from `EARLY_SCALE 2u` (16x32 font) to
+     `EARLY_SCALE 1u` (8x16 font, 90 columns x 80 rows on 720x1280 display),
+     making on-screen log text smaller and fitting double the log output.
 - `tools/santoni-init.S`: after the PID 1 banner it opens `/dev/remmcroot0`
   (O_RDONLY), reads 512 bytes, hex-formats the first 8 as
   `SANTONI userspace: read eMMC LBA 0: [xx xx xx xx xx xx xx xx]` on the

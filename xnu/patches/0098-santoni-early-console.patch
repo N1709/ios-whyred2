@@ -12,7 +12,7 @@ index 6928957..6b7d3a4 100644
 +#define EARLY_W 720u
 +#define EARLY_H 1280u
 +#define EARLY_STRIDE 2160u
-+#define EARLY_SCALE 2u
++#define EARLY_SCALE 1u
 +#define EARLY_CELL_W (8u * EARLY_SCALE)
 +#define EARLY_CELL_H (16u * EARLY_SCALE)
 +#define EARLY_ROWS (EARLY_H / EARLY_CELL_H)
