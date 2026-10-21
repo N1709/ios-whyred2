@@ -176,7 +176,7 @@ diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
  int uart_getc(void);
  
  void pe_init_fiq(void);
-+#if defined(ARM64_BOARD_CONFIG_SWEET)
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_SANTONI)
 +extern uint32_t sweet_vtimer_intid;
 +extern vm_offset_t gicc_base;
 +#endif

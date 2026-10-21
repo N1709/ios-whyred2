@@ -1,0 +1,11 @@
+diff --git a/pexpert/pexpert/arm64/SANTONI.h b/pexpert/pexpert/arm64/SANTONI.h
+--- a/pexpert/pexpert/arm64/SANTONI.h
++++ b/pexpert/pexpert/arm64/SANTONI.h
+@@ -14,6 +14,7 @@
+ #define __ARM_COHERENT_CACHE__        1
+ #define __ARM_DEBUG__                 7
+ #define __ARM_ENABLE_SWAP__           1
+ #define __ARM_V8_CRYPTO_EXTENSIONS__  1
++/* santoni: Cortex-A53 is ARMv8.0 (no PAN). MSR PAN is undefined. */
+ #define __ARM_PAN_AVAILABLE__         0
+ 
