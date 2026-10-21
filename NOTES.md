@@ -31,6 +31,30 @@
     - In `sweet_early_relocate(base)`, set `early_fb = (volatile uint8_t *)(uintptr_t)(base + 0x1000)` so pixel (0,0) aligns with physical `0x90001000`.
   - `xnu/patches/0084-santoni-4k-user-va.patch`:
     - Guarded `PAGE_SHIFT_CONST` in `osfmk/arm/arm_init.c` with `#if __ARM_16K_PG__`, defaulting to `ARM_PGSHIFT` (4 KB) on SANTONI so 4K translation stays active regardless of RAM expansion.
+- **Build & Artifacts (Commit a4f9f2b, Actions Run 39565157223):**
+  - Kernel: `out/xnu_kernel/kernel.development.santoni` (16,698,560 bytes, SHA256 `092848b0f05c6f2a6e9e0d0f00ebb0237bd365ab9269d7453c808ea8ee586eef`).
+  - Boot image: `shim/out/shim-boot.img` (16,297,984 bytes, SHA256 `b7f2c610cf14c646a554534de33bb03301ba6732f31c35489046f2b4911714ad`).
+- **Physical Device Boot Verification Procedure:**
+  1. Boot via fastboot:
+     ```bash
+     fastboot boot shim/out/shim-boot.img
+     ```
+  2. Expected sequence:
+     - Diagnostics 1-7 proceed as before (`arm_init`, `PE_init_platform`, `ml_parse_cpu_topology`, `cpu_bootstrap`, `kernel_startup_bootstrap`, `cpu_init`, `entering arm_vm_init`).
+     - Diagnostics 8-15:
+       - `SWEET EARLY 8: leaving bootstrap TTBR0`
+       - `SWEET EARLY 9: kernel framebuffer VA live`
+       - `SWEET EARLY 10: TTBR0 off; TLB flushed`
+       - `SWEET EARLY 11: physmap table pointers rebound`
+       - `SWEET EARLY 12: calling pmap_bootstrap`
+       - `SWEET EARLY 13: pmap_bootstrap done`
+       - `SWEET EARLY 14: early I/O page tables ready`
+       - `SWEET EARLY 15: arm_vm_init returned`
+     - Diagnostics 16-20:
+       - `SWEET EARLY 16: calling serial_init`
+       - `SWEET EARLY 19: serial_init returned`
+       - `SWEET EARLY 20: kprintf startup complete`
+
 
 - **Physical Boot Observation (Commit 9d4223a image):**
   - Physical execution on Redmi 4X reached:
