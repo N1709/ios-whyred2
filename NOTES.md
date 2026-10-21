@@ -56,21 +56,25 @@
   HC clock (MCLK select + DLL output), reproduces the photographed failure
   (CMD0/CMD13 stuck with CMD_INHIBIT), new `test_clock_path()`.
   `tests/run_tests.sh`: STOR-06 updated, new STOR-08 group.
-- **Verified offline:** `bash tests/run_tests.sh` exit 0 (3 host suites,
+- **Verified offline & CI:** `bash tests/run_tests.sh` exit 0 (3 host suites,
   all 150 patches exact, STOR-03..STOR-08). 0142 rebuilds 1641 lines and 0143's
   `bsd/dev/santoni_sdhci.c` hunks still apply on top of it (`git apply
   --check` in a scratch tree). No `CORE_*`/`SDHCI_*` identifier used by the
   driver is undefined, braces/parens/brackets balance.
-- **NOT verified:** CI has not compiled this yet and nothing has touched
-  silicon. `CORE_VENDOR_SPEC` POR is written before HC mode exactly as Linux
-  does it, but the 0xa9c bits other than 9:8 are still unproven on this core.
+  **CI Run 39665044062 (commit `e8552c0`) succeeded** (`macos-14`, XNU built
+  cleanly).
+  Artifact `kernel.development.santoni` downloaded and packaged into
+  `shim/out/shim-boot.img` (16,934,912 bytes, SHA256:
+  `9437cb4740d607ef7322887ed039be8500aa8668d8524c8b57ea8d5e4b39076b`).
+  Copied to `/storage/emulated/0/shim-boot.img`.
 - **Expected on the next boot (each line a verdict):** `CORE_VENDOR_SPEC
   0x00000000 (MCLK sel 0) -> POR 0x00000a9c`; `HC mode enabled (HC_MODE
   0x00002001, ...)` - bit 13 must be present now; `HC clock source MCLK sel 2`;
   `CORE_DLL_CONFIG ... (DLL_EN .., CK_OUT_EN ..)`; then either `card answered
   CMD13 on RCA 2`, or the same timeout with the new registers to read.
-- **Next action:** commit, push, run the `xnu` workflow, `fastboot boot` the
-  green image (`rd=md0`, no `sweetlog=1`), photograph the new clock lines.
+- **Next action:** User runs `fastboot boot /storage/emulated/0/shim-boot.img`
+  (`rd=md0`, no `sweetlog=1`), and captures the boot log / screen photo to verify
+  the new clock initialization sequence.
 
 ## Hardware result + RCA audit (2026-10-22, previous): CMD13 arg was 0, card RCA is 2
 
