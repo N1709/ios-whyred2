@@ -1,17 +1,11 @@
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
-@@ -513,7 +513,22 @@
+@@ -513,7 +513,16 @@
  	mov		x20, x0
  	mov		x21, #0
  
 -#if defined(SWEET)
 +#if defined(SANTONI)
-+	/* Earliest physical marker in reserved RAM */
-+	MOV64	x10, 0x85ff0000
-+	MOV64	x11, 0x53414e544f4e4931		// 'SANTONI1'
-+	str		x11, [x10]
-+	dsb		sy
-+
 +	/* Stage 0: write white pixels to simplefb (0x90001000) with MMU off */
 +	MOV64	x0, 0x90001000
 +	mov		w1, #-1
@@ -24,7 +18,7 @@
  	/* Stage 0: white 64x32 band, no stack or page tables needed. */
  	MOV64	x0, (0x9c000000 + 2368 * 4320)
  	mov		w1, #-1
-@@ -678,7 +693,29 @@
+@@ -678,7 +687,29 @@
  	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
  	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
  
@@ -55,7 +49,7 @@
  	/*
  	 * Splash framebuffer: one 32MB Normal-NC block in the EXISTING V=P
  	 * L2 table. Both framebuffer and RAM use L1 index 0; another call to
-@@ -836,6 +873,17 @@
+@@ -836,6 +867,17 @@
  	MOV64   x0, SCTLR_EL1_DEFAULT
  	MSR_SCTLR_EL1_X0
  	isb		sy

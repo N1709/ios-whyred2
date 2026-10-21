@@ -12,7 +12,7 @@ import adt  # noqa: E402
 
 # Kernel-managed RAM: strictly above Qualcomm XPU carve-outs (ending at 0x92280000)
 PHYS_BASE = 0x98000000
-MEM_SIZE = 0x60000000  # 1.5 GiB safe budget
+MEM_SIZE = 0x28000000  # 640 MiB safe budget (fits within Gigabyte 2 L1 entry for 4K bootstrap pmap)
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
