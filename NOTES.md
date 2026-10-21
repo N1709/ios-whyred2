@@ -2,6 +2,21 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **CI Run 39584467087 SUCCESS & Boot Image 1cc2485 Packaged & Dispatched:**
+  - Fixes in commit `e4baf67`:
+    1. `tools/mkadt.py`: Reordered CPU nodes so Cluster 1 (`0x100..0x103`) is listed first as `cpu0..cpu3` with `cpu-id = 0..3`. Boot core `reg = 0x100` is logical `cpu0` (`state = 'running'`).
+    2. `xnu/patches/0082-topaz-boot-on-gold-cpu.patch`: Removed the Santoni `phys_id == 0` check in `SweetCPU::startAll()`, aligning it to expect `boot MPIDR 0x100 and logical CPU 0` (matching Qualcomm MSM8937 bootloader EL1 entry core).
+  - CI Build 39584467087 completed with 100% SUCCESS.
+  - Downloaded kernel artifact `kernel.development.santoni`: 16,948,016 bytes, SHA256 `6fecbf37c9d28f395d646eae4c6722f238ff8c6e6869510a58afb0d642e5e094`.
+  - Packaged boot image `shim/out/shim-boot.img`: 16,398,336 bytes, SHA256 `1cc2485721c8a3b374a5a296196930752ced30b1d101d5ac9f2588c20eba7552`.
+  - Verified `shim/out/santoni.adt`: `cpu0` is `reg = 0x100`, `cpu-id = 0`, `state = running`.
+  - Transferred to:
+    - Telegram bot: sent document `shim-boot.img` to user chat `5987149471`.
+    - Storage: `/storage/emulated/0/shim-boot.img`.
+  - Next Action: User boots image on physical device via:
+    `fastboot boot shim/out/shim-boot.img` (or `fastboot boot /storage/emulated/0/shim-boot.img`)
+  - Expected Behavior: `SweetCPU::startAll()` passes assertion (`topology->boot_cpu->cpu_id == 0` and `phys_id == 0x100`), calls `cpusRunning()`, registers `gIOAllCPUInitializedKey`, and proceeds to IOKit driver matching and userland bootstrap.
+
 - **Physical Boot Observation (Commit 930bd2e / ba377da) & SweetCPU Boot Core Fix:**
   - Physical execution on Redmi 4X reached Mark 20 and beyond:
     ```
