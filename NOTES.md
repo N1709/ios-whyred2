@@ -1,6 +1,61 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-21, latest): 0142 missing SDHCI_CTRL_8BITBUS define fixed, offline PASS
+## Audit (2026-10-21, latest): 0142/0143 symbols + SDHCI registers, 3 findings
+
+- **Method (measured, not inferred):** reconstructed the exact shipped sources
+  by applying 0142 and then 0143 to a scratch tree, then compiled them against
+  the real XNU headers from `xnu-buildtree.zip` with the SANTONI/SWEET defines:
+  `bsd/dev/santoni_sdhci.c` = **0 errors, 0 warnings** (`-Wall -Wextra`);
+  `osfmk/console/serial_console.c` (0143 applied) = **0 errors** with the exact
+  CI flag set. The IOKit hook is covered by green CI run 39647739926.
+  **Conclusion: no other undeclared symbols in 0142/0143.**
+- **Register macros:** 53 `SDHCI_*`/`CORE_*` macros; every value/offset matches
+  Linux `sdhci.h` and the `sdhci_msm_mci_offset` table in `sdhci-msm.c`
+  (BLOCK_SIZE 0x04 ... INT_ERR 0x8000; CORE_MCI_VERSION 0x50, GENERICS 0x70,
+  HC_MODE 0x78/EN BIT(0)/FF_CLK_SW_RST_DIS BIT(13), PWRCTL 0xdc..0xe8, HC base
+  +0x900). 48 used, 5 defined-but-unused (CORE_PWRCTL_*, SDHCI_RESET_ALL); no
+  wrong bit. `SDHCI_CTRL_8BITBUS 0x20` matches Linux and the mock.
+- **DEFECT A (medium, diagnostic):** `sdhci_read_response128()` reverses
+  RESPONSE[3..0] but does not apply the CRC-strip shift. MSM v4 does not set
+  `SDHCI_QUIRK2_RSP_136_HAS_CRC`, so Linux shifts each word
+  (`sdhci_read_rsp_136`). Today MID/OID print correctly, but PNM prints blank
+  (`pnm[0]` is the zero CRC byte) and PRV/S/N/CSD are misaligned. The CID
+  decoder also uses the SD layout (5-char PNM, PRV[63:56], PSN[55:24]); eMMC 5.1
+  is 6-char PNM, PRV[55:48], PSN[47:16] (Linux `mmc_decode_cid` v4).
+  Fix: shift left 8 (`out[i] = out[i] << 8 | out[i+1] >> 24`, `out[3] <<= 8`)
+  and decode 6 chars. Do not trust the CID/CSD line on the next boot.
+- **DEFECT B (high only with sweetlog=1):** `santoni_log_thread()` memcpy/bzero
+  into `se.dma + DMA_BOUNCE` outside `santoni_sdhci_lock`, but
+  `santoni_sdhci_strategy()` uses the same bounce buffer under that lock.
+  A concurrent flusher + root I/O corrupts user data. Fix: copy under the lock
+  (internal unlocked `sdhci_write_pio` helper) or give the flusher its own
+  buffer. Unreachable in the planned `rd=md0`, no-`sweetlog=1` boot.
+- **DEFECT C (low):** `sdhci_take_over()` logs CLOCK_CONTROL after the CMD/DATA
+  reset. On an MCI-only clock path that reset can hit its 100 ms timeout first
+  and hide the one line the hardware step needs. Move the clock read (and the
+  gate reopen) before the reset.
+- Caveats: `sweetlog=1` overwrites SYSTEM sectors 0..8192 (Android ext4
+  superblock) - explicit approval required. A panic between flushes is not
+  persisted (the flusher is a thread). Linux also writes `core_vendor_spec`
+  POR 0xa9c (core+0x10c) before HC mode; we preserve LK's value (fallback if
+  HOST_VERSION reads 0/0xffff).
+- **Artifact state:** green CI run 39647739926, kernel 17,299,944 B SHA256
+  `36d8a714506cec1efebe8cf46c4400a60dcf0395ee780987a76b21e6949047ad`;
+  `shim/out/shim-boot.img` 16,934,912 B SHA256
+  `a828128ee3140c15a71ba940c481bb6cf0e88683e47b11fbdf17af90245f6205`
+  (payload 16,722,016 B SHA256 `8d6163d5...`), same SHA on
+  `/storage/emulated/0/shim-boot.img`. Payload `__TEXT` is byte-identical to
+  the CI artifact, so the image really is the green kernel.
+- **Hardware plan (RAM-disk probe, non-destructive):** keep `rd=md0`, no
+  `sweetlog=1`, no `emmcrw=1`. Expect MCI_VERSION/GENERICS, HC_MODE enabling,
+  HOST_VERSION, CLOCK_CONTROL/PRESENT_STATE/POWER_CONTROL, takeover, CMD13/10/9,
+  SEC_COUNT, system+userdata GPT lines, then PID 1 ticks. If CLOCK_CONTROL is 0,
+  the expected result is the explicit "SDHCI clock not configured" probe
+  failure (a diagnosis, not a regression): the next patch must read the GCC
+  SDC1 rate and program CLOCK_CONTROL + DLL. Only after the clock is valid and
+  an HFS+ root is staged on userdata should `rd=emmcroot0` be tried.
+
+## Agent handoff (2026-10-21, previous): 0142 missing SDHCI_CTRL_8BITBUS define fixed, offline PASS
 
 - **CI failure after c66ee92 (job 119382734708):**
   `bsd/dev/santoni_sdhci.c:589: error: use of undeclared identifier
@@ -17,8 +72,10 @@
   identifier used by the 0142 driver (53) is defined in it.
 - **CI:** commit 98c5c3d, run 39647739926 (job 119387671745) = success,
   including "Fail if a Santoni storage patch was skipped".
-- **Next:** continue the hardware steps of the HC-mode handoff below. No device
-  state changed in this fix.
+- **Next:** boot the green image as a RAM-disk probe (plan in the audit section
+  above). Fix defects A (R2 shift / eMMC CID layout) and B (log flusher bounce
+  race) in the next patch before trusting CID output or enabling `sweetlog=1`.
+  No device state changed in this fix.
 
 ## Agent handoff (2026-10-21, previous): SDHCI HC-mode takeover fixed in 0142, committed as c66ee92
 
