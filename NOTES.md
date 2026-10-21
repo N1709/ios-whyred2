@@ -2,6 +2,20 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **Phase 4 Plan 01 (RAM Disk Root & Static Mach-O PID 1 Init) EXECUTED & COMMITTED:**
+  - **Milestone Achieved:** STOR-01 verified end-to-end. Static arm64 Mach-O PID 1 init authored, wrapped, injected into payload as RAMDisk, and packaged into bootable Android boot.img with `rd=md0`.
+  - **Commits:**
+    - `a3664ba`: `feat(04-01): author static mach-o pid 1 init for santoni`
+    - `a87d2b4`: `feat(04-01): wire ram disk payload injection and rd=md0 in shim build pipeline`
+  - **Deliverables & Verification:**
+    1. `tools/santoni-init.S`: Position-independent Cortex-A53 PID 1 init program. Aligns SP to 16 bytes (AAPCS), opens `/dev/console` with `SYS_open` (5), writes banner with `SYS_write` (4), queries PID with `SYS_getpid` (20), writes single-digit ASCII PID, and enters 5-second `SYS_select` (93) heartbeat tick loop with `wfe` hang.
+    2. `tools/mkpayload.py`: Configured with `PAGE = 0x1000` (4 KiB translation granule); appends `--ramdisk` segment right after kernel data with 4K alignment and injects `/chosen/memory-map` `RAMDisk` property (`<rd_pa, rd_size>`). Default cmdline aligned with `rd=md0`.
+    3. `shim/build.sh`: Automatically compiles `tools/santoni-init.S` with `clang -target arm64-apple-ios16.0`, wraps it via `tools/mkinit.py` into `out/init.macho` (16,635 bytes, ad-hoc signed, 4K page hashes), feeds `--ramdisk out/init.macho` to `mkpayload.py`, passes `rd=md0` in `CMDLINE`, and outputs `shim/out/shim-boot.img` (16,416,768 bytes, SHA256 `ced930087b7398cca19525b989fce64c21a757721245bd923fce7806f0f01888`).
+    4. Boot image dispatched to `/storage/emulated/0/shim-boot.img`.
+  - **Next Concrete Action:**
+    1. User tests `fastboot boot /storage/emulated/0/shim-boot.img` on hardware to observe PID 1 heartbeat text.
+    2. Execute Phase 4 Plan 02: Bring up Qualcomm SDHCI MSM v4 block driver (`0x07824900` / `0x07824000`) and eMMC 5.1 storage.
+
 - **Phase 4 Exploration & Fortification (`orhunnx/ios-a5xelte` codex/a5xelte-bringup learnings):**
   - **Context:** Evaluated `orhunnx/ios-a5xelte` (Exynos 7580, Cortex-A53, 4 KiB VM pages, eMMC) in collaboration with OpenCode DeepSeek v4.1 Flash Free.
   - **Key Discoveries & Plan 04-03 Fortifications:**
