@@ -6,6 +6,7 @@ resources/
 .planning/
 # third-party/Apple sources fetched for reading
 research/
+kernel.*
 shim/out/
 xnu/out/
 xnu/out-*/

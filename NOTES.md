@@ -2,12 +2,15 @@
 
 ## Agent handoff / active work (2026-10-21, latest): Phase 4 Wave 3 gaps FIXED, offline PASS
 
-- **Status: Wave 3 (STOR-03/04/05) remediation complete and verified locally.
-  Phase 4 offline verification is now PASS for all five must-haves.** Physical
-  device tests remain HUMAN_NEEDED. Report rewritten:
-  `.planning/phases/04-.../04-GBV-VERIFICATION.md` (verdict `PASS (offline)`).
-  Commits `268cb9e` and `9a3eba3` pushed to `origin/santoni`.
-  CI build triggered: GitHub Actions run ID `39629129566`.
+- **Status: Wave 3 (STOR-03/04/05) remediation complete and verified locally and in CI.
+  Phase 4 offline verification is PASS for all must-haves.** Physical device
+  tests remain HUMAN_NEEDED.
+  - Commits `268cb9e`, `9a3eba3`, `9a66bc7` pushed to `origin/santoni`.
+  - CI build succeeded: GitHub Actions run ID `39629129566` (success on all steps).
+  - Downloaded `xnu-kernel.zip` (59.9 MB), verified symbols `santoni_sdhci_write_log_blocks`, `SANTONILOG1`, `_santoni_log_append` compiled in.
+  - Repacked `shim/out/shim-boot.img` (16,433,152 bytes) with Mach-O kernel, RAM disk static init, and ADT.
+  - Dispatched to `/storage/emulated/0/shim-boot.img` (SHA256: `a864df2557ef7fd1dbda9cf35f6fc31bd13fcb2e942cffd0eb6723866bda6826`).
+  - Next concrete action: User physical device test via `fastboot boot /storage/emulated/0/shim-boot.img`.
 - **Single proof command:** `bash tests/run_tests.sh` -> exit 0.
   - 3/3 host tests pass: `test_sdhci_mock`, `test_gpt_parser` (**11**
     assertions), `test_log_ring` (4 assertions, incl. 10 MiB wrap stress).
