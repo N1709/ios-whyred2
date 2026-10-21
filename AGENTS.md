@@ -8,8 +8,7 @@
 - Commit completed changes. All new commits must include the trailer `Co-Authored-By: Gemini <noreply@google.com>`. Use `gh` for GitHub Actions kernel builds and logs.
   Local single-file cross-compiles are useful before spending a CI run.
 - Leverage OpenCode for task delegation:
-  - Use MiniMax M3.1 Flash (`opencode run -m opencode/minimax-m3.1-flash-free --auto "<prompt>"`) for reasoning tasks, hardware register analysis, and architectural/hypothesis debate.
-  - Use DeepSeek v4.1 Flash (`opencode run -m opencode/deepseek-v4.1-flash-free --auto "<prompt>"`) for debugging and authoring code modifications.
+  - Use DeepSeek v4.1 Flash (`opencode run -m opencode/deepseek-v4.1-flash-free --auto "<prompt>"`) for reasoning, hardware register analysis, debugging, and authoring code modifications.
 - Device bring-up uses temporary `fastboot boot` images. Preserve the Android
   installation and partition backups. The user approved (2026-10-15) using
   internal UFS for iOS and said Android may be deleted: the iOS root goes
