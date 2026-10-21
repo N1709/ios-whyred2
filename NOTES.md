@@ -36,11 +36,22 @@
   byte-for-byte; braces/parens balance ignoring comments and strings.
   `santoni-init.S` assembles with `clang -target arm64-apple-ios16.0` and
   `tools/mkinit.py` packs the Mach-O (no relocations).
-- **NOT verified yet:** no CI compile, nothing on silicon. Next concrete
-  action: run the xnu workflow (expect `santoni_sdhci.c` to compile and no
-  `Skipping patch ...0142/0143`), repack `shim/out/shim-boot.img`, then
-  `fastboot boot` it and look for the new userspace eMMC hex line and a
-  `rd=emmcroot0` mount attempt.
+- **CI VERIFIED (run `39642519019`, commit `0582189`, conclusion `success`):**
+  - Kernel compiled cleanly: `santoni_sdhci.o`, `_santoni_sdhci_probe`, and
+    `_sdhci_recover` compiled in without error.
+  - Linked `kernel.development.santoni` is 17,299,880 bytes.
+  - Repacked `shim/out/shim-boot.img`: 16,934,912 bytes, SHA256
+    `fd4c5c6d0a0f558b6f65d9ed776443bcd1ac560b224d0de356d55e7e07c60183`,
+    dispatched to `/storage/emulated/0/shim-boot.img` (same SHA256).
+  - Boot image features:
+    1. Early eMMC probe executed during bootstrap before root selection.
+    2. Static Mach-O PID 1 init attempts `/dev/remmcroot0` read and prints
+       `SANTONI userspace: read eMMC LBA 0: [xx xx xx xx xx xx xx xx]`.
+    3. On-screen console text scaled down to 1:1 (8x16 font, 90x80 chars).
+- **Next concrete action:**
+  - `fastboot boot /storage/emulated/0/shim-boot.img` on hardware.
+  - Expect smaller, crisp text at 90 columns, PID 1 init alive ticks, and the
+    new eMMC LBA 0 hex readout from userspace.
 
 ## Agent handoff / active work (2026-10-21, previous): root mount ENODEV (19) fixed - MOCKFS was never in MASTER.arm64.santoni
 
