@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,1245 @@
+@@ -0,0 +1,1246 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -148,6 +148,7 @@ new file mode 100644
 +#define SDHCI_DATA_INHIBIT      0x00000002u
 +
 +#define SDHCI_CTRL_DMA_MASK     0x18u
++#define SDHCI_CTRL_8BITBUS      0x20u
 +
 +#define SDHCI_RESET_ALL         0x01
 +#define SDHCI_RESET_CMD         0x02

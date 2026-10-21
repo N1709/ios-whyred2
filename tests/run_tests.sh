@@ -81,6 +81,7 @@ python3 tools/check_patch.py "$P142" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:static bool attempted;' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:int init_error;' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_core_check(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_CTRL_8BITBUS' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_enter_hc_mode(void)' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:core_wr(CORE_HC_MODE, hc_mode | want);' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:HC_MODE_EN reads back 0' \

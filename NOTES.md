@@ -1,6 +1,24 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-21, latest): SDHCI HC-mode takeover fixed in 0142, offline PASS
+## Agent handoff / active work (2026-10-21, latest): 0142 missing SDHCI_CTRL_8BITBUS define fixed, offline PASS
+
+- **CI failure after c66ee92 (job 119382734708):**
+  `bsd/dev/santoni_sdhci.c:589: error: use of undeclared identifier
+  'SDHCI_CTRL_8BITBUS'`. 0142 defined `SDHCI_CTRL_DMA_MASK` but not
+  `SDHCI_CTRL_8BITBUS`, although `sdhci_set_bus_width()` tests it. The host mock
+  (`tests/test_sdhci_mock.c:80-81`) defines both, so `run_tests.sh` could not
+  catch it; only the real compile did.
+- **Fix:** added `#define SDHCI_CTRL_8BITBUS 0x20u` next to DMA_MASK in 0142 and
+  updated the new-file hunk header `+1,1245` -> `+1,1246`. `run_tests.sh` now
+  asserts the define is shipped, so this class of omission fails locally.
+- **Verified offline:** `bash tests/run_tests.sh` exit 0 (3 host suites, all
+  patch checks, shipped-code assertions); strict hunk-body scan finds no
+  trailing body lines; scripted scan confirms every `SDHCI_*`/`CORE_*`
+  identifier used by the 0142 driver (53) is defined in it.
+- **Next:** push so the kernel CI rebuilds; then continue the hardware steps of
+  the HC-mode handoff below. No device state changed in this fix.
+
+## Agent handoff (2026-10-21, previous): SDHCI HC-mode takeover fixed in 0142, committed as c66ee92
 
 - **Hardware evidence (Redmi 4X, shim-boot.img boot 22:57):** the non-fatal probe
   worked - no panic, RAM-disk PID 1 alive, 1:1 console font - and printed
@@ -12,7 +30,7 @@
   drivers/mmc/host/sdhci-msm.c:2782-2791) writes `HC_MODE_EN`, reads back, ORs
   `FF_CLK_SW_RST_DIS` and writes again before touching the +0x900 window.
   Consistent with LK driving SDCC1 through the legacy MCI register set.
-- **Fix (uncommitted):** 0142 `sdhci_take_over()` split into
+- **Fix (committed as c66ee92):** 0142 `sdhci_take_over()` split into
   `sdhci_core_check()` + `sdhci_enter_hc_mode()`:
   - reads `CORE_MCI_VERSION` (0x50) / `CORE_GENERICS` (0x70) first; 0 or
     all-ones => unclocked core / reset block, bail non-fatally;
@@ -30,7 +48,8 @@
 - **Verified offline:** `bash tests/run_tests.sh` exit 0; `test_sdhci_mock`
   rebuilt to the LK/MCI hand-off (HC_MODE=0) plus 5 takeover cases (gate
   reopen, dead clock, unclocked core, non-latching mode bit, write-only bit 0)
-  - all pass. 0142 hunk count recomputed (1245 added lines), check_patch exact.
+  - all pass. 0142 hunk count recomputed (now 1246 added lines after the
+    8BITBUS define), check_patch exact.
 - **Next concrete actions (one CI run, then hardware):**
   1. commit + CI; `fastboot boot` the new shim-boot.img.
   2. Read the new log lines: `core MCI_VERSION/GENERICS`, `HC_MODE ... enabling`,
