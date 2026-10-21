@@ -2,15 +2,13 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-- **CI Run 39571169215 Post-Mortem & Patch Fixes:**
-  - Build failed at `MakeInc.kernel:22: *** Unsupported CURRENT_MACHINE_CONFIG SANTONI. Stop.`
-  - Inspection of CI logs revealed:
-    `[warning] Skipping patch .../0017-santoni-gicv2-rtclock.patch: error: corrupt patch at line 82`
-    `[warning] Skipping patch .../0085-santoni-board-target.patch: error: corrupt patch at line 37`
-  - Cause of `0085` corruption: A trailing backslash at line end inside a multi-line string in the patch-generating script consumed the newline, merging context and added lines in `pexpert/arm64/Makefile` into a single line. In addition, hunk line count headers and diff headers were misaligned in `SANTONI.h` / `MASTER.arm64.santoni`.
-  - Cause of `0017` corruption: Two added lines (`gicd_base` export) in `pe_fiq.c` were not reflected in the hunk header line count (`+201,64` vs actual 66), and git diff file headers were missing before subsequent file hunks.
-  - SweetCPU Boot Core Alignment: `SweetCPU::startAll` had been changed by topaz bring-up to enforce `phys_id == 0x100` (gold core); on Santoni's homogeneous A53 cluster, the boot core is `phys_id == 0`. Added `#if defined(ARM64_BOARD_CONFIG_SANTONI)` check to expect `phys_id == 0`. Linkage of `gicd_base` in `SweetCPU.cpp` updated to `extern "C"`.
-  - Verification: Automated scan of all 145 patch files with `git apply --check` verified 100% clean syntax and patch applicability with zero errors.
+- **CI Run 39573529105 Diagnosis & Surgical Architecture Fix:**
+  - Build failed because `0085` was previously modified with extra Make/C++ hunks that broke when applied over the existing patch series.
+  - Architecture simplification:
+    1. Restored `0085-santoni-board-target.patch` to the working `a4f9f2b` baseline, simply adding `-DARM64_BOARD_CONFIG_SWEET` to `MACHINE_FLAGS_ARM64_SANTONI`.
+    2. Updated `0019-sweet-builtin-pthread.patch` and `0020-sweet-portable-aes-cbc.patch` Makefile conditionals from `ifeq ($(CURRENT_MACHINE_CONFIG),SWEET)` to `ifneq ($(filter SWEET SANTONI,$(CURRENT_MACHINE_CONFIG)),)`, natively pulling in BearSSL crypto (SHA1, MD5, AES, SHA2big), HFS, and pthread includes and flags without any duplicated makefile rules.
+    3. Moved `SweetCPU.cpp` Santoni boot core check (allowing boot MPIDR 0) and GICv2 SGI signaling into `0082-topaz-boot-on-gold-cpu.patch` where `SweetCPU.cpp` is natively modified.
+    4. Verified patch application across all 145 patches via `git apply --check` (0 errors).
 
 ### >>> UPDATE 2026-10-21: Historic Milestone Reached: Kernel Boot Marks 8-20 Verified on Physical Hardware! Resolution of NULL g_crypto_funcs Panic via Shared BearSSL / Staging Hooks <<<
 
