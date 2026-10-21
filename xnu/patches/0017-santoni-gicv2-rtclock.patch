@@ -10,7 +10,7 @@ index 4ec6989..06b362a 100644
  #include <arm64/proc_reg.h>
  #include <kern/clock.h>
  #include <mach/mach_time.h>
-@@ -200,8 +201,64 @@ pe_init_fiq()
+@@ -200,8 +201,66 @@ pe_init_fiq()
  #endif /* SWEET */
  }
  #else
@@ -77,6 +77,7 @@ index 4ec6989..06b362a 100644
 +#endif /* SANTONI */
  }
  #endif
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
 --- a/osfmk/arm64/sleh.c
 +++ b/osfmk/arm64/sleh.c
 @@ -1856,7 +1856,42 @@
@@ -123,6 +124,7 @@ index 4ec6989..06b362a 100644
  	/*
  	 * sweet: TrustZone owns GIC Group 0, so the timer and IPIs that other
  	 * ARM64 targets take as FIQs arrive here as Group 1 IRQs.
+diff --git a/pexpert/pexpert/arm/protos.h b/pexpert/pexpert/arm/protos.h
 --- a/pexpert/pexpert/arm/protos.h
 +++ b/pexpert/pexpert/arm/protos.h
 @@ -36,6 +36,11 @@

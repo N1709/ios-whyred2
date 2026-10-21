@@ -2,6 +2,16 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **CI Run 39571169215 Post-Mortem & Patch Fixes:**
+  - Build failed at `MakeInc.kernel:22: *** Unsupported CURRENT_MACHINE_CONFIG SANTONI. Stop.`
+  - Inspection of CI logs revealed:
+    `[warning] Skipping patch .../0017-santoni-gicv2-rtclock.patch: error: corrupt patch at line 82`
+    `[warning] Skipping patch .../0085-santoni-board-target.patch: error: corrupt patch at line 37`
+  - Cause of `0085` corruption: A trailing backslash at line end inside a multi-line string in the patch-generating script consumed the newline, merging context and added lines in `pexpert/arm64/Makefile` into a single line. In addition, hunk line count headers and diff headers were misaligned in `SANTONI.h` / `MASTER.arm64.santoni`.
+  - Cause of `0017` corruption: Two added lines (`gicd_base` export) in `pe_fiq.c` were not reflected in the hunk header line count (`+201,64` vs actual 66), and git diff file headers were missing before subsequent file hunks.
+  - SweetCPU Boot Core Alignment: `SweetCPU::startAll` had been changed by topaz bring-up to enforce `phys_id == 0x100` (gold core); on Santoni's homogeneous A53 cluster, the boot core is `phys_id == 0`. Added `#if defined(ARM64_BOARD_CONFIG_SANTONI)` check to expect `phys_id == 0`. Linkage of `gicd_base` in `SweetCPU.cpp` updated to `extern "C"`.
+  - Verification: Automated scan of all 145 patch files with `git apply --check` verified 100% clean syntax and patch applicability with zero errors.
+
 ### >>> UPDATE 2026-10-21: Historic Milestone Reached: Kernel Boot Marks 8-20 Verified on Physical Hardware! Resolution of NULL g_crypto_funcs Panic via Shared BearSSL / Staging Hooks <<<
 
 - **Physical Boot Observation (Commit a4f9f2b / image b7f2c61, photo 20261021_133650.jpg):**
