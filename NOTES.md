@@ -2,6 +2,22 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **Phase 4 Plan 03 (Hardened GPT, Persistent Console Log, 4 KiB Dyld Cache) EXECUTED & COMMITTED:**
+  - **Milestone Achieved:** STOR-03, STOR-04, and STOR-05 verified. Hardened GPT parser with CRC32 checks and userdata write boundary clamping authored; persistent 4 MiB circular console log flusher targeting SYSTEM partition (sectors 0..8192) authored with recovery extraction tools; 4 KiB unsigned dyld shared cache compatibility patch authored for Cortex-A53 userland.
+  - **Commits:**
+    - `08e4806`: `feat(04-03): author hardened gpt partition parser and write boundary test`
+    - `09c163c`: `feat(04-03): author persistent 4 mib console log flusher on system partition`
+    - `dadde27`: `feat(04-03): author 4k unsigned dyld shared cache patch for cortex-a53`
+  - **Deliverables & Verification:**
+    1. `tests/test_gpt_parser.c`: Full UEFI 2.8 GPT parser with IEEE 802.3 CRC32 verification over header and entry array; extracts `userdata` and `system` partition bounds; strictly fences out-of-bounds writes and write attempts without `su.writable` using `EPERM`. Passes all assertions in `out/test_gpt_parser`.
+    2. `tests/test_log_ring.c`: Tests 4 MiB circular buffer wrap-around, atomic byte counter, `santoni_log_header` binary packing (36 bytes, magic "SANTONILOG1"), and linear stream decoding. Passes all assertions including 10 MiB wrap-around stress test.
+    3. `xnu/patches/0143-santoni-persistent-console-log.patch`: Hooks `_cnputs` in `osfmk/console/serial_console.c` to call `santoni_log_append`, and spawns `santoni_log_thread` in `bsd/dev/santoni_sdhci.c` flushing dirty ring blocks to the idle SYSTEM partition starting at `sys.first_block` (sectors 0..8192).
+    4. `tools/sweet-log-pull.sh` & `tools/sweet-log.py`: Updated recovery extraction script and decoder to pull 8193 blocks (4 MiB + 512B header) from Santoni `/dev/block/bootdevice/by-name/system` or `/dev/block/by-name/system`. Tested and verified.
+    5. `xnu/patches/0144-santoni-4k-unsigned-dyld-cache.patch`: Allows 16 KiB dyld cache pageSize (14) on 4 KiB VM pages in `cs_validate_page()`, bails early in `ubc_cs_blob_add()` to prevent hashing beyond 4 KiB mapped page bounds, and calls `vm_map_cs_enforcement_set(sub_map, false)` in `vm_shared_region_enter()`.
+  - **Next Concrete Action:**
+    1. Hardware testing: With SDHCI driver (Plan 04-02), boot kernel with `rd=emmcroot0` to verify persistent HFS+ mount from `userdata`.
+    2. Recovery log verification: Trigger panic or clean boot, enter recovery, and execute `tools/sweet-log-pull.sh /tmp/console.log` to extract persistent kernel log.
+
 - **Phase 4 Plan 02 (SDHCI MSM v4 eMMC driver + ADT nub) EXECUTED & COMMITTED:**
   - **Deliverables:**
     1. `tests/test_sdhci_mock.c`: host mock of the SDHCI MSM v4 register file

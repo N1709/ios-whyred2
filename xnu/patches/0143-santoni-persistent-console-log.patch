@@ -1,0 +1,157 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -37,6 +37,12 @@
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
+ #include <libkern/libkern.h>
++#include <machine/atomic.h>
++
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void thread_deallocate(thread_t);
++extern int hz;
++static void santoni_log_start(void);
+ 
+ #define SDHCI_BLOCK       512
+ #define BOUNCE_SIZE       (64 * 1024)
+@@ -580,6 +586,115 @@ santoni_sdhci_probe(void)
+ 	printf("SANTONI SDHCI: userdata partition at 0x%llx..0x%llx (%llu MiB, %s)\n",
+ 	    su.first_block, su.first_block + su.nblocks - 1,
+ 	    (su.nblocks * SDHCI_BLOCK) >> 20, su.writable ? "read-write" : "read-only");
++	santoni_log_start();
+ 	return 0;
+ }
+ 
++/*
++ * Persistent console log ("sweetlog" / santoni_log).
++ * Filming the phone screen is impractical for non-visual and early daemon panics.
++ * Every character that reaches the console (_cnputs) is appended to a lock-free
++ * 4 MiB circular ring buffer. A dedicated kernel thread wakes up periodically
++ * and commits dirty ring blocks to the idle SYSTEM partition starting at
++ * sys.first_block (sectors 0..8192).
++ *
++ * Flash layout on SYSTEM partition:
++ *   Sector 0: struct santoni_log_header (magic "SANTONILOG1", v1, 4 MiB, total, seq)
++ *   Sectors 1..8192: 8192 blocks (4 MiB) circular ring buffer
++ *
++ * Completely isolated from the mounted HFS+ root on USERDATA.
++ * Extracted from recovery via tools/sweet-log-pull.sh.
++ * Disabled with boot-arg sweetlog=0.
++ */
++#define SANTONI_LOG_SIZE          (4u << 20)
++#define SANTONI_LOG_BLOCKS        (1 + SANTONI_LOG_SIZE / SDHCI_BLOCK)
++
++static char santoni_log_ring[SANTONI_LOG_SIZE];
++static uint64_t _Atomic santoni_log_total;
++static int santoni_log_chan;
++
++/* Called for all console output from any context: never blocks */
++void santoni_log_append(const char *c, int size);
++
++void
++santoni_log_append(const char *c, int size)
++{
++	if (size <= 0) {
++		return;
++	}
++	uint64_t at = os_atomic_add_orig(&santoni_log_total, (uint64_t)size, relaxed);
++	for (int i = 0; i < size; i++) {
++		santoni_log_ring[(at + (uint64_t)i) % SANTONI_LOG_SIZE] = c[i];
++	}
++}
++
++struct santoni_log_header {
++	char magic[12];
++	uint32_t version;
++	uint32_t size;
++	uint64_t total;
++	uint64_t seq;
++} __attribute__((packed));
++
++static void
++santoni_log_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint64_t base = sys.first_block;
++	uint64_t flushed = 0, seq = 0;
++	void *bounce = (void *)(su.dma + DMA_BOUNCE);
++
++	printf("SANTONI LOG: console log flusher active on SYSTEM partition (block 0x%llx..0x%llx, %u KiB)\n",
++	    base, base + SANTONI_LOG_BLOCKS - 1, (SANTONI_LOG_BLOCKS * SDHCI_BLOCK) >> 10);
++	for (;;) {
++		(void)tsleep(&santoni_log_chan, PZERO, "santonilog", hz);
++		uint64_t total = os_atomic_load(&santoni_log_total, relaxed);
++		if (total == flushed) {
++			continue;
++		}
++		uint64_t pos = total - flushed >= SANTONI_LOG_SIZE ? total - SANTONI_LOG_SIZE : flushed;
++		int error = 0;
++
++		lck_mtx_lock(&santoni_sdhci_lock);
++		while (pos < total && !error) {
++			uint32_t off = (uint32_t)(pos % SANTONI_LOG_SIZE);
++			uint32_t blk = off / SDHCI_BLOCK;
++			uint64_t need = ((uint64_t)off % SDHCI_BLOCK + (total - pos) + SDHCI_BLOCK - 1) / SDHCI_BLOCK;
++			uint32_t n = (uint32_t)MIN(MIN(need, (uint64_t)(SANTONI_LOG_SIZE / SDHCI_BLOCK - blk)),
++			    (uint64_t)(BOUNCE_SIZE / SDHCI_BLOCK));
++			memcpy(bounce, santoni_log_ring + (uint64_t)blk * SDHCI_BLOCK, n * SDHCI_BLOCK);
++			error = sdhci_write_blocks(base + 1 + blk, n);
++			pos += (uint64_t)(blk + n) * SDHCI_BLOCK - off;
++		}
++		if (!error) {
++			struct santoni_log_header h = {
++				.magic = "SANTONILOG1",
++				.version = 1,
++				.size = SANTONI_LOG_SIZE,
++				.total = total,
++				.seq = ++seq,
++			};
++			bzero(bounce, SDHCI_BLOCK);
++			memcpy(bounce, &h, sizeof(h));
++			error = sdhci_write_blocks(base, 1);
++		}
++		lck_mtx_unlock(&santoni_sdhci_lock);
++		if (error) {
++			printf("SANTONI LOG: write failed (%d), stopping flusher\n", error);
++			return;
++		}
++		flushed = total;
++	}
++}
++
++static void
++santoni_log_start(void)
++{
++	uint32_t on = 1;
++	thread_t thread;
++
++	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
++	if (!on || !sys.nblocks || sys.nblocks < SANTONI_LOG_BLOCKS) {
++		return;
++	}
++	if (kernel_thread_start(santoni_log_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -266,11 +266,21 @@
+  *             waiting for an interrupt when the hardware device isn't ready
+  * @param size The number of characters to print to the console.
+  */
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++extern void santoni_log_append(const char *c, int size);  /* bsd/dev/santoni_sdhci.c */
++#endif
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ extern void sweet_log_append(const char *c, int size);  /* bsd/dev/sweet_ufs.c */
+ #endif
+ 
+ static inline void
+ _cnputs(char *c, int size, bool poll)
+ {
+ 	extern int disableConsoleOutput;
+ 
++#if defined(ARM64_BOARD_CONFIG_SANTONI)
++	santoni_log_append(c, size);
++#endif
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ 	sweet_log_append(c, size);
+ #endif
