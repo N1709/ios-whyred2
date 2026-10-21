@@ -2,6 +2,21 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> UPDATE 2026-10-21: Phase 3 Plan 02 (Core 4K Pmap, Board Target, and Early Entry) EXECUTED & COMMITTED <<<
+
+- **Plan 03-02 Status:** EXECUTED, VERIFIED, AND COMMITTED
+- **Deliverables:**
+  - `xnu/patches/0084-santoni-4k-user-va.patch`: Capped `MACH_VM_MAX_ADDRESS_RAW` to `0x0000000FC0000000ULL` (36-bit user VA / 64 GiB) in `osfmk/mach/arm/vm_param.h` under 4 KiB translation to resolve commpage nesting assertion panics.
+  - `xnu/patches/0085-santoni-board-target.patch`: Added `ARM64_BOARD_CONFIG_SANTONI` layering on `SWEET` (`#define SWEET 1`) in `board_config.h`, `Makefile`, and `MakeInc.def`; authored `pexpert/arm64/SANTONI.h` omitting `__ARM_16K_PG__` (enabling native 4K page translation); authored `config/MASTER.arm64.santoni`.
+  - `xnu/patches/0093-santoni-39bit-kernel-va.patch`: Configured compact 39-bit kernel VA link address (`0xfffffff007004000`) with `-UARM_LARGE_MEMORY` in `MakeInc.def`.
+  - `xnu/patches/0097-santoni-zone-va-size.patch`: Restricted `ZONE_MAP_VA_SIZE` to 24 GiB (`24ULL << 30`) in `osfmk/kern/zalloc.c`.
+  - `xnu/patches/0082-santoni-4k-entry.patch`: Implemented early physical entry markers in `osfmk/arm64/start.s` (writes `0x53414e544f4e4931` / `SANTONI1` to `0x85ff0000`; stage 0 white band directly to `0x90001000` with MMU off; bootstrap L2 page tables mapping 2 x 2 MiB Normal-NC blocks for simplefb `0x90000000..0x90400000` VA=PA alias; stage 1 blue block after MMU on).
+- **Commits Added in Plan 03-02:**
+  - `b6516aa`: `feat(03-02): author 4K pmap user VA cap, board target, 39-bit kernel VA, and zone map size patches`
+  - `0885db0`: `feat(03-02): author early physical entry and simplefb bootstrap patch for santoni`
+- **Next Concrete Action:**
+  - Execute Plan 03-03: Author Cortex-A53 codegen, PAN disable, commpage LL/SC atomics, simplefb early console blitter, and GitHub Actions CI workflow for SANTONI target.
+
 ### >>> UPDATE 2026-10-21: Phase 3 Plan 01 (ADT Synthesizer & 4K Payload Packaging) EXECUTED & COMMITTED <<<
 
 - **Plan 03-01 Status:** EXECUTED, VERIFIED, AND COMMITTED
