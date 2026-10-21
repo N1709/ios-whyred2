@@ -2,7 +2,45 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Immediate Reboot After "jumping" Solved — TrustZone XPU Trap Removed <<<
+### >>> UPDATE 2026-10-21: Early Kernel Panic machine_routines.c:1244 Solved — Full 8-Core Topology & Dynamic Boot CPU Matching <<<
+
+- **Physical Boot Observation (Commit 9d4223a image):**
+  - Physical execution on Redmi 4X reached:
+    ```
+    SWEET EARLY 1: arm_init entered (MMU on)
+    SWEET EARLY 2: PE_init_platform done
+    SWEET EARLY 3: ml_parse_cpu_topology done
+    SWEET EARLY 4: cpu_bootstrap done
+    SWEET EARLY 5: kernel_startup_bootstrap done
+    SWEET EARLY PANIC: machine_routines.c:1244 Assertion failed: cpu_id <= (unsigned int)ml_get_max_cpu_number()
+    ```
+- **Root Cause Analysis:**
+  - `cpu_init()` calls `do_cacheid()`, which calls `ml_get_cpu_number_local()`.
+  - `ml_get_cpu_number_local()` queries `MPIDR_EL1` of the executing core and calls `ml_get_cpu_number(mpidr)`.
+  - On Qualcomm MSM8937 (octacore Cortex-A53), LK firmware boots into EL1 on Core 4 (Cluster 1, `reg = 0x100`, `MPIDR & 0xffff = 0x0100`).
+  - `tools/mkadt.py` only declared `cpu0` (`reg = 0x0`), so `ml_get_cpu_number(0x0100)` returned `-1` (`0xffffffff`).
+  - `assert(0xffffffff <= ml_get_max_cpu_number())` failed!
+- **Fix Applied:**
+  - `tools/mkadt.py`: Expanded `/cpus` to all 8 Qualcomm MSM8937 Cortex-A53 nodes:
+    - Cluster 0 (Cores 0-3 @1.1 GHz): `reg = <0x0>`, `<0x1>`, `<0x2>`, `<0x3>`, `die-cluster-id = 0`, `cluster-core-id = 0..3`.
+    - Cluster 1 (Cores 4-7 @1.4 GHz): `reg = <0x100>`, `<0x101>`, `<0x102>`, `<0x103>`, `die-cluster-id = 1`, `cluster-core-id = 0..3`.
+  - `shim/loader.c`: Added bounds-checked recursive ADT traversal `adt_walk_fix_cpus()` that queries `mrs mpidr_el1 & 0xffff` at runtime and dynamically marks the executing physical core `state = "running"` and all remaining 7 cores `state = "stopped"`.
+  - Repackaged `shim/out/shim-boot.img` (16,297,984 bytes).
+- **Physical Device Boot Verification Procedure:**
+  1. Boot via fastboot:
+     ```bash
+     fastboot boot shim/out/shim-boot.img
+     ```
+  2. Expected screen sequence:
+     - **Red screen:** Bare-metal shim loader active (`BOOT_CPU mpidr=0x0100`, `JUMP 0x99424488`).
+     - **White bar across top:** `start.s` Stage 0 physical entry (MMU off).
+     - **Blue bar across top:** `start.s` Stage 1 MMU active (4K pmap bootstrap live).
+     - **Diagnostic marks 1-5:** `arm_init`, `PE_init_platform`, `ml_parse_cpu_topology`, `cpu_bootstrap`, `kernel_startup_bootstrap`.
+     - **Diagnostic mark 6:** `SWEET EARLY 6: cpu_init done`.
+     - **Diagnostic mark 7:** `SWEET EARLY 7: entering arm_vm_init`.
+     - **Darwin kernel console:** Screen blits kernel banner: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
+
+
 
 - **Root Cause of Post-"jumping" Device Reset:**
   - When the shim branched to `_start_first_cpu`, instruction 7 in `start.s` was `str x11, [0x85ff0000]`.

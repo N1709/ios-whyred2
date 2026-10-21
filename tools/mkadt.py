@@ -114,29 +114,39 @@ def build(seed=None, qemu=False, native=False):
         # with CSR_ALLOW_UNRESTRICTED_FS (vm_unix.c shared region checks).
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])])
 
-    # Qualcomm MSM8937 Cortex-A53 CPU0 (MPIDR 0x0)
-    cpu0 = node('cpu0', [
-        ph(),
-        ('device_type', cstr('cpu')),
-        ('compatible', cstr('arm,cortex-a53') + cstr('ARM,v8')),
-        ('reg', u32(0)),
-        ('cpu-id', u32(0)),
-        ('cluster-id', u32(0)),
-        ('cluster-type', u32(0)),
-        ('die-cluster-id', u32(0)),
-        ('cluster-core-id', u32(0)),
-        ('l2-cache-id', u32(0)),
-        ('l3-cache-id', u32(0)),
-        ('state', cstr('running')),
-        ('timebase-frequency', u32(timebase)),
-        ('clock-frequency', u32(1401600000)),
-        ('bus-frequency', u32(100000000)),
-        ('memory-frequency', u32(933000000)),
-        ('peripheral-frequency', u32(timebase)),
-        ('fixed-frequency', u32(timebase)),
-    ])
+    # Qualcomm MSM8937 Octa-core Cortex-A53 (Cluster 0: Cores 0-3 @1.1GHz, Cluster 1: Cores 4-7 @1.4GHz)
+    cpu_nodes = []
+    for i in range(8):
+        cluster = i >> 2
+        core = i & 3
+        phys_id = (cluster << 8) | core
+        clk = 1401600000 if cluster == 1 else 1094400000
+        # By default, Core 4 (0x100) is marked running because LK boots on the high-performance cluster.
+        # Bare-metal shim loader dynamically updates state based on live MPIDR_EL1.
+        state = 'running' if phys_id == 0x100 else 'stopped'
+        cn = node(f'cpu{i}', [
+            ph(),
+            ('device_type', cstr('cpu')),
+            ('compatible', cstr('arm,cortex-a53') + cstr('ARM,v8')),
+            ('reg', u32(phys_id)),
+            ('cpu-id', u32(i)),
+            ('cluster-id', u32(cluster)),
+            ('cluster-type', u32(0)),
+            ('die-cluster-id', u32(cluster)),
+            ('cluster-core-id', u32(core)),
+            ('l2-cache-id', u32(cluster)),
+            ('l3-cache-id', u32(0)),
+            ('state', cstr(state)),
+            ('timebase-frequency', u32(timebase)),
+            ('clock-frequency', u32(clk)),
+            ('bus-frequency', u32(100000000)),
+            ('memory-frequency', u32(933000000)),
+            ('peripheral-frequency', u32(timebase)),
+            ('fixed-frequency', u32(timebase)),
+        ])
+        cpu_nodes.append(cn)
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
-                         ('#size-cells', u32(0))], [cpu0])
+                         ('#size-cells', u32(0))], cpu_nodes)
 
     gic = node('gic', [
         ph(),

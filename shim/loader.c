@@ -79,6 +79,71 @@ typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 /* build.sh appends the payload to the Image at the first 4K boundary after _end */
 extern char _end[];
 
+/*
+ * Traverse Apple Device Tree buffer at base, finding every "device_type" == "cpu"
+ * node. If its "reg" property matches boot_phys, mark "state" = "running".
+ * Otherwise mark "state" = "stopped". Both strings are 8 bytes ('running\0' / 'stopped\0').
+ */
+static uintptr_t adt_walk_fix_cpus(uintptr_t base, uintptr_t off, uintptr_t total_size, uint32_t boot_phys)
+{
+	if (off + 8 > total_size)
+		return total_size;
+
+	volatile const uint32_t *hdr = (volatile const uint32_t *)(base + off);
+	uint32_t nprops = hdr[0];
+	uint32_t nchildren = hdr[1];
+	off += 8;
+
+	if (nprops > 256 || nchildren > 256)
+		return total_size;
+
+	uintptr_t state_val_off = 0;
+	int is_cpu = 0;
+	uint32_t reg_val = 0xffffffff;
+
+	for (uint32_t i = 0; i < nprops; i++) {
+		if (off + 36 > total_size)
+			return total_size;
+
+		volatile const char *pname = (volatile const char *)(base + off);
+		volatile const uint32_t *psize = (volatile const uint32_t *)(base + off + 32);
+		uint32_t ln = *psize & 0x7fffffff;
+		uintptr_t val_off = off + 36;
+		uint32_t padded_ln = (ln + 3) & ~3;
+
+		if (val_off + padded_ln > total_size)
+			return total_size;
+
+		if (pname[0] == 'd' && pname[1] == 'e' && pname[6] == 't') { /* "device_type" */
+			volatile const char *v = (volatile const char *)(base + val_off);
+			if (ln >= 4 && v[0] == 'c' && v[1] == 'p' && v[2] == 'u' && v[3] == '\0')
+				is_cpu = 1;
+		} else if (pname[0] == 'r' && pname[1] == 'e' && pname[2] == 'g' && pname[3] == '\0') {
+			if (ln >= 4)
+				reg_val = *(volatile const uint32_t *)(base + val_off);
+		} else if (pname[0] == 's' && pname[1] == 't' && pname[2] == 'a' && pname[3] == 't' && pname[4] == 'e' && pname[5] == '\0') {
+			if (ln >= 8)
+				state_val_off = val_off;
+		}
+
+		off += 36 + padded_ln;
+	}
+
+	if (is_cpu && state_val_off) {
+		volatile char *s = (volatile char *)(base + state_val_off);
+		if (reg_val == boot_phys) {
+			s[0] = 'r'; s[1] = 'u'; s[2] = 'n'; s[3] = 'n'; s[4] = 'i'; s[5] = 'n'; s[6] = 'g'; s[7] = '\0';
+		} else {
+			s[0] = 's'; s[1] = 't'; s[2] = 'o'; s[3] = 'p'; s[4] = 'p'; s[5] = 'e'; s[6] = 'd'; s[7] = '\0';
+		}
+	}
+
+	for (uint32_t i = 0; i < nchildren; i++) {
+		off = adt_walk_fix_cpus(base, off, total_size, boot_phys);
+	}
+	return off;
+}
+
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start, rd_end;
@@ -147,6 +212,16 @@ const char *loader_boot(uintptr_t dtb)
 	/* ADT, then boot_args, behind the kernel; 4 KiB page aligned for Cortex-A53 */
 	uintptr_t adt_pa = p->kernel_end + pa_of_va_base;
 	copy64(adt_pa, rd_start + p->adt_off, p->adt_size);
+
+#if !__STDC_HOSTED__
+	uint64_t mpidr;
+	__asm__ volatile("mrs %0, mpidr_el1" : "=r"(mpidr));
+	uint32_t boot_phys = (uint32_t)(mpidr & 0xffff);
+#else
+	uint32_t boot_phys = 0x100;
+#endif
+	adt_walk_fix_cpus(adt_pa, 0, p->adt_size, boot_phys);
+	con_hex2("BOOT_CPU", "mpidr=", boot_phys, "adt=", adt_pa);
 	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_4K - 1) & ~(PAGE_4K - 1);
 	uintptr_t top = ba_pa + PAGE_4K;
 	if (top > p->phys_base + p->mem_size)
