@@ -48,10 +48,27 @@
   `mockfs_vfsops.o` and `hfs_vfsops.o` being compiled and no
   `Skipping patch ...0085`.
 - **Committed as** `1a22d71` `fix(04): enable mockfs and sweet_hfs in MASTER.arm64.santoni`
-- **Next concrete action:** let the push-triggered `xnu` workflow finish, rebuild
-  `shim/out/shim-boot.img` from that kernel, then `fastboot boot` it and expect
-  the `rd=md0` mount to succeed (mockfs root) and the RAM-disk PID 1 banner
-  instead of `errno = 19`.
+- **CI VERIFIED (run `39635151571`, commit `31b3468`, conclusion `success`):**
+  - No `Skipping patch ...0085`; the compile command for `mockfs_vfsops.o`
+    carries `-DMOCKFS` and for `hfs_vfsops.c` carries `-DSWEET_HFS`.
+  - Objects now compiled: `mockfs_vfsops.o`, `mockfs_fsnode.o`,
+    `mockfs_vnops.o`, and the full `hfs_*`/`sweet_hfs_iokit` set
+    (`-include sweet_hfs_compat.h`); only conversion warnings, no errors.
+  - Linked `kernel.development.santoni` is 17,299,880 bytes (was 16,9xx,xxx),
+    SHA256 `872726cf9afe19daab81bf24e6dd04cd1a3087aedb08e442b41d7aa3adebe602`.
+    Symbol check: `_mockfs_mountroot`, `_mockfs_vfsops`, `_mockfs_lookup`,
+    `_hfs_vfsops`, `_hfs_mountfs` all present (the old kernel had no
+    `mockfs` string at all).
+  - Repacked `shim/out/shim-boot.img`: 16,934,912 bytes, SHA256
+    `08d8fe409535306541ea63315549a5d3206fc662bb57540ef682c35026a18d62`
+    (payload 16,721,952 B SHA256 `a7da701b...`), copied to
+    `/storage/emulated/0/shim-boot.img` (same SHA256). `bash tests/run_tests.sh`
+    inside `shim/build.sh` passed again.
+- **Next concrete action (HUMAN_NEEDED):** `fastboot boot /storage/emulated/0/shim-boot.img`
+  and photograph the console. Expect `IOFindBSDRoot`/`md0` to reach
+  `mockfs_mountroot` (no `errno = 19`), then the RAM-disk PID 1 banner and the
+  5 s `select` heartbeat. Unverified until observed: whether mountroot succeeds
+  on silicon, and whether the HFS `userdata` path (`rd=emmcroot0`) mounts later.
 
 ## Agent handoff / active work (2026-10-21): Phase 4 Wave 3 gaps FIXED, offline PASS
 
