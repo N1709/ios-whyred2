@@ -2,6 +2,18 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> UPDATE 2026-10-21: Phase 3 Plan 01 (ADT Synthesizer & 4K Payload Packaging) EXECUTED & COMMITTED <<<
+
+- **Plan 03-01 Status:** EXECUTED, VERIFIED, AND COMMITTED
+- **Deliverables:**
+  - `tools/mkadt.py`: Synthesizes santoni Apple Device Tree with Cortex-A53 CPU0 nub (1.4 GHz), safe memory above Qualcomm XPU carve-outs (`PHYS_BASE = 0x98000000`, `MEM_SIZE = 0x60000000`), QGIC2 GICv2 distributor/CPU interface, continuous splash simplefb framebuffer at `0x90001000` (720x1280 24-bit BGR), and iPhone X (`iPhone10,3` / `D22AP`) identity with relaxed SIP policy.
+  - `tools/mkpayload.py`: Adapted for 4 KiB translation granule (`PAGE = 0x1000`), chained fixup bounds validation (T-03-02), segment physical memory range checking, and santoni boot arguments (`debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam sweetfb_native=1 santoni`).
+- **Commits Added in Plan 03-01:**
+  - `9a83ac7`: `feat(03-01): synthesize santoni Apple Device Tree with MSM8937 CPU0, memory, GICv2, and iPhone X identity`
+  - `567e284`: `feat(03-01): adapt mkpayload for 4 KiB page alignment and santoni bootargs`
+- **Next Concrete Action:**
+  - Execute Plan 03-02: Author Darwin XNU 4 KiB pmap, 36-bit user VA cap, board target, 39-bit kernel VA, and early physical entry patches.
+
 ### >>> UPDATE 2026-10-21: Phase 2 (GICv2 Interrupts & Timer Subsystem) EXECUTED & VERIFIED <<<
 
 - **Goal:** Port Apple iOS 16.7.16 (`20H392`) to Xiaomi Redmi 4X (`santoni`, 3/32 GB variant, MSM8937 / Snapdragon 435).
