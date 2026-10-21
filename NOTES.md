@@ -10,6 +10,12 @@
     - SDHCI bring-up decoupled: Phase 4 Plan 01 first verifies Mach VM userspace and syscall handling on silicon via in-memory RAM disk (`rd=md0` + `tools/santoni-init.S`) before touching physical storage.
     - Plan 04-02 brings up polled PIO SDHCI driver (`xnu/patches/0142-santoni-sdhci-emmc-driver.patch`) retaining LK bootloader card state (TRAN, 50MHz, 8-bit).
     - Plan 04-03 mounts `userdata` HFS+ (`sweet_hfs`) and wires persistent 4 MiB console log buffer (`xnu/patches/0143-santoni-persistent-console-log.patch`).
+  - **DeepSeek v4.1 Peer Review & Fortifications Applied:**
+    - DeepSeek v4.1 conducted independent Pass 3 peer review across all 3 plans.
+    - Fixed path in Plan 04-03: `osfmk/console/serial_console.c` (was erroneously `osfmk/arm/`).
+    - Fixed symbol collision risk: isolated `santoni_log_append` to prevent duplicate symbol linker collision with `sweet_ufs.c`'s `sweet_log_append` under `#define SWEET 1`.
+    - Protected LK clocks: banned `SDHCI_RESET_ALL` (0x01) and `SDHCI_CLOCK_CONTROL` (0x2C) writes in `santoni_sdhci.c`, using only `RESET_CMD | RESET_DATA` (0x06).
+    - Enforced `rd=md0` in `tools/mkpayload.py --cmdline` in `shim/build.sh`.
   - **Plan Verification:** Passed GSD plan-checker with 0 blockers, 0 warnings across all 12 dimensions.
   - **Next Concrete Action:** Execute Wave 1 / Plan 04-01: author `tools/santoni-init.S`, build Mach-O with `tools/mkinit.py`, inject RAM disk into `tools/mkpayload.py`, and package `shim/out/shim-boot.img` with `rd=md0`.
 
