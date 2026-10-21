@@ -130,9 +130,18 @@ int main(void)
 	assert(ba->Video.v_width == 720);
 	assert(ba->Video.v_height == 1280);
 	assert(ba->Video.v_baseAddr == 0x90001000UL);
-	assert(ba->Revision == 2);
-	assert(ba->Version == 2);
+	assert((ba_pa & 0xfff) == 0);
+	assert(ba->Revision == 2 && ba->Version == 2);
 	assert(strcmp(ba->CommandLine, "console=null santoni") == 0);
+
+	/* Test bounds validation (T-03-07) */
+	p->nsegs = 33;
+	assert(strcmp(loader_boot(0x1234), "too many segments") == 0);
+	p->nsegs = 1;
+
+	p->segs[0].vmsize = sizeof(fake_ram) + 0x1000;
+	assert(strcmp(loader_boot(0x1234), "segment outside physical memory") == 0);
+	p->segs[0].vmsize = 0x2000UL;
 
 	printf("loader_test PASSED\n");
 	return 0;

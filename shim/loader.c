@@ -121,6 +121,8 @@ const char *loader_boot(uintptr_t dtb)
 	const struct payload *p = (const struct payload *)rd_start;
 	if (p->version != 1 || (p->adt_off & 7) || (rd_start & 7))
 		return "bad payload header";
+	if (p->nsegs > 32)
+		return "too many segments";
 
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;	/* pa = va + this */
 	con_hex2("PHYS", "base=", p->phys_base, "size=", p->mem_size);
@@ -134,6 +136,8 @@ const char *loader_boot(uintptr_t dtb)
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = &p->segs[i];
 		uintptr_t dst = s->vmaddr + pa_of_va_base;
+		if (dst < p->phys_base || dst + s->vmsize > p->phys_base + p->mem_size)
+			return "segment outside physical memory";
 		copy64(dst, rd_start + s->file_off, s->file_size);
 		if (s->vmsize > s->file_size)
 			zero64(dst + ((s->file_size + 7) & ~7UL), s->vmsize - ((s->file_size + 7) & ~7UL));
@@ -145,6 +149,8 @@ const char *loader_boot(uintptr_t dtb)
 	copy64(adt_pa, rd_start + p->adt_off, p->adt_size);
 	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_4K - 1) & ~(PAGE_4K - 1);
 	uintptr_t top = ba_pa + PAGE_4K;
+	if (top > p->phys_base + p->mem_size)
+		return "kernel data exceeds physical memory";
 
 	zero64(ba_pa, PAGE_4K);
 	volatile struct boot_args *ba = (volatile struct boot_args *)ba_pa;
@@ -172,7 +178,14 @@ const char *loader_boot(uintptr_t dtb)
 	con_str("XNU", "jumping (fbcon clears screen)");
 
 #if !__STDC_HOSTED__
-	/* Everything was written with the MMU and caches off; drop any stale I-cache lines too. */
+	/* Clean loaded segments and ADT from cache to PoC before jump */
+	uint64_t ctr;
+	__asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
+	uintptr_t line = 4UL << ((ctr >> 16) & 0xf);
+	for (uintptr_t paddr = p->phys_base; paddr < top; paddr += line)
+		__asm__ volatile("dc cvac, %0" : : "r"(paddr) : "memory");
+
+	/* Invalidate I-cache, barrier, and jump with x0 = boot_args PA */
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 	((xnu_entry_t)entry_pa)(ba_pa);
 	return "xnu returned";
