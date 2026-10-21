@@ -34,16 +34,15 @@ truncate -s "$size" out/Image
 
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio -> diagnostics.
+RAMDISK="out/ramdisk.bin"
 if [ -n "${1:-}" ]; then
-	truncate -s $(( (size + 0xfff) & ~0xfff )) out/Image
-	cat "$1" >> out/Image
-	python3 -c 'import os,struct,sys; f=open(sys.argv[1],"r+b"); f.seek(16); f.write(struct.pack("<Q", os.path.getsize(sys.argv[1])))' out/Image
-fi
-
-if command -v cpio >/dev/null 2>&1; then
-	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
+	RAMDISK="$1"
 else
-	python3 -c 'import gzip; h=b"07070100000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\0\0\0\0"; open("out/ramdisk.bin","wb").write(gzip.compress(h + b"\0"*(512-len(h)), compresslevel=9))'
+	if command -v cpio >/dev/null 2>&1; then
+		(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
+	else
+		python3 -c 'import gzip; h=b"07070100000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\0\0\0\0"; open("out/ramdisk.bin","wb").write(gzip.compress(h + b"\0"*(512-len(h)), compresslevel=9))'
+	fi
 fi
 
 # Append Santoni Qualcomm device tree table (29 DTBs including msm8940-xiaomi-santoni)
@@ -55,7 +54,7 @@ fi
 # Packaging: wrap in boot.img v0 using tools/mkbootimg.py
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image \
-	--ramdisk out/ramdisk.bin \
+	--ramdisk "$RAMDISK" \
 	--output out/shim-boot.img \
 	--base 0x80000000 \
 	--pagesize 2048 \
@@ -67,5 +66,8 @@ $HOST_CC -O2 -Wall -I. -o out/host_test console.c host_test.c && ./out/host_test
 
 # Host unit test for GICv2 MMIO lifecycle
 $HOST_CC -O2 -Wall -I. -o out/gic_test gic_test.c && ./out/gic_test
+
+# Host unit test for Mach-O segment unroller and boot_args
+$HOST_CC -O2 -Wall -I. -o out/loader_test loader_test.c loader.c && ./out/loader_test
 
 ls -l out/Image out/shim-boot.img
