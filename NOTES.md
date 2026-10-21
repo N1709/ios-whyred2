@@ -2,6 +2,18 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+- **CI Run 39579351799 Diagnosis & Duplicate Symbols Resolution:**
+  - Build successfully compiled ALL source files across Mach, BSD, IOKit, Crypto, and Drivers with 0 compile errors!
+  - Linker failed with `ld: 6 duplicate symbols for architecture arm64`:
+    - `_sweet_console_copy_dirty` in `video_console.o` and `sweet_early.o`
+    - `_sweet_console_retarget` in `video_console.o` and `sweet_early.o`
+    - `_sweet_sample_task` in `exception.o` and `sweet_early.o`
+    - `_sweet_console_show_hook` in `video_console.o` and `sweet_early.o`
+    - `_sweet_console_muted` in `serial_console.o` and `sweet_early.o`
+    - `_sweet_ufs_read_part` in `sweet_ufs.o` and `sweet_early.o`
+  - Cause: In `0098-santoni-early-console.patch`, legacy stub functions were added under `#if defined(SANTONI)` back when `ARM64_BOARD_CONFIG_SWEET` was disabled on Santoni. Now that `ARM64_BOARD_CONFIG_SWEET` is active, the real implementations in `video_console.c`, `serial_console.c`, `exception.c`, and `sweet_ufs.c` are compiled, causing collision with the stubs in `sweet_early.c`.
+  - Fix: Removed the duplicate `#if defined(SANTONI)` stub hunk from `0098-santoni-early-console.patch`.
+
 - **CI Run 39576836538 Diagnosis & SweetCPU File-Scope Fix:**
   - Build successfully applied all 145 patches and compiled the entire kernel (120,000+ lines including BearSSL, libpthread, HFS, pmap, bsd, osfmk, and IOKit), failing on exactly one final compile unit:
     `SweetCPU.cpp:242:9: error: expected unqualified-id`
