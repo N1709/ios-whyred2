@@ -1,0 +1,14 @@
+diff --git a/osfmk/kern/zalloc.c b/osfmk/kern/zalloc.c
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -160,6 +160,11 @@
+ #define ZONE_GUARD_SPARSE       (64  * 1024)
+ #endif /* ZSECURITY_CONFIG(SAD_FENG_SHUI) */
+ 
++/* The SANTONI 4 KiB kernel uses the compact 24 GiB zone VA layout */
++#if defined(SANTONI)
++#define ZONE_MAP_MAX            (8ULL << 30)
++#define ZONE_MAP_VA_SIZE        (24ULL << 30)
++#elif XNU_PLATFORM_MacOSX
+ #define ZONE_MAP_MAX            (32ULL << 30)
+ #define ZONE_MAP_VA_SIZE        (128ULL << 30)
