@@ -7,7 +7,7 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
  MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a53
 -MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI 	-mcpu=cortex-a53
 +# santoni: Cortex-A53 is ARMv8.0 (no LSE atomics). Enforce -mcpu=cortex-a53 and -march=armv8-a+crypto
-+MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SWEET -DARM64_BOARD_CONFIG_SANTONI -mcpu=cortex-a53 -march=armv8-a+crypto
++MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI -mcpu=cortex-a53 -march=armv8-a+crypto
  
  
  #

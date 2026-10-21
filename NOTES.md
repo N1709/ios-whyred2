@@ -2,33 +2,28 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
-### >>> UPDATE 2026-10-21: Phase 3 CI Fix — Linker Undefined Symbols Resolved <<<
+### >>> UPDATE 2026-10-21: Phase 3 CI Fix — Clean GICv2 Isolation & Driver Symbol Stubs <<<
 
-- **Issues Diagnosed via CI Run 39547830556:**
-  - All source files across Mach, BSD, Skywalk, IOKit, and Libkern compiled cleanly (including `ast.o` and `processor.o`).
-  - Build successfully proceeded to the link step: `ld ... -o .../kernel.development.santoni.unstripped`.
-  - Link failed with 8 undefined symbols:
-    1. `_gicc_base` (from `_sleh_irq` in `sleh.o`)
-    2. `_sweet_vtimer_intid` (from `_sleh_irq` in `sleh.o`)
-    3. `_sweet_console_copy_dirty` (from `SweetFramebuffer.cpo`)
-    4. `_sweet_console_muted` (from `SweetFramebuffer.cpo`)
-    5. `_sweet_console_retarget` (from `SweetFramebuffer.cpo`)
-    6. `_sweet_console_show_hook` (from `SweetFramebuffer.cpo`)
-    7. `_sweet_sample_task` (from `sweet_sample.o`)
-    8. `_sweet_ufs_read_part` (from `TopazModem.cpo`)
-  - **Root Cause Analysis:**
-    - Symbols 1 & 2: `pe_fiq.c` guarded its entire implementation with `#if HAS_GIC_V3`. Because santoni has Cortex-A53 with GICv2 (`HAS_GIC_V3 == 0`), `pe_fiq.c` fell into an empty stub `pe_init_fiq() {}`, eliding `sweet_vtimer_intid` and `gicc_base` definitions.
-    - Symbols 3-8: The common sweet platform drivers (`sweet_ufs.c`, `sweet_sample.c`, `video_console.c`, `serial_console.c`, `exception.c`) were guarded by `#if defined(ARM64_BOARD_CONFIG_SWEET)`. In `MakeInc.def`, `MACHINE_FLAGS_ARM64_SANTONI` previously only defined `-DARM64_BOARD_CONFIG_SANTONI`, omitting `-DARM64_BOARD_CONFIG_SWEET` so all these driver implementations were compiled out as empty files.
-  - **Fixes Applied & Verified:**
-    1. In `xnu/patches/0017-santoni-gicv2-rtclock.patch`:
-       - Changed `pe_fiq.c` guard to `#if HAS_GIC_V3 || defined(SANTONI)` so that `sweet_vtimer_intid` and `gicc_base` are defined.
-       - Guarded GICv3 redistributor loops with `#if HAS_GIC_V3`.
-       - Added `return;` after santoni's GICv2 configuration to prevent fallthrough into GICv3 `ICC_IGRPEN0_EL1` system registers.
-    2. In `xnu/patches/0085-santoni-board-target.patch`:
-       - Updated `pexpert/pexpert/arm64/board_config.h` so `#ifdef ARM64_BOARD_CONFIG_SWEET` checks `!defined(ARM64_BOARD_CONFIG_SANTONI)` to prevent including `SWEET.h` when building santoni.
-    3. In `xnu/patches/0094-santoni-cortex-a53-codegen.patch`:
-       - Added `-DARM64_BOARD_CONFIG_SWEET` to `MACHINE_FLAGS_ARM64_SANTONI` in `MakeInc.def`, satisfying all shared sweet driver definitions.
-    - Verified all modified patches apply cleanly (`git apply --check`) against runner buildtree.
+- **Issues Diagnosed via CI Runs 39547830556 & 39549529573:**
+  - Run 39547830556 compiled all code cleanly but failed at link time with 8 missing symbols:
+    `_gicc_base`, `_sweet_vtimer_intid`, `_sweet_console_copy_dirty`, `_sweet_console_muted`, `_sweet_console_retarget`, `_sweet_console_show_hook`, `_sweet_sample_task`, `_sweet_ufs_read_part`.
+  - When `-DARM64_BOARD_CONFIG_SWEET` was tested globally in Run 39549529573, it attempted to compile `sweet_bearssl` and `sweet_libpthread` (which are external subtrees not needed for santoni) and caused `GICD_CTLR_ENABLEGRP1` errors in GICv3 code.
+- **Root Cause & Permanent Solution:**
+  1. **GICv2 Isolation (`0017-santoni-gicv2-rtclock.patch`):**
+     - In `pexpert/arm/pe_fiq.c`, leave `#if HAS_GIC_V3` untouched for GICv3 platforms.
+     - Implement santoni's GICv2 distributor and CPU interface configuration completely inside the `#else` (non-GICv3) branch, where `sweet_vtimer_intid` and `gicc_base` are declared and initialized from DeviceTree properties. Zero GICv3 system registers (`ICC_*`) are touched.
+  2. **Driver Symbol Provision (`0098-santoni-early-console.patch`):**
+     - In `osfmk/arm64/sweet_early.c`, define the fallback symbols under `#if defined(SANTONI)`:
+       - `int sweet_console_muted = 0`
+       - `void (*sweet_console_show_hook)(void) = 0`
+       - `void sweet_console_retarget(uint64_t va)`
+       - `int sweet_console_copy_dirty(void *dst)`
+       - `void sweet_sample_task(const char *name, int pid, void *task)`
+       - `int sweet_ufs_read_part(const char *want, uint64_t off, void *dst, uint64_t len)`
+  3. **Codegen Target (`0094-santoni-cortex-a53-codegen.patch`):**
+     - Keep `MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI -mcpu=cortex-a53 -march=armv8-a+crypto`, allowing XNU to build with native crypto and threading without external sweet submodules.
+- **Verification:**
+  - All 5 santoni patches verified and applied cleanly in sequence to runner tree.
 - **Physical Device Boot Verification Procedure (Awaiting User Test):**
   1. Place physical Xiaomi Redmi 4X (`santoni`) in fastboot mode (Power + Volume Down).
   2. Boot the assembled image: `fastboot boot shim/out/shim-boot.img`.
@@ -38,8 +33,7 @@
      - Blue rectangular bar: `start.s` Stage 1 MMU active (4K pmap bootstrap).
      - Darwin kernel banner printed to screen: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
 - **Next Concrete Action:**
-  - Commit fixes, push to `origin/santoni`, and monitor the triggered GitHub Actions build to completion.
-  - Physical device verification: execute `fastboot boot shim/out/shim-boot.img` on hardware when user wakes up.
+  - Commit fixes, push to `origin/santoni`, and monitor CI run to link `kernel.development.santoni`.
 
 - **Plan 03-04 Status:** EXECUTED, VERIFIED, AND COMMITTED (Physical hardware verification awaiting user test)
 - **Deliverables:**
