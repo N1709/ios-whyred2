@@ -1,6 +1,10 @@
 #!/bin/bash
 # Build the freestanding shim and wrap it in an Android boot.img v0 for MSM8937 (santoni).
 set -euo pipefail
+
+PAYLOAD="${1:-}"
+[ -n "$PAYLOAD" ] && [ -f "$PAYLOAD" ] && PAYLOAD="$(realpath "$PAYLOAD")"
+
 cd "$(dirname "$0")"
 
 CC="${CC:-clang}"
@@ -35,8 +39,8 @@ truncate -s "$size" out/Image
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio -> diagnostics.
 RAMDISK="out/ramdisk.bin"
-if [ -n "${1:-}" ]; then
-	RAMDISK="$1"
+if [ -n "$PAYLOAD" ]; then
+	RAMDISK="$PAYLOAD"
 else
 	if command -v cpio >/dev/null 2>&1; then
 		(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)

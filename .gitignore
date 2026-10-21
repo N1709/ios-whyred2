@@ -9,4 +9,5 @@ research/
 shim/out/
 xnu/out/
 xnu/out-*/
+out/
 __pycache__/
