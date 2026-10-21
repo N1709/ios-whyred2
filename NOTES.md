@@ -2,6 +2,28 @@
 
 ## Agent handoff / active work (2026-10-21, latest)
 
+### >>> UPDATE 2026-10-21: Root Cause Diagnosed & Fixed — Raw Mach-O vs SWEETXNU Payload Packaging <<<
+
+- **Root Cause of Fallthrough to Phase 2 Screen:**
+  - In the previous test, `shim/build.sh` was invoked directly with raw `out/xnu_kernel/kernel.development.santoni`.
+  - The Android boot.img ramdisk thus contained the raw Mach-O binary (`0xfeedfacf`) instead of the unpacked `SWEETXNU` payload produced by `tools/mkpayload.py`.
+  - When the bare-metal shim executed, `loader.c` scanned the ramdisk for the `SWEETXNU` magic header, found none, returned `"no SWEETXNU payload"`, and printed `LOADER no SWEETXNU payload`.
+  - Immediately following that, `ticks_fill(RED)` was called, which cleared the screen with `con_clear(RED)` and proceeded to run Phase 2 benchmarks, making the error imperceptible to the eye and resulting in the observation: "only red sxreen and i saw metal shim text then it moved to the phase 2 screen".
+- **Fix Applied (Commit `e2bffbd`):**
+  - Updated `shim/build.sh` to inspect `$PAYLOAD` magic; when a raw Mach-O binary (`cffaedfe` / `feedfacf`) is detected, it automatically invokes `tools/mkadt.py out/santoni.adt` and `tools/mkpayload.py` to generate `out/payload.bin` with `SWEETXNU` header, resolved chained fixups, segment table, santoni ADT, and boot arguments.
+  - Updated `shim/shim.c` so that if `loader_boot` returns any error other than `"no initrd in /chosen"`, it prints `HALT payload load failed` and halts (`wfe`) rather than wiping the screen with benchmark fills.
+  - Repackaged `shim/out/shim-boot.img` (16,293,888 bytes, Android boot v0 with `SWEETXNU` payload at ramdisk offset `0x81000000`, kernel at `0x80008000`, appended Qualcomm DTBs).
+- **Physical Device Boot Verification Procedure:**
+  1. Boot the updated image via fastboot:
+     ```bash
+     fastboot boot shim/out/shim-boot.img
+     ```
+  2. Expected screen sequence:
+     - **Red screen:** Bare-metal shim loader active (`SHIM santoni bare-metal shim`, `MMFR0`, `MIDR`, `SEGS n=10`, `BOOTARG pa=0x9a06b000`, `JUMP 0x99424488`).
+     - **White bar across top:** `start.s` Stage 0 physical entry (MMU off).
+     - **Blue bar across top:** `start.s` Stage 1 MMU active (4K pmap bootstrap live).
+     - **Darwin kernel console:** Screen blits kernel banner: `Darwin Kernel Version 22.6.0: ... DEVELOPMENT_ARM64_SANTONI`.
+
 ### >>> UPDATE 2026-10-21: Phase 3 MILESTONE ACHIEVED — Darwin Kernel Built & Packaged into shim-boot.img <<<
 
 - **CI Build Run 39551035658:** SUCCESS!
