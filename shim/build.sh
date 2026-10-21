@@ -36,6 +36,11 @@ $OBJCOPY -O binary out/shim.elf out/Image
 size=$((16#$($NM out/shim.elf | awk '$3=="_end"{print $1}')))
 truncate -s "$size" out/Image
 
+# Build static Mach-O PID 1 init test program
+echo "Building static Mach-O PID 1 init (santoni-init.S)..."
+$CC -target arm64-apple-ios16.0 -c ../tools/santoni-init.S -o out/santoni-init.o
+python3 ../tools/mkinit.py out/santoni-init.o out/init.macho
+
 # Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
 # newc cpio -> diagnostics.
 RAMDISK="out/ramdisk.bin"
@@ -44,8 +49,8 @@ if [ -n "$PAYLOAD" ]; then
 	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
 		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
 		python3 ../tools/mkadt.py out/santoni.adt
-		CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 -v keepsyms=1 santoni"
-		python3 ../tools/mkpayload.py "$PAYLOAD" out/santoni.adt out/payload.bin --cmdline "$CMDLINE"
+		CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 santoni"
+		python3 ../tools/mkpayload.py "$PAYLOAD" out/santoni.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
 		RAMDISK="out/payload.bin"
 	else
 		RAMDISK="$PAYLOAD"
@@ -65,7 +70,7 @@ if [ -f ../resources/santoni_appended_dtbs.bin ]; then
 fi
 
 # Packaging: wrap in boot.img v0 using tools/mkbootimg.py
-CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 -v keepsyms=1 santoni"
+CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 santoni"
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image \
 	--ramdisk "$RAMDISK" \

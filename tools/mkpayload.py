@@ -214,7 +214,7 @@ if __name__ == '__main__':
     # personality is matched. Patch 0141 also makes both paths inert at
     # compile time, so these two are belt and braces.
     ap.add_argument('--cmdline', default='debug=0x14e serial=3 cpus=1 keepsyms=1 -enable_kprintf_spam '
-                                       'sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 santoni')
+                                       'sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 santoni')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     a = ap.parse_args()
     blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk)
