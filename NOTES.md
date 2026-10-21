@@ -1,6 +1,60 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Agent handoff / active work (2026-10-21, latest): Phase 4 Wave 3 gaps FIXED, offline PASS
+## Agent handoff / active work (2026-10-21, latest): root mount ENODEV (19) fixed - MOCKFS was never in MASTER.arm64.santoni
+
+- **Hardware observation (shim-boot.img, Redmi 4X, 2026-10-21):** the kernel boots,
+  `IOFindBSDRoot` registers `md0` (major 1, minor 0), then the console shows
+  `cannot mount root, errno = 19`, `mount(5) failed`, `mount(10) failed`.
+  `ENODEV` (19) from `vfs_mountroot()` means *no vfsops are registered for the
+  root filesystem*, not that the RAM disk or its contents are bad.
+- **Root cause (measured on the CI build tree, not inferred):**
+  - `config/MASTER.arm64.santoni`, created by
+    `xnu/patches/0085-santoni-board-target.patch`, defined
+    `#  FILESYS_BASE = [ devfs fdesc fifo fs_compression ... ]` - it omitted
+    both `mockfs` and `sweet_hfs`.
+  - `SETUP/config/doconf` only emits `options <NAME>` for an option line whose
+    `<tag>` is present in the selected config set. `config/MASTER` carries
+    `options MOCKFS ... # <mockfs>` and (from patch 0026)
+    `options SWEET_HFS ... # <sweet_hfs>`, so with neither tag selected the
+    generated config had no `MOCKFS` and no `SWEET_HFS`.
+  - Evidence: `build/xnu.obj/DEVELOPMENT_ARM64_SANTONI/bsd/DEVELOPMENT/config.DEVELOPMENT_ARM64`
+    lists `options DEVFS/FIFO/...` but no `MOCKFS`/`SWEET_HFS`;
+    `.../link.filelist` (1,052 objects) contains zero mockfs/HFS objects; the
+    shipped `kernel.development.santoni` contains no `mockfs` string at all.
+  - Consequence: `bsd/conf/files` marks `bsd/miscfs/mockfs/*.c` as
+    `optional mockfs`, so `mockfs_vfsops.c`, `mockfs_fsnode.c` and
+    `mockfs_vnops.c` were never compiled, the `#if MOCKFS` table in
+    `bsd/vfs/vfs_conf.c` stayed empty, and `vfs_mountroot()` returned `ENODEV`
+    when asked to mount `rd=md0`.
+- **Fix (only `0085-santoni-board-target.patch`, new-file hunk now
+  `@@ -0,0 +1,114 @@`):**
+  - `FILESYS_BASE = [ devfs fdesc fifo mockfs sweet_hfs fs_compression ... ]`
+  - added `options		MOCKFS		# Boot from an executable	# <mockfs>`
+    to the options list. `config/MASTER` already has this tagged line, so the
+    list entry is the operative change; the explicit line is belt-and-braces
+    (doconf already emits each option more than once).
+- **Verified offline:**
+  - `python3 tools/check_patch.py xnu/patches/*.patch` -> all **150** patches
+    OK, every hunk's declared `-old,new` matches its body.
+  - `bash tests/run_tests.sh` -> exit 0 (3 host tests, STOR-03/04/05
+    assertions, all-patch validation).
+  - `git apply --check` accepts the new-file hunk; the resulting
+    `config/MASTER.arm64.santoni` is 114 lines and carries both edits.
+  - doconf-model check (list expansion + `<tag>` selection over the real
+    `config/MASTER`): the old master emits no `MOCKFS`/`SWEET_HFS`, the patched
+    one emits both.
+- **NOT verified yet:** this patch has not been compiled by CI and nothing has
+  touched silicon since the failing boot. The next xnu workflow run must show
+  `mockfs_vfsops.o` and `hfs_vfsops.o` being compiled and no
+  `Skipping patch ...0085`.
+- **Committed as** `fix(04): enable mockfs and sweet_hfs in MASTER.arm64.santoni`
+  (hash recorded in the follow-up `docs(04)` commit).
+- **Next concrete action:** let the push-triggered `xnu` workflow finish, rebuild
+  `shim/out/shim-boot.img` from that kernel, then `fastboot boot` it and expect
+  the `rd=md0` mount to succeed (mockfs root) and the RAM-disk PID 1 banner
+  instead of `errno = 19`.
+
+## Agent handoff / active work (2026-10-21): Phase 4 Wave 3 gaps FIXED, offline PASS
 
 - **Status: Wave 3 (STOR-03/04/05) remediation complete and verified locally and in CI.
   Phase 4 offline verification is PASS for all must-haves.** Physical device

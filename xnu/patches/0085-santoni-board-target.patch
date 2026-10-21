@@ -108,7 +108,7 @@ diff --git a/config/MASTER.arm64.santoni b/config/MASTER.arm64.santoni
 new file mode 100644
 --- /dev/null
 +++ b/config/MASTER.arm64.santoni
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,114 @@
 +#
 +# santoni (Xiaomi Redmi 4X, MSM8937): MASTER.arm64.sweet adapted for Cortex-A53
 +# 4 KiB translation granule, open-source arm64 assembly and pmap (nos_arm_asm,
@@ -140,7 +140,7 @@ new file mode 100644
 +#  BSD_RELEASE =    [ BSD_BASE ]
 +#  BSD_DEV =        [ BSD_BASE config_vnguard ]
 +#  BSD_DEBUG =      [ BSD_BASE config_vnguard ]
-+#  FILESYS_BASE =   [ devfs fdesc fifo fs_compression config_protect config_mnt_rootsnap config_rosv_startup config_mount_vm config_mount_prebootrecovery config_basesystemroot config_fse quota namedstreams config_imgsrc_access config_triggers config_ext_resolver config_searchfs config_volfs config_appledouble nullfs config_mnt_suid config_firmlinks config_dataless_files config_union_mounts config_file_leases ]
++#  FILESYS_BASE =   [ devfs fdesc fifo mockfs sweet_hfs fs_compression config_protect config_mnt_rootsnap config_rosv_startup config_mount_vm config_mount_prebootrecovery config_basesystemroot config_fse quota namedstreams config_imgsrc_access config_triggers config_ext_resolver config_searchfs config_volfs config_appledouble nullfs config_mnt_suid config_firmlinks config_dataless_files config_union_mounts config_file_leases ]
 +#  FILESYS_RELEASE= [ FILESYS_BASE ]
 +#  FILESYS_DEV =    [ FILESYS_BASE config_iocount_trace ]
 +#  FILESYS_DEBUG =  [ FILESYS_BASE config_iocount_trace ]
@@ -207,6 +207,7 @@ new file mode 100644
 +options		COUNT_SYSCALLS		# count bsd system calls 	# <countcalls>
 +options     TRASH_VFP_ON_SAVE   # <debug,trash_vfp>
 +options		ALTERNATE_DEBUGGER	# <alternate_debugger>
++options		MOCKFS		# Boot from an executable	# <mockfs>
 +
 +options   CONFIG_VNODES=1024		# <xsmall>
 +
