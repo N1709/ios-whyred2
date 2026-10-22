@@ -1,10 +1,12 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## b6a8788 (2026-10-22): GCC sdcc1_apps_clk programmed for a real 400 kHz card clock
+## b6a8788 (2026-10-22, ready to boot): GCC sdcc1_apps_clk programmed for a real 400 kHz card clock
 
 - **State:** commit `b6a8788` (`fix(04): program GCC sdcc1_apps_clk for a real
   400 kHz card clock`) pushed to `origin santoni`. Host tests, patch checker
-  and STOR-03..09 pass locally. CI run pending at the time of writing.
+  and STOR-03..09 pass. CI run ID `39745861536` completed with `success`.
+  Downloaded `kernel.development.santoni` (SHA256 `91b971a190ec8585bc139b1599cb57dafd3e2cb69bff58b11cb4dab7f7bd58ba`).
+  Assembled and staged to `/storage/emulated/0/shim-boot.img` (SHA256 `4f99ba6edb9c4981402ccbaeabc9066e6f3b7e845282b619958a190aae64dc09`).
 - **Hardware observation (photo `20261022_131108.jpg`, image from `99732c5`):**
   - Step 1 (`VENDOR_SPEC` sel 3, HS400 MCLK/2): CMD13 RCA 2 fails with
     `INT_STATUS 0x00018000` (`cmd-timeout`) and `PRESENT_STATE 0x01f80001`
