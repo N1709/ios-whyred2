@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,2109 @@
+@@ -0,0 +1,2315 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -158,7 +158,18 @@ new file mode 100644
 +#define SDHCI_DATA_INHIBIT      0x00000002u
 +
 +#define SDHCI_CTRL_DMA_MASK     0x18u
++#define SDHCI_CTRL_4BITBUS      0x02u
 +#define SDHCI_CTRL_8BITBUS      0x20u
++#define SDHCI_CTRL_HISPD        0x04u
++#define SDHCI_CTRL_BUS_MASK     (SDHCI_CTRL_4BITBUS | SDHCI_CTRL_8BITBUS)
++/*
++ * HOST_CONTROL2[2:0] is the UHS mode select. sdhci_msm_set_uhs_signaling()
++ * clears it for HS200/HS400/SDR104 when the card clock is <= 100 MHz: modes
++ * >= 3 expect the DLL/tuned receive path and do not select the fixed feedback
++ * clock, so CMD responses cannot be sampled. Preserve VDD_180 (bit 3) while
++ * clearing the mode.
++ */
++#define SDHCI_CTRL_UHS_MASK     0x0007u
 +
 +#define SDHCI_RESET_ALL         0x01
 +#define SDHCI_RESET_CMD         0x02
@@ -205,7 +216,6 @@ new file mode 100644
 +#define SDHCI_TIMEOUT_CONTROL   0x2e
 +#define SDHCI_TIMEOUT_MAX       0x0eu
 +#define SDHCI_HOST_CONTROL2     0x3e
-+#define SDHCI_CTRL_4BITBUS      0x02u
 +#define SDHCI_CTRL_VDD_180      0x0008u
 +#define SDHCI_POWER_ON          0x01u
 +#define SDHCI_POWER_180         0x0au
@@ -773,6 +783,59 @@ new file mode 100644
 +}
 +
 +/*
++ * Probe step 0: read-only snapshot. This runs before the driver writes any
++ * register. The legacy MCI window, vendor window and GCC RCG are readable
++ * while LK's HC_MODE is still 0; the standard +0x900 command/clock registers
++ * are not decoded until sdhci_enter_hc_mode(), so they are dumped separately
++ * after the switch and before RESET_ALL.
++ *
++ * Commands cannot be sent here: the card clock gate is still LK's
++ * (CLOCK_CONTROL 0x0003, CARD_EN off), the inherited card rate is 384 MHz and
++ * HOST_CONTROL2 still says UHS=3 with a powered-down DLL. Opening the gate in
++ * that state would only reproduce the b6a8788 timeout at an illegal rate. The
++ * functional CMD13/CMD5 test therefore belongs to step 2, after the GCC clock
++ * and the host receive path are made safe.
++ */
++static void
++sdhci_snapshot_untouched(void)
++{
++	uint32_t vendor = hc_rd(CORE_VENDOR_SPEC);
++	uint32_t dll = hc_rd(CORE_DLL_CONFIG);
++	uint32_t status = hc_rd(CORE_DLL_STATUS);
++
++	printf("SANTONI SDHCI: probe step 0: HC_MODE 0x%08x, "
++	    "MCI_POWER 0x%08x, MCI_CLK 0x%08x, VENDOR_SPEC 0x%08x "
++	    "(MCLK sel %u, SELECT_IN 0x%x), DLL_CONFIG 0x%08x "
++	    "DLL_STATUS 0x%08x\n", core_rd(CORE_HC_MODE),
++	    core_rd(CORE_MCI_POWER), core_rd(CORE_MCI_CLK), vendor,
++	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8,
++	    (vendor & CORE_HC_SELECT_IN_MASK) >> 19, dll, status);
++	printf("SANTONI SDHCI: probe step 0: GCC sdcc1_apps CMD 0x%08x "
++	    "CFG 0x%08x M 0x%02x N 0x%02x D 0x%02x CBCR 0x%08x\n",
++	    gcc_rd(GCC_SDCC1_APPS_CMD_RCGR),
++	    gcc_rd(GCC_SDCC1_APPS_CFG_RCGR),
++	    gcc_rd(GCC_SDCC1_APPS_M) & 0xffu,
++	    gcc_rd(GCC_SDCC1_APPS_N) & 0xffu,
++	    gcc_rd(GCC_SDCC1_APPS_D) & 0xffu,
++	    gcc_rd(GCC_SDCC1_APPS_CBCR));
++}
++
++/* The standard window is only valid after HC mode; this is still pre-reset. */
++static void
++sdhci_snapshot_standard(const char *tag)
++{
++	printf("SANTONI SDHCI: probe step 0 %s: POWER_CONTROL 0x%02x, "
++	    "CLOCK_CONTROL 0x%04x, HOST_CONTROL 0x%02x, HOST_CONTROL2 0x%04x, "
++	    "TIMEOUT_CONTROL 0x%02x, PRESENT_STATE 0x%08x, INT_STATUS 0x%08x, "
++	    "SOFTWARE_RESET 0x%02x, HOST_VERSION 0x%04x\n", tag,
++	    hc_rd8(SDHCI_POWER_CONTROL), hc_rd16(SDHCI_CLOCK_CONTROL),
++	    hc_rd8(SDHCI_HOST_CONTROL), hc_rd16(SDHCI_HOST_CONTROL2),
++	    hc_rd8(SDHCI_TIMEOUT_CONTROL), hc_rd(SDHCI_PRESENT_STATE),
++	    hc_rd(SDHCI_INT_STATUS), hc_rd8(SDHCI_SOFTWARE_RESET),
++	    hc_rd16(SDHCI_HOST_VERSION));
++}
++
++/*
 + * LK drives SDCC1 through the legacy MCI register set and leaves HC_MODE
 + * (core + 0x78) at 0, so the standard SDHCI window at core + 0x900 is not
 + * decoded yet. Do not trust the bootloader for this: Linux
@@ -879,7 +942,7 @@ new file mode 100644
 +	bool dll_live = (dll & CORE_DLL_EN) && !(dll & CORE_DLL_OFF) &&
 +	    (status & CORE_DLL_LOCK);
 +	uint32_t want = dll_live ? (dll | CORE_CK_OUT_EN) :
-+	    (dll & ~CORE_CK_OUT_EN);
++	    ((dll | CORE_DLL_RST | CORE_DLL_PDN) & ~CORE_CK_OUT_EN);
 +
 +	printf("SANTONI SDHCI: CORE_DLL_CONFIG 0x%08x CORE_DLL_STATUS 0x%08x "
 +	    "(DLL_EN %u, PDN %u, RST %u, LOCK %u, CK_OUT_EN %u)\n", dll, status,
@@ -892,6 +955,44 @@ new file mode 100644
 +		    "0x%08x)\n", dll_live ? "selected from the locked DLL" :
 +		    "bypasses the powered-down DLL", hc_rd(CORE_DLL_CONFIG));
 +	}
++}
++
++/*
++ * Put the host receive path into the mode sdhci-msm uses below 100 MHz:
++ * HOST_CONTROL2 UHS=0 (fixed feedback clock, no DLL), one data bit, and the
++ * DLL reset/powered down with CK_OUT_EN off. The card clock must already be
++ * gated; callers close CLOCK_CONTROL first.
++ *
++ * This is the b6a8788 fix. That boot proved the GCC RCG reached 400 kHz
++ * (CMD0 took 146.5 us) but CMD1 still timed out: LK had left UHS=3 (SDR104),
++ * so the controller expected the DLL receive path instead of the feedback
++ * clock and never sampled the card's response. VDD_180 is preserved because
++ * this board's I/O supply is fixed at 1.8 V; clearing it would request a 3.3 V
++ * switch that does not exist.
++ */
++static void
++sdhci_set_legacy_host(const char *why)
++{
++	uint16_t hc2 = hc_rd16(SDHCI_HOST_CONTROL2);
++	uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	uint32_t dll = hc_rd(CORE_DLL_CONFIG);
++	uint16_t new_hc2 = (uint16_t)(hc2 & ~SDHCI_CTRL_UHS_MASK);
++	uint8_t new_ctrl = (uint8_t)(ctrl & ~(SDHCI_CTRL_DMA_MASK |
++	    SDHCI_CTRL_HISPD | SDHCI_CTRL_BUS_MASK));
++	uint32_t new_dll = (dll | CORE_DLL_RST | CORE_DLL_PDN) &
++	    ~CORE_CK_OUT_EN;
++
++	printf("SANTONI SDHCI: %s: HOST_CONTROL 0x%02x -> 0x%02x, "
++	    "HOST_CONTROL2 0x%04x -> 0x%04x (UHS 0, 1-bit), DLL_CONFIG "
++	    "0x%08x -> 0x%08x (RST|PDN, CK_OUT_EN off)\n", why, ctrl,
++	    new_ctrl, hc2, new_hc2, dll, new_dll);
++	hc_wr16(SDHCI_HOST_CONTROL2, new_hc2);
++	hc_wr8(SDHCI_HOST_CONTROL, new_ctrl);
++	hc_wr(CORE_DLL_CONFIG, new_dll);
++	/* Flush the posted writes before the card clock is re-enabled. */
++	(void)hc_rd16(SDHCI_HOST_CONTROL2);
++	(void)hc_rd8(SDHCI_HOST_CONTROL);
++	(void)hc_rd(CORE_DLL_CONFIG);
 +}
 +
 +/*
@@ -1111,6 +1212,57 @@ new file mode 100644
 +	return sdhci_enable_card_clock();
 +}
 +
++static int sdhci_send_status(uint32_t rca, uint32_t *r1);
++static int sdhci_sleep_awake(uint32_t rca, uint32_t *r1);
++
++/*
++ * CMD1 SEND_OP_COND. OCR bit31 is the card's power-up status: 1 means ready
++ * (Linux calls the same bit MMC_CARD_BUSY, which reads backwards). Poll only
++ * while the card answers with bit31 clear. A command timeout is not "busy":
++ * no response was sampled, so repeating the same frame cannot help and would
++ * hide the first failure behind 100 identical lines.
++ */
++static int
++sdhci_cmd1_poll(uint32_t *ocr)
++{
++	uint32_t arg = 0x40FF8080u;
++	uint64_t deadline;
++	int error;
++
++	nanoseconds_to_absolutetime(1ull * NSEC_PER_SEC, &deadline);
++	deadline += mach_absolute_time();
++
++	for (int attempt = 0; attempt < 100; attempt++) {
++		*ocr = 0;
++		error = sdhci_cmd(1, arg, 0, SDHCI_CMD_RESP_SHORT, ocr);
++		if (error) {
++			printf("SANTONI SDHCI: probe step 2: CMD1 attempt %d "
++			    "got no usable response (%d), OCR 0x%08x, "
++			    "%llu ns; stop\n", attempt + 1, error, *ocr,
++			    (unsigned long long)se.last_cmd_ns);
++			sdhci_recover();
++			return error;
++		}
++		printf("SANTONI SDHCI: probe step 2: CMD1 attempt %d OCR "
++		    "0x%08x (%llu ns)\n", attempt + 1, *ocr,
++		    (unsigned long long)se.last_cmd_ns);
++		if (*ocr & 0x80000000u) {
++			printf("SANTONI SDHCI: probe step 2: CMD1 ready: OCR "
++			    "bit31 set (card power-up complete)\n");
++			return 0;
++		}
++		/* Linux mmc_send_op_cond(): echo the card's OCR and set the
++		 * sector-mode request bit for the next attempt. */
++		arg = *ocr | 0x40000000u;
++		if (mach_absolute_time() > deadline) {
++			break;
++		}
++		delay(10000);   /* 10 ms between polls, 1 s total */
++	}
++	printf("SANTONI SDHCI: probe step 2: CMD1 still busy after 1 s\n");
++	return ETIMEDOUT;
++}
++
 +static int
 +sdhci_take_over(void)
 +{
@@ -1118,12 +1270,15 @@ new file mode 100644
 +	uint8_t handoff_ctrl, handoff_timeout;
 +	uint32_t mci_clk, mci_power, vendor, probe_r1 = 0, probe_ocr = 0;
 +	uint64_t deadline;
-+	int error, err0, err1, err_cmd1;
++	int error, err0, err_cmd1;
 +
 +	error = sdhci_core_check();
 +	if (error) {
 +		return error;
 +	}
++
++	/* Probe step 0: the only true pre-write snapshot. */
++	sdhci_snapshot_untouched();
 +
 +	/* Disable power IRQ generation on GIC while polled */
 +	core_wr(CORE_PWRCTL_MASK, 0);
@@ -1153,6 +1308,9 @@ new file mode 100644
 +	if (error) {
 +		return error;
 +	}
++
++	/* Step 0b: standard window is decoded now, but RESET_ALL is not run. */
++	sdhci_snapshot_standard("(post-HC-mode, pre-reset)");
 +
 +	/* Drain any stale PWRCTL request firmware or reset left behind */
 +	(void)sdhci_pwrctl_ack("stale", false);
@@ -1232,34 +1390,16 @@ new file mode 100644
 +	    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd8(SDHCI_TIMEOUT_CONTROL));
 +
 +	/*
-+	 * Diagnostic probe ladder:
-+	 * Probe Step 1: Write CORE_VENDOR_SPEC_HS400_DIV2_VAL (200 MHz MCLK/2)
-+	 * and probe CMD13 on RCA 2.
++	 * Probe step 2: close the card clock, force the host back to the
++	 * low-speed receive path, then program sdcc1_apps_clk_src to 400 kHz.
++	 * The order matters: UHS=3 with the DLL powered down is why b6a8788
++	 * completed CMD0 (no response) but never sampled CMD1's response.
 +	 */
-+	printf("SANTONI SDHCI: probe step 1: MCLK sel 3 (HS400 MCLK/2 200 MHz, VENDOR_SPEC 0x%08x)\n",
-+	    CORE_VENDOR_SPEC_HS400_DIV2_VAL);
-+	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_HS400_DIV2_VAL);
-+	err1 = sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
-+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &probe_r1);
-+	if (err1) {
-+		printf("SANTONI SDHCI: probe step 1: CMD13 RCA 2 failed (%d)\n", err1);
-+		sdhci_recover();
-+	} else {
-+		printf("SANTONI SDHCI: probe step 1: CMD13 RCA 2 answered: R1 0x%08x (state %u)\n",
-+		    probe_r1, (probe_r1 >> 9) & 0xf);
-+	}
-+
-+	/*
-+	 * Probe Step 2: select the free-running MCLK again and program the GCC
-+	 * sdcc1_apps_clk_src RCG to a real 400 kHz. The SDHCI divider field is
-+	 * ignored by this core, so CLOCK_CONTROL stays at divider 0. CMD0 is
-+	 * timestamped: ~130 us at 400 kHz versus <1 us at the inherited rate is
-+	 * the proof that the RCG write reached the card. Then CMD1 (arg
-+	 * 0x40FF8080, SDHCI_CMD_RESP_SHORT without CRC).
-+	 */
-+	printf("SANTONI SDHCI: probe step 2: board vendor spec (0x%08x), "
-+	    "GCC 400 kHz\n", CORE_VENDOR_SPEC_BOARD_VAL);
++	printf("SANTONI SDHCI: probe step 2: gate card clock, UHS=0/1-bit, "
++	    "GCC 400 kHz\n");
++	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
 +	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
++	sdhci_set_legacy_host("probe step 2 (400 kHz)");
 +
 +	error = sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_400K]);
 +	if (error) {
@@ -1268,8 +1408,55 @@ new file mode 100644
 +		return error;
 +	}
 +	printf("SANTONI SDHCI: probe step 2: CLOCK_CONTROL 0x%04x "
-+	    "(SDHCI divider ignored)\n", hc_rd16(SDHCI_CLOCK_CONTROL));
++	    "HOST_CONTROL 0x%02x HOST_CONTROL2 0x%04x DLL_CONFIG 0x%08x "
++	    "(SDHCI divider ignored; UHS 0; 1-bit; DLL off)\n",
++	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
++	    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd(CORE_DLL_CONFIG));
 +
++	/*
++	 * At 400 kHz, 1 ms is 400 clocks: far more than the 74 clocks the
++	 * eMMC needs after power-up/reset before CMD1.
++	 */
++	delay(1000);
++
++	/*
++	 * First prove the inherited hand-off without resetting anything. If
++	 * CMD13 answers, the feedback-clock fix is already validated; the
++	 * card is in Transfer. CMD5 awake is still sent because LK may have
++	 * deselected or slept it first.
++	 */
++	error = sdhci_send_status(SANTONI_CARD_RCA, &probe_r1);
++	if (!error) {
++		printf("SANTONI SDHCI: probe step 2: CMD13 RCA 2 answered "
++		    "before reset: R1 0x%08x (state %u)\n", probe_r1,
++		    (probe_r1 >> 9) & 0xf);
++	} else {
++		printf("SANTONI SDHCI: probe step 2: CMD13 RCA 2 failed "
++		    "before reset (%d)\n", error);
++	}
++
++	error = sdhci_sleep_awake(SANTONI_CARD_RCA, &probe_r1);
++	if (!error) {
++		printf("SANTONI SDHCI: probe step 2: CMD5 awake RCA 2 "
++		    "answered: R1 0x%08x\n", probe_r1);
++	} else {
++		(void)sdhci_reset_paths();
++		error = sdhci_sleep_awake(1, &probe_r1);
++		if (!error) {
++			printf("SANTONI SDHCI: probe step 2: CMD5 awake RCA 1 "
++			    "answered: R1 0x%08x\n", probe_r1);
++		} else {
++			printf("SANTONI SDHCI: probe step 2: CMD5 awake got "
++			    "no answer on RCA 2 or 1\n");
++			(void)sdhci_reset_paths();
++		}
++	}
++
++	/*
++	 * Reset the card to Idle and identify. CMD0 needs no response, so its
++	 * 146.5 us duration is the clock proof; CMD1 is the first command that
++	 * needs the receive path to work.
++	 */
 +	err0 = sdhci_cmd(0, 0, 0, 0, NULL);
 +	printf("SANTONI SDHCI: probe step 2: CMD0 -> error %d, %llu ns\n",
 +	    err0, (unsigned long long)se.last_cmd_ns);
@@ -1277,13 +1464,27 @@ new file mode 100644
 +		sdhci_recover();
 +	}
 +
-+	err_cmd1 = sdhci_cmd(1, 0x40FF8080u, 0, SDHCI_CMD_RESP_SHORT, &probe_ocr);
-+	printf("SANTONI SDHCI: probe step 2: CMD1 (0x40FF8080) -> error %d, "
-+	    "OCR 0x%08x, %llu ns\n", err_cmd1, probe_ocr,
-+	    (unsigned long long)se.last_cmd_ns);
++	err_cmd1 = sdhci_cmd1_poll(&probe_ocr);
 +	if (err_cmd1) {
-+		sdhci_recover();
++		/*
++		 * JEDEC GO_PRE_IDLE_STATE. Linux's mmc_go_idle() uses arg 0
++		 * for a sleeping eMMC, so this is only a fallback, never the
++		 * primary reset; if CMD1 still fails the next suspect is the
++		 * host receive path, not another reset.
++		 */
++		printf("SANTONI SDHCI: probe step 2: CMD1 failed (%d), one "
++		    "GO_PRE_IDLE retry (CMD0 0xf0f0f0f0)\n", err_cmd1);
++		err0 = sdhci_cmd(0, 0xf0f0f0f0u, 0, 0, NULL);
++		printf("SANTONI SDHCI: probe step 2: CMD0 pre-idle -> "
++		    "error %d, %llu ns\n", err0,
++		    (unsigned long long)se.last_cmd_ns);
++		if (err0) {
++			sdhci_recover();
++		}
++		err_cmd1 = sdhci_cmd1_poll(&probe_ocr);
 +	}
++	printf("SANTONI SDHCI: probe step 2: CMD1 final -> error %d, "
++	    "OCR 0x%08x\n", err_cmd1, probe_ocr);
 +
 +	return 0;
 +}
@@ -1293,11 +1494,16 @@ new file mode 100644
 +{
 +	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
 +	sdhci_select_hc_clock();
-+	hc_wr8(SDHCI_HOST_CONTROL,
-+	    (uint8_t)(se.saved_ctrl & ~SDHCI_CTRL_DMA_MASK));
++	hc_wr8(SDHCI_HOST_CONTROL, se.saved_ctrl);
 +	hc_wr16(SDHCI_HOST_CONTROL2, se.saved_hc2);
 +	hc_wr8(SDHCI_TIMEOUT_CONTROL,
 +	    se.saved_timeout ? se.saved_timeout : SDHCI_TIMEOUT_MAX);
++	/*
++	 * A RESET_ALL wiped HOST_CONTROL2 back to 0, and the saved hand-off
++	 * value is UHS=3 (SDR104) with an 8-bit bus. Do not put the receive
++	 * path back into that state: rebuild the 400 kHz legacy mode instead.
++	 */
++	sdhci_set_legacy_host("rung 3 controller restore");
 +	if (sdhci_set_bus_power() != 0) {
 +		printf("SANTONI SDHCI: rung 3: bus power not restored\n");
 +		return ENXIO;
