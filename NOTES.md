@@ -1,6 +1,47 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## b6a8788 (2026-10-22, ready to boot): GCC sdcc1_apps_clk programmed for a real 400 kHz card clock
+## 821d983 (2026-10-22, ready to boot): UHS=0 fixed feedback clock & CMD1 polling at 400 kHz
+
+- **State:** Commit `821d983` (`fix(04): use UHS=0 feedback clock and poll CMD1 at 400 kHz`) pushed to `origin santoni`.
+  GitHub Actions CI run ID `39759294405` completed with `success`.
+  Downloaded `kernel.development.santoni` (17,300,184 B, SHA256 `adbf8ce578e66921d795b7f6cc9ae48bfec5d27661742a5dff3fd1af25c9da3b`).
+  Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `97b7b42ab68639a60f73b7b1ff49055c9e736738b082034702abf935d7e803e9`).
+- **Hardware observation (photo `20261022_135131.jpg`, image from `b6a8788`):**
+  - Reprogrammed GCC RCG from `0x00000205` (384 MHz) to `0x00002017` (400 kHz), and `CMD_UPDATE` cleared cleanly.
+  - Nanosecond hardware telemetry proved real 400 kHz clock operational on silicon: `CMD0` completed in **146,562 ns** (~146.5 µs, exactly 48 bits at 400 kHz).
+  - However, `CMD1` (`0x40FF8080`) failed with `cmd-timeout` (`INT_STATUS 0x00018000`) after 373,750 ns (64 clock cycles).
+- **Root cause analysis (verified against `linux-msm89x7-7.1.3/drivers/mmc/host/sdhci-msm.c` lines 1390–1400):**
+  - Qualcomm MSM SDCC v4 hardware requires `HOST_CONTROL2` bits [2:0] (UHS mode select) to be `< 3'b011` (i.e. UHS=0 / legacy SDR12) when clock <= 100 MHz in order to enable the internal fixed feedback clock for response sampling.
+  - In `b6a8788`, `HOST_CONTROL2` was left at `0x0003` (SDR104) and `HOST_CONTROL` was at `0x20` (8-bit bus width). Modes >= 3 require the tuned DLL receive path, which was powered down (`0x6000642c`), causing the MSM controller to gate off the response sampling feedback clock.
+  - As a result, the host was deaf: it could transmit `CMD0` (no response expected), but could not sample any response on the CMD line (`CMD1`, `CMD13`, `CMD5`).
+- **Implementation in `821d983`:**
+  1. **Probe Step 0 (Pristine LK Snapshot):** `sdhci_snapshot_untouched()` dumps `CORE_HC_MODE`, `MCI_POWER`, `MCI_CLK`, `CORE_VENDOR_SPEC`, `CORE_DLL_CONFIG`, `CORE_DLL_STATUS`, GCC `CMD_RCGR`, `CFG_RCGR`, `M`, `N`, `D`, `CBCR` before any MMIO register writes.
+  2. **Standard Window Snapshot:** `sdhci_snapshot_standard("(post-HC-mode, pre-reset)")` dumps the SDHCI standard registers before `RESET_ALL`.
+  3. **Low-Speed Feedback Clock Configuration (`sdhci_set_legacy_host`):**
+     - Clears `HOST_CONTROL2[2:0]` to `0` (UHS mode 0), preserving `VDD_180` (bit 3).
+     - Forces 1-bit bus width (`HOST_CONTROL = 0x00`).
+     - Resets and powers down DLL (`CORE_DLL_CONFIG |= CORE_DLL_RST | CORE_DLL_PDN`, `CK_OUT_EN = 0`).
+  4. **Probe Step 2 Execution (400 kHz):**
+     - Sets GCC to 400 kHz via `sdhci_gcc_set_apps()`.
+     - 1 ms settling delay (`delay(1000)`).
+     - Probes `CMD13 RCA 2` to verify if TRAN answers with feedback clock active.
+     - Probes `CMD5 awake` (R1b) on RCA 2 and RCA 1 in case LK put the card into sleep.
+     - Sends `CMD0 (0x00000000)` (Idle).
+     - Bounded 1-second `CMD1 (0x40FF8080)` polling loop (`sdhci_cmd1_poll`):
+       * Flags: `SDHCI_CMD_RESP_SHORT` (R3, no CRC/index check).
+       * Dynamically echoes the card's OCR with sector bit 30 set (`arg = *ocr | 0x40000000u`).
+       * Breaks immediately when OCR bit 31 is set (card ready).
+       * Fallback to `CMD0 0xF0F0F0F0` (Pre-Idle) on failure.
+  5. **Controller Restore (Rung 3):** Rebuilds legacy receive path instead of restoring LK's 8-bit UHS=3 handoff.
+  6. **Unit Tests & Guards:** Updated `tests/test_sdhci_mock.c` and `tests/run_tests.sh` (`STOR-10`).
+- **Expected results on next boot:**
+  - `CMD1 ready: OCR bit31 set` confirms card power-up synchronization.
+  - Note: The boot will still end with `eMMC probe failed (6)` because full re-enumeration (`CMD2` CID -> `CMD3` RCA -> `CMD7` select) is scheduled for the next patch once `CMD1` is proven on hardware.
+- **Next concrete action:**
+  - User boots `/storage/emulated/0/shim-boot.img` on Redmi 4X via `fastboot boot /storage/emulated/0/shim-boot.img` (`rd=md0`, no `sweetlog=1`).
+  - Photograph on-screen SDHCI probe log (especially probe step 0 and probe step 2).
+
+## b6a8788 (2026-10-22, previous): GCC sdcc1_apps_clk programmed for a real 400 kHz card clock
 
 - **State:** commit `b6a8788` (`fix(04): program GCC sdcc1_apps_clk for a real
   400 kHz card clock`) pushed to `origin santoni`. Host tests, patch checker
