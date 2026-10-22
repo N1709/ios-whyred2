@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,1870 @@
+@@ -0,0 +1,1939 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -128,6 +128,12 @@ new file mode 100644
 +#define SDHCI_CLOCK_INT_EN      0x0001
 +#define SDHCI_CLOCK_INT_STABLE  0x0002
 +#define SDHCI_CLOCK_CARD_EN     0x0004
++/*
++ * SDHCI internal clock divider for ~400 kHz initialization rate.
++ * On SDHCI 3.0 (HOST_VERSION 0x4d02), divisor N = 500 yields 400 MHz / (2 * 500) = 400 kHz.
++ * 10-bit divider: bits 7:0 (0xf4) in bits 15:8, bits 9:8 (0x01) in bits 7:6.
++ */
++#define SDHCI_DIVIDER_400KHZ    ((uint16_t)(((500u & 0xff) << 8) | (((500u >> 8) & 3) << 6)))
 +#define SDHCI_POWER_CONTROL     0x29
 +#define SDHCI_SOFTWARE_RESET    0x2f
 +#define SDHCI_INT_STATUS        0x30
@@ -169,10 +175,10 @@ new file mode 100644
 + * controller never shifted the command at all" (nothing but the software
 + * deadline), which is exactly the ambiguity a bare timeout leaves.
 + */
-+#define SDHCI_INT_CMD_INDEX     0x00800000u
-+#define SDHCI_INT_CMD_END_BIT   0x01000000u
-+#define SDHCI_INT_CMD_CRC       0x02000000u
-+#define SDHCI_INT_CMD_TIMEOUT   0x04000000u     /* no response from the card */
++#define SDHCI_INT_CMD_TIMEOUT   0x00010000u     /* no response from the card */
++#define SDHCI_INT_CMD_CRC       0x00020000u
++#define SDHCI_INT_CMD_END_BIT   0x00040000u
++#define SDHCI_INT_CMD_INDEX     0x00080000u
 +
 +/* ------------------------------------------ Qualcomm MSM v4 core registers */
 +#define SDHCI_HC_OFFSET         0x900           /* HC base - core base */
@@ -224,6 +230,7 @@ new file mode 100644
 +#define CORE_VENDOR_SPEC_POR_VAL 0x00000a9cu
 +#define CORE_VENDOR_SPEC_BOARD_VAL (CORE_VENDOR_SPEC_POR_VAL | \
 +	CORE_IO_PAD_PWR_SWITCH_EN | CORE_IO_PAD_PWR_SWITCH)
++#define CORE_VENDOR_SPEC_HS400_DIV2_VAL (CORE_VENDOR_SPEC_BOARD_VAL | (1u << 8))
 +#define CORE_HC_MCLK_SEL_MASK   (3u << 8)
 +#define CORE_HC_MCLK_SEL_DFLT   (2u << 8)
 +#define CORE_HC_SELECT_IN_EN    0x00040000u     /* BIT(18) */
@@ -942,9 +949,9 @@ new file mode 100644
 +{
 +	uint16_t handoff_hc2;
 +	uint8_t handoff_ctrl, handoff_timeout;
-+	uint32_t mci_clk, mci_power, vendor;
++	uint32_t mci_clk, mci_power, vendor, probe_r1 = 0, probe_ocr = 0;
 +	uint64_t deadline;
-+	int error;
++	int error, err0, err1, err_cmd1;
 +
 +	error = sdhci_core_check();
 +	if (error) {
@@ -1056,6 +1063,68 @@ new file mode 100644
 +	    mci_power, hc_rd8(SDHCI_POWER_CONTROL),
 +	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
 +	    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd8(SDHCI_TIMEOUT_CONTROL));
++
++	/*
++	 * Diagnostic probe ladder:
++	 * Probe Step 1: Write CORE_VENDOR_SPEC_HS400_DIV2_VAL (200 MHz MCLK/2)
++	 * and probe CMD13 on RCA 2.
++	 */
++	printf("SANTONI SDHCI: probe step 1: MCLK sel 3 (HS400 MCLK/2 200 MHz, VENDOR_SPEC 0x%08x)\n",
++	    CORE_VENDOR_SPEC_HS400_DIV2_VAL);
++	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_HS400_DIV2_VAL);
++	err1 = sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &probe_r1);
++	if (err1) {
++		printf("SANTONI SDHCI: probe step 1: CMD13 RCA 2 failed (%d)\n", err1);
++		sdhci_recover();
++	} else {
++		printf("SANTONI SDHCI: probe step 1: CMD13 RCA 2 answered: R1 0x%08x (state %u)\n",
++		    probe_r1, (probe_r1 >> 9) & 0xf);
++	}
++
++	/*
++	 * Probe Step 2: Write CORE_VENDOR_SPEC_BOARD_VAL and program the SDHCI
++	 * internal clock divider in SDHCI_CLOCK_CONTROL to ~400 kHz (divider
++	 * field in bits 15:8). Probe CMD0 followed by CMD1 (arg 0x40FF8080,
++	 * SDHCI_CMD_RESP_SHORT without CRC).
++	 */
++	printf("SANTONI SDHCI: probe step 2: board vendor spec (0x%08x), divider ~400 kHz\n",
++	    CORE_VENDOR_SPEC_BOARD_VAL);
++	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
++
++	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
++	hc_wr16(SDHCI_CLOCK_CONTROL, (uint16_t)(SDHCI_DIVIDER_400KHZ | SDHCI_CLOCK_INT_EN));
++	nanoseconds_to_absolutetime(CLOCK_STABLE_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++	for (;;) {
++		uint16_t clk = hc_rd16(SDHCI_CLOCK_CONTROL);
++		if (clk & SDHCI_CLOCK_INT_STABLE) {
++			break;
++		}
++		if (mach_absolute_time() > deadline) {
++			printf("SANTONI SDHCI: probe step 2: clock divider not stable (0x%04x)\n", clk);
++			break;
++		}
++		delay(1);
++	}
++	hc_wr16(SDHCI_CLOCK_CONTROL,
++	    (uint16_t)(hc_rd16(SDHCI_CLOCK_CONTROL) | SDHCI_CLOCK_CARD_EN));
++	printf("SANTONI SDHCI: probe step 2: CLOCK_CONTROL 0x%04x\n",
++	    hc_rd16(SDHCI_CLOCK_CONTROL));
++
++	err0 = sdhci_cmd(0, 0, 0, 0, NULL);
++	printf("SANTONI SDHCI: probe step 2: CMD0 -> error %d\n", err0);
++	if (err0) {
++		sdhci_recover();
++	}
++
++	err_cmd1 = sdhci_cmd(1, 0x40FF8080u, 0, SDHCI_CMD_RESP_SHORT, &probe_ocr);
++	printf("SANTONI SDHCI: probe step 2: CMD1 (0x40FF8080) -> error %d, OCR 0x%08x\n",
++	    err_cmd1, probe_ocr);
++	if (err_cmd1) {
++		sdhci_recover();
++	}
++
 +	return 0;
 +}
 +
