@@ -1,6 +1,59 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## SDHCI vendor window fix confirmed, CMD0 still inhibited (2026-10-22, latest): missing power + reset-all
+## SDHCI review fixes applied to the 0142/0143 rewrite (2026-10-22, latest): BOARD_VAL, restore-controller rung 3, synced mock
+
+- **State:** `0da5dc8` is still the last commit; `0142` and `0143` carried the
+  working-tree rewrite reviewed today. This change fixes the two blockers from
+  that review and syncs the host test to the code that actually ships. Nothing
+  has been compiled into a kernel or booted yet - the points below are code-level
+  facts and the test results stated, not hardware observations.
+- **Blocker 1 (pad supply):** `sdhci_take_over()` and
+  `sdhci_restore_controller()` both wrote `CORE_VENDOR_SPEC_POR_VAL`
+  (`0xa9c`), which drops LK's `IO_PAD_PWR_SWITCH_EN` (bit 15) and
+  `IO_PAD_PWR_SWITCH` (bit 16) - the same class of bug as `b8d7336`, but inside
+  the rewrite. The macro is now split: `_POR_VAL 0xa9c` is only the clock
+  reset value, `_BOARD_VAL 0x18a9c` (POR | pad EN | 1.8 V select) is what the
+  two writers use. Pads are also re-asserted when `BUS_ON` is acked, so a
+  `RESET_ALL` + power-up sequence cannot leave them off.
+- **Blocker 2 (mock drift):** `tests/test_sdhci_mock.c` still modelled the
+  pre-review driver (single-argument `sdhci_pwrctl_ack`, POR value with pads,
+  no HC2/TIMEOUT save/restore, rung 3 = vendor poke, `RESET_ALL` clearing only
+  `POWER_CONTROL`). It is now synced: `sdhci_pwrctl_ack(what, wait)` with
+  dynamic pending bits and pad re-assert, `sdhci_set_bus_power()`,
+  `sdhci_enable_card_clock()` (divider stays 0), `sdhci_restore_controller()`,
+  full `RESET_ALL` domain clear, and LK's `HOST_CONTROL2 0x0008` /
+  `TIMEOUT_CONTROL 0x08` at hand-off. New `test_rung3_self_reset()` drives
+  `sdhci_claim_card()` through rungs 1/2 on a dead controller and proves rung 3
+  restores power/clock/HC2/TIMEOUT/pads and that LK's RCA still answers (no
+  VCC cut, no CMD0); a second restore on a live core must keep `BOARD_VAL`.
+- **Test guards:** `tests/run_tests.sh` STOR-07/08 now assert
+  `CORE_VENDOR_SPEC_BOARD_VAL` (not POR), STOR-07 forbids
+  `hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_POR_VAL)`, STOR-08 forbids
+  `SDHCI_CLOCK_DIV` and pins `hc_wr16(SDHCI_CLOCK_CONTROL, SDHCI_CLOCK_INT_EN)`.
+  STOR-04's vacuous `su.dma` guard became `se.dma`; STOR-03 keeps `su.dma` on
+  purpose (0142 legitimately uses `se.dma`, and `su` is the UFS state).
+- **Other changes:** `santoni_log_start()` gates on `se.log_ok` (not
+  `se.sys_nblocks`), so a small/overlapping SYSTEM area never starts the
+  flusher; duplicated ack comment removed; rung-3 and file-header comments now
+  describe the reset-all-then-rebuild flow; `0143` hunk offsets corrected to
+  the new file length (`-54` include hunk, `-1826/+1830` flusher hunk).
+- **Verification (host, this tree):** `tools/check_patch.py` ok on all patches;
+  `bash tests/run_tests.sh` exit 0; `test_sdhci_mock.c` clean under
+  `-Wall -Wextra -Werror`; `0143` applies to the reconstructed `0142` file with
+  `git apply` at exact offsets (no fuzz). 0142 new-file hunk is
+  `@@ -0,0 +1,1870 @@`.
+- **Known minor, not fixed:** boot-arg `emmcr=system` walks the GPT for a
+  partition named `system` that is not the root and ends in `ENOENT` unless
+  `emmcroot=system` is given; it is a usability wart, not a data path.
+- **Next:** commit (trailer `Co-Authored-By: Gemini <noreply@google.com>`) and
+  push so the `xnu` workflow builds `santoni`; then `fastboot boot` the new
+  `shim/out` image and check the takeover log for
+  `board 0x00018a9c`, `POWER_CONTROL 0x0b`, `CLOCK_CONTROL 0x0007` and a CMD13
+  answer on RCA 2. If CMD13 still dies, the next suspect is the LK hand-off
+  state (`CORE_VENDOR_SPEC 0x00358b1c`, MCLK sel 3 / HS400 with dead DLL), not
+  the pad supply.
+
+## SDHCI vendor window fix confirmed, CMD0 still inhibited (2026-10-22, previous): missing power + reset-all
 
 - **Hardware observation (Redmi 4X, boot of the image built from `c52abc4`/`077816f`):**
   - `CORE_VENDOR_SPEC` at `0x07824a0c` now reads the *real* LK value
