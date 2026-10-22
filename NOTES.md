@@ -54,16 +54,18 @@
   IO_HIGH=0x8 -> IO_SUCCESS=0x4). `CORE_GENERICS 0x24100041` has
   SWITCHABLE_SIGNALING_VOLTAGE (`BIT(29)`) set, so HOST_CONTROL2 1.8V changes
   also generate a PWRCTL request.
-- **Planned driver change (NOT committed; nothing changed in this analysis):**
-  takeover becomes `VENDOR_SPEC 0x18a9c` -> `HC_MODE_EN` -> `FF_CLK_SW_RST_DIS`
-  -> RESET_ALL (poll self-clear, 100 ms) -> restore HOST_CONTROL,
-  HOST_CONTROL2 and TIMEOUT_CONTROL saved before the reset -> `POWER_CONTROL
-  0x0B` + PWRCTL ack -> `CLOCK_CONTROL 0` -> INT_EN -> poll INT_STABLE ->
-  CARD_EN -> INT_ENABLE/SIGNAL_ENABLE/STATUS. On a CMD timeout dump
-  HC_MODE/VENDOR_SPEC/CLOCK_CONTROL/POWER_CONTROL/DLL/HOST_CONTROL(2).
-  The mock must model RESET_ALL and power-gated command completion, and the
-  current "command/data reset must not be RESET_ALL" assertion must be
-  replaced.
+- **Implemented driver fix (committed in this change):**
+  Takeover implementation updated with full consensus from DeepSeek v4.1:
+  1. `VENDOR_SPEC` written with `0x18a9c` (`CORE_VENDOR_SPEC_POR_VAL | CORE_IO_PAD_PWR_SWITCH_EN | CORE_IO_PAD_PWR_SWITCH`) to preserve 1.8V pad switches.
+  2. `HC_MODE_EN` and `FF_CLK_SW_RST_DIS` applied in Linux order.
+  3. Pre-reset `HOST_CONTROL` saved, then full `SDHCI_RESET_ALL` issued.
+  4. Handled `sdhci_pwrctl_ack("BUS_OFF")` for reset power drop.
+  5. Asserted `sdhci_select_hc_clock()`.
+  6. Wrote `SDHCI_POWER_CONTROL = 0x0B` (1.8V + bus on) and handled `sdhci_pwrctl_ack("BUS_ON")`.
+  7. Re-proved clock: written 0, `INT_EN`, polled `INT_STABLE` with 150 ms timeout, latched `CARD_EN`, routed clock output.
+  8. Restored bus width, enabled status interrupts for polled loop.
+  9. Fenced `santoni_sdhci_write_log_blocks()` to disallow writes when `se.first_block == se.sys_first_block` (WR-01).
+  10. Updated `test_sdhci_mock.c` with accurate `RESET_ALL`, `POWER_CONTROL`, and `PWRCTL` state machines; all host tests and patch checks passing.
 - **Artifact state:** unchanged; last boot image is still
   `shim/out/shim-boot.img` 16,934,912 B SHA256
   `2d759c468ad79c4a4769a373b8d5a7bc0196a88dd4e0bb85401f2469ce7467e5`.
