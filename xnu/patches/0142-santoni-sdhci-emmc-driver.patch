@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,2315 @@
+@@ -0,0 +1,2589 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -156,6 +156,8 @@ new file mode 100644
 +
 +#define SDHCI_CMD_INHIBIT       0x00000001u
 +#define SDHCI_DATA_INHIBIT      0x00000002u
++/* PRESENT_STATE[20]: DAT0 line level, used for R1b/CMD6 busy polling. */
++#define SDHCI_DATA_0_LVL_MASK   0x00100000u
 +
 +#define SDHCI_CTRL_DMA_MASK     0x18u
 +#define SDHCI_CTRL_4BITBUS      0x02u
@@ -321,6 +323,20 @@ new file mode 100644
 + */
 +#define SANTONI_CARD_RCA        2u
 +
++/* eMMC R1 status word (JESD84-B51): [12:9] state, bit8 ready, bit7 switch. */
++#define SDHCI_R1_STATE_MASK      0x00001e00u
++#define SDHCI_R1_STATE_TRAN      4u
++#define SDHCI_R1_READY_FOR_DATA  0x00000100u
++#define SDHCI_R1_SWITCH_ERROR    0x00000080u
++
++/* CMD6 SWITCH fields (JESD84-B51): write-byte, EXT_CSD index, value, set. */
++#define EXT_CSD_CMD_SET_NORMAL  0u
++#define EXT_CSD_WRITE_BYTE      3u
++#define EXT_CSD_BUS_WIDTH       183u
++#define EXT_CSD_BUS_WIDTH_8     2u
++#define EXT_CSD_HS_TIMING       185u
++#define EXT_CSD_TIMING_HS       1u
++
 +/* --------------------------------------------------------------- transfers */
 +#define SDHCI_BLOCK             512u
 +#define BOUNCE_SIZE             (1u << 20)
@@ -333,6 +349,7 @@ new file mode 100644
 +#define DMA_BOUNCE              0x0000
 +#define CMD_TIMEOUT_NS          (100ull * NSEC_PER_MSEC)
 +#define DATA_TIMEOUT_NS         (2ull * NSEC_PER_SEC)
++#define CMD6_BUSY_TIMEOUT_NS    (1ull * NSEC_PER_SEC)
 +
 +static struct {
 +	vm_offset_t regs;                       /* core base, HC at +0x900 */
@@ -349,6 +366,7 @@ new file mode 100644
 +	uint8_t saved_ctrl;                     /* HOST_CONTROL at hand-off */
 +	uint16_t saved_hc2;                     /* HOST_CONTROL2 at hand-off */
 +	uint8_t saved_timeout;                  /* TIMEOUT_CONTROL at hand-off */
++	bool enumerated;                        /* card is 25 MHz, 8-bit, HS */
 +	bool log_ok;                            /* SYSTEM log area is safe */
 +	bool writable;                          /* boot-arg emmcrw=1 */
 +	int bmajor, cmajor;
@@ -731,20 +749,23 @@ new file mode 100644
 +}
 +
 +/*
-+ * CMD9 / CMD10: 136-bit R2 response into out[0] = most-significant word.
++ * CMD2 / CMD9 / CMD10: 136-bit R2 response into out[0] = MSB word.
 + *
-+ * Both are addressed commands, so arg carries the RCA in bits 31:16 (Linux
-+ * include/linux/mmc/mmc.h: "ac [31:16] RCA R2"). The MSM v4 core strips the
-+ * 8-bit CRC and right-aligns the remaining 120 bits, so the payload of the
-+ * first word sits in bits 23:0; Linux (sdhci_read_rsp_136()) shifts each word
-+ * left by 8 and folds in the top byte of the next. Without that shift the CID
-+ * decodes as MID 0x00, a blank PNM and a nonsense serial number.
++ * CMD2 is broadcast (arg 0); CMD9/CMD10 are addressed, so arg carries the RCA
++ * in bits 31:16 (Linux include/linux/mmc/mmc.h: "ac [31:16] RCA R2"). R2 has
++ * no opcode byte, so SDHCI_CMD_INDEX must not be set: the controller would
++ * compare a nonexistent index and report SDHCI_INT_CMD_INDEX. CRC is part of
++ * Linux's MMC_RSP_R2. The MSM v4 core strips the 8-bit CRC and right-aligns
++ * the remaining 120 bits, so the payload of the first word sits in bits 23:0;
++ * Linux (sdhci_read_rsp_136()) shifts each word left by 8 and folds in the top
++ * byte of the next. Without that shift the CID decodes as MID 0x00, a blank
++ * PNM and a nonsense serial number.
 + */
 +static int
 +sdhci_read_response128(uint8_t index, uint32_t arg, uint32_t out[4])
 +{
 +	int error = sdhci_cmd(index, arg, 0,
-+	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
++	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC, NULL);
 +	if (error) {
 +		return error;
 +	}
@@ -1214,6 +1235,7 @@ new file mode 100644
 +
 +static int sdhci_send_status(uint32_t rca, uint32_t *r1);
 +static int sdhci_sleep_awake(uint32_t rca, uint32_t *r1);
++static int sdhci_enumerate_card(void);
 +
 +/*
 + * CMD1 SEND_OP_COND. OCR bit31 is the card's power-up status: 1 means ready
@@ -1486,12 +1508,32 @@ new file mode 100644
 +	printf("SANTONI SDHCI: probe step 2: CMD1 final -> error %d, "
 +	    "OCR 0x%08x\n", err_cmd1, probe_ocr);
 +
++	if (err_cmd1 == 0) {
++		error = sdhci_enumerate_card();
++		if (error) {
++			printf("SANTONI SDHCI: enumeration failed (%d); "
++			    "leaving the card alone\n", error);
++			return error;
++		}
++	}
 +	return 0;
 +}
 +
 +static int
 +sdhci_restore_controller(void)
 +{
++	/*
++	 * After enumeration the card may be in 8-bit high-speed mode. Dropping
++	 * the host to the 400 kHz 1-bit path would make CMD13 work but corrupt
++	 * every data read, because the card would still drive eight data bits.
++	 * Fail closed instead; this legacy restore is only for the pre-CMD1
++	 * hand-off ladder.
++	 */
++	if (se.enumerated) {
++		printf("SANTONI SDHCI: rung 3: refusing the legacy 1-bit "
++		    "restore after enumeration\n");
++		return ENXIO;
++	}
 +	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
 +	sdhci_select_hc_clock();
 +	hc_wr8(SDHCI_HOST_CONTROL, se.saved_ctrl);
@@ -1511,8 +1553,8 @@ new file mode 100644
 +	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
 +	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
 +	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
-+	if (sdhci_enable_card_clock() != 0) {
-+		printf("SANTONI SDHCI: rung 3: card clock not restored\n");
++	if (sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_400K]) != 0) {
++		printf("SANTONI SDHCI: rung 3: 400 kHz clock not restored\n");
 +		return ENXIO;
 +	}
 +	sdhci_clock_output();
@@ -1557,6 +1599,222 @@ new file mode 100644
 +{
 +	return sdhci_cmd(5, rca << 16, 0,
 +	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, r1);
++}
++
++/*
++ * CMD6 is R1b: the card holds DAT0 low while it programs EXT_CSD. The SDHCI
++ * core does not wait for that busy phase itself, and sending CMD13 into it
++ * would time out and leave CMD_INHIBIT set. Poll PRESENT_STATE until the
++ * command/data inhibitors are clear and DAT0 is high, then confirm TRAN with
++ * one CMD13. The 1 ms pre-delay lets the card actually enter the busy phase;
++ * eMMC CMD6 busy can otherwise be missed by an immediate read.
++ */
++static int
++sdhci_wait_card_ready(uint32_t rca, const char *what)
++{
++	uint32_t st, r1 = 0;
++	uint64_t deadline;
++	int error;
++
++	nanoseconds_to_absolutetime(CMD6_BUSY_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++
++	delay(1000);
++	for (;;) {
++		st = hc_rd(SDHCI_PRESENT_STATE);
++		if (!(st & (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) &&
++		    (st & SDHCI_DATA_0_LVL_MASK)) {
++			break;
++		}
++		if (mach_absolute_time() > deadline) {
++			printf("SANTONI SDHCI: enumeration: %s: DAT0 did not "
++			    "release within 1 s (PRESENT_STATE 0x%08x)\n",
++			    what, st);
++			return ETIMEDOUT;
++		}
++		delay(1000);
++	}
++
++	error = sdhci_cmd(13, rca << 16, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: %s: CMD13 confirmation "
++		    "failed (%d)\n", what, error);
++		return error;
++	}
++	if ((r1 & SDHCI_R1_STATE_MASK) != (SDHCI_R1_STATE_TRAN << 9) ||
++	    !(r1 & SDHCI_R1_READY_FOR_DATA)) {
++		printf("SANTONI SDHCI: enumeration: %s: card not ready "
++		    "(R1 0x%08x, state %u)\n", what, r1,
++		    (r1 & SDHCI_R1_STATE_MASK) >> 9);
++		return EIO;
++	}
++	printf("SANTONI SDHCI: enumeration: %s: card ready "
++	    "(R1 0x%08x, TRAN)\n", what, r1);
++	return 0;
++}
++
++/*
++ * CMD6 SWITCH write-byte. The host bus/timing change is applied immediately
++ * after the response, before the busy phase ends: the card has already been
++ * told the new mode, and the next CMD13/data phase must use it. ctrl_clear is
++ * used for the mutually exclusive 4/8-bit field; ctrl_set is 8BITBUS or HISPD.
++ */
++static int
++sdhci_switch_ext_csd(uint8_t index, uint8_t value, uint8_t ctrl_set,
++    uint8_t ctrl_clear, const char *what)
++{
++	uint32_t arg = (EXT_CSD_WRITE_BYTE << 24) |
++	    ((uint32_t)index << 16) | ((uint32_t)value << 8) |
++	    EXT_CSD_CMD_SET_NORMAL;
++	uint32_t r1 = 0;
++	uint8_t ctrl;
++	int error;
++
++	printf("SANTONI SDHCI: enumeration: CMD6 %s (arg 0x%08x)\n",
++	    what, arg);
++	error = sdhci_cmd(6, arg, 0,
++	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++	    &r1);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: CMD6 %s failed (%d)\n",
++		    what, error);
++		return error;
++	}
++	printf("SANTONI SDHCI: enumeration: CMD6 %s -> R1 0x%08x\n",
++	    what, r1);
++	if (r1 & SDHCI_R1_SWITCH_ERROR) {
++		/*
++		 * The card rejected the EXT_CSD byte. Do not touch
++		 * HOST_CONTROL: the card is still in its old bus/timing mode.
++		 */
++		printf("SANTONI SDHCI: enumeration: CMD6 %s reported "
++		    "SWITCH_ERROR, host left unchanged\n", what);
++		return EIO;
++	}
++
++	ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	ctrl = (uint8_t)((ctrl & ~ctrl_clear) | ctrl_set);
++	hc_wr8(SDHCI_HOST_CONTROL, ctrl);
++	ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	printf("SANTONI SDHCI: enumeration: HOST_CONTROL 0x%02x after "
++	    "%s\n", ctrl, what);
++	if ((ctrl & ctrl_set) != ctrl_set) {
++		printf("SANTONI SDHCI: enumeration: HOST_CONTROL did not "
++		    "latch %s (0x%02x)\n", what, ctrl);
++		return ENXIO;
++	}
++
++	return sdhci_wait_card_ready(se.rca, what);
++}
++
++/*
++ * READY -> IDENT -> STBY -> TRAN and the 25 MHz / 8-bit / high-speed switch.
++ *
++ * CMD1 leaves the card in READY with no RCA: CMD3 assigns RCA 2, CMD9/CMD10
++ * are addressed R2 reads, CMD7 selects it, and CMD8 reads EXT_CSD while the
++ * card and host are still 1-bit at 400 kHz. Only after the 512-byte EXT_CSD
++ * read succeeds do we move to 25 MHz and use CMD6 to change the card's bus
++ * width and timing; the host follows immediately after each CMD6 response.
++ * These are configuration writes to EXT_CSD, not user-data writes.
++ */
++static int
++sdhci_enumerate_card(void)
++{
++	uint32_t cid[4] = { 0 }, csd[4] = { 0 };
++	uint32_t sec_count = 0, r1 = 0;
++	int error;
++
++	printf("SANTONI SDHCI: enumeration: CMD2 ALL_SEND_CID (R2)\n");
++	error = sdhci_read_response128(2, 0, cid);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: CMD2 failed (%d)\n", error);
++		return error;
++	}
++	printf("SANTONI SDHCI: enumeration: CID 0x%08x 0x%08x 0x%08x "
++	    "0x%08x\n", cid[0], cid[1], cid[2], cid[3]);
++
++	printf("SANTONI SDHCI: enumeration: CMD3 SET_RELATIVE_ADDR RCA %u\n",
++	    SANTONI_CARD_RCA);
++	error = sdhci_cmd(3, SANTONI_CARD_RCA << 16, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: CMD3 failed (%d)\n", error);
++		return error;
++	}
++	se.rca = SANTONI_CARD_RCA;
++	printf("SANTONI SDHCI: enumeration: CMD3 -> R1 0x%08x (state %u)\n",
++	    r1, (r1 & SDHCI_R1_STATE_MASK) >> 9);
++
++	printf("SANTONI SDHCI: enumeration: CMD9 SEND_CSD RCA %u (R2)\n",
++	    se.rca);
++	error = sdhci_read_response128(9, se.rca << 16, csd);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: CMD9 failed (%d)\n", error);
++		return error;
++	}
++	printf("SANTONI SDHCI: enumeration: CSD 0x%08x 0x%08x 0x%08x "
++	    "0x%08x\n", csd[0], csd[1], csd[2], csd[3]);
++
++	printf("SANTONI SDHCI: enumeration: CMD7 SELECT_CARD RCA %u\n",
++	    se.rca);
++	error = sdhci_select_card(se.rca);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: CMD7 failed (%d)\n", error);
++		return error;
++	}
++	printf("SANTONI SDHCI: enumeration: card selected (TRAN)\n");
++
++	printf("SANTONI SDHCI: enumeration: CMD8 SEND_EXT_CSD "
++	    "(512-byte read at 400 kHz)\n");
++	dma_sync(SDHCI_BLOCK, TRUE);
++	error = sdhci_read_pio(8, 0, 1, (void *)(se.dma + DMA_BOUNCE));
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: CMD8 failed (%d)\n", error);
++		return error;
++	}
++	dma_sync(SDHCI_BLOCK, TRUE);
++	memcpy(&sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
++	if (sec_count == 0) {
++		printf("SANTONI SDHCI: enumeration: EXT_CSD SEC_COUNT is 0; "
++		    "CMD8 data is not trustworthy, not switching the bus\n");
++		return EIO;
++	}
++	se.sec_count = sec_count;
++	printf("SANTONI SDHCI: enumeration: EXT_CSD SEC_COUNT %u "
++	    "(%llu MiB)\n", sec_count,
++	    (unsigned long long)((uint64_t)sec_count * SDHCI_BLOCK >> 20));
++
++	printf("SANTONI SDHCI: enumeration: switch GCC to 25 MHz\n");
++	error = sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_25M]);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: 25 MHz failed (%d)\n",
++		    error);
++		return error;
++	}
++	printf("SANTONI SDHCI: enumeration: CLOCK_CONTROL 0x%04x "
++	    "HOST_CONTROL 0x%02x HOST_CONTROL2 0x%04x\n",
++	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
++	    hc_rd16(SDHCI_HOST_CONTROL2));
++	sdhci_clock_output();
++
++	error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
++	    EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS, SDHCI_CTRL_BUS_MASK,
++	    "BUS_WIDTH=8");
++	if (error) {
++		return error;
++	}
++
++	error = sdhci_switch_ext_csd(EXT_CSD_HS_TIMING,
++	    EXT_CSD_TIMING_HS, SDHCI_CTRL_HISPD, 0, "HS_TIMING=1");
++	if (error) {
++		return error;
++	}
++
++	se.enumerated = true;
++	printf("SANTONI SDHCI: enumeration complete: 25 MHz, 8-bit, "
++	    "high-speed\n");
++	return 0;
 +}
 +
 +/*
@@ -1622,6 +1880,22 @@ new file mode 100644
 +	uint32_t r1 = 0;
 +	int error = ETIMEDOUT;
 +	unsigned i;
++
++	/*
++	 * Enumeration already selected the card and moved it to 25 MHz/8-bit/
++	 * high-speed. The ladder below is for LK's 400 kHz hand-off. If CMD13
++	 * fails now, do not rebuild the 1-bit legacy path: the card would still
++	 * be driving eight data bits, so any later read would be garbage.
++	 */
++	if (se.enumerated) {
++		error = sdhci_send_status(se.rca, &r1);
++		if (!error) {
++			return sdhci_restore_state(&r1);
++		}
++		printf("SANTONI SDHCI: post-enumeration CMD13 failed (%d); "
++		    "not downgrading the card bus\n", error);
++		return ENXIO;
++	}
 +
 +	for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
 +		error = sdhci_send_status(candidates[i], &r1);
@@ -1711,7 +1985,7 @@ new file mode 100644
 +sdhci_card_check(void)
 +{
 +	uint32_t cid[4] = { 0 }, csd[4] = { 0 };
-+	uint32_t sec_count = 0;
++	uint32_t sec_count = se.sec_count;
 +	char pnm[7];
 +	int error;
 +
