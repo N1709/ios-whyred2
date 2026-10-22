@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,2589 @@
+@@ -0,0 +1,2636 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -143,6 +143,7 @@ new file mode 100644
 +#define SDHCI_MAKE_BLKSZ(dma, blksz) (((dma) << 12) | ((blksz) & 0xfff))
 +
 +#define SDHCI_TRNS_BLK_CNT_EN   0x0002
++#define SDHCI_TRNS_AUTO_CMD12   0x0004
 +#define SDHCI_TRNS_READ         0x0010
 +#define SDHCI_TRNS_MULTI        0x0020
 +
@@ -654,8 +655,12 @@ new file mode 100644
 +/*
 + * Polled PIO read of count 512-byte blocks. index is 18 (multi-block) or
 + * 8/17 (single block). Data is assembled from the FIFO port, 128 words per
-+ * block. BLK_CNT_EN makes the card stop itself at the block count, so the
-+ * success path needs no CMD12.
++ * block.
++ *
++ * For single-block reads (count == 1), CMD17 is used without AUTO_CMD12 or
++ * BLK_CNT_EN; the card returns to TRAN automatically after 1 block.
++ * For multi-block reads (count > 1), CMD18 is used with AUTO_CMD12 so the
++ * host controller automatically terminates the streaming data transfer.
 + */
 +static int
 +sdhci_read_pio(uint8_t index, uint32_t arg, uint32_t count, void *buf)
@@ -667,12 +672,21 @@ new file mode 100644
 +	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
 +		return EINVAL;
 +	}
-+	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
-+	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)(index == 18 ? count : 1));
 +
-+	tr_mode = SDHCI_TRNS_BLK_CNT_EN | SDHCI_TRNS_READ;
++	if (index == 18 && count == 1) {
++		index = 17;
++	} else if (index == 17 && count > 1) {
++		index = 18;
++	}
++
++	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
++	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
++
 +	if (index == 18) {
-+		tr_mode |= SDHCI_TRNS_MULTI;
++		tr_mode = SDHCI_TRNS_READ | SDHCI_TRNS_BLK_CNT_EN |
++		    SDHCI_TRNS_MULTI | SDHCI_TRNS_AUTO_CMD12;
++	} else {
++		tr_mode = SDHCI_TRNS_READ;
 +	}
 +	error = sdhci_cmd(index, arg, tr_mode,
 +	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
@@ -697,22 +711,19 @@ new file mode 100644
 +		sdhci_recover();
 +		return error;
 +	}
-+	/*
-+	 * BLK_CNT_EN is always set, so the card stops after the programmed block
-+	 * count: a CMD12 here would abort a transfer that already completed and
-+	 * can poison the next command.
-+	 */
 +	return 0;
 +}
 +
 +/*
-+ * Polled PIO write of count 512-byte blocks (CMD25). BLK_CNT_EN stops the
-+ * card at the block count, so no CMD12 is issued after a successful transfer.
++ * Polled PIO write of count 512-byte blocks. For count == 1, CMD24 is used.
++ * For count > 1, CMD25 is used with AUTO_CMD12.
 + */
 +static int
 +sdhci_write_pio(uint32_t lba, uint32_t count, const void *buf)
 +{
 +	const uint32_t *src = (const uint32_t *)buf;
++	uint16_t tr_mode;
++	uint8_t index = (count == 1) ? 24 : 25;
 +	int error;
 +
 +	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
@@ -721,8 +732,14 @@ new file mode 100644
 +	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
 +	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
 +
-+	error = sdhci_cmd(25, lba,
-+	    SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN,
++	if (index == 25) {
++		tr_mode = SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN |
++		    SDHCI_TRNS_AUTO_CMD12;
++	} else {
++		tr_mode = 0;
++	}
++
++	error = sdhci_cmd(index, lba, tr_mode,
 +	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
 +	    SDHCI_CMD_DATA, NULL);
 +	if (error) {
@@ -767,6 +784,7 @@ new file mode 100644
 +	int error = sdhci_cmd(index, arg, 0,
 +	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC, NULL);
 +	if (error) {
++		sdhci_recover();
 +		return error;
 +	}
 +	for (int i = 0; i < 4; i++) {
@@ -1756,6 +1774,27 @@ new file mode 100644
 +	printf("SANTONI SDHCI: enumeration: CSD 0x%08x 0x%08x 0x%08x "
 +	    "0x%08x\n", csd[0], csd[1], csd[2], csd[3]);
 +
++	char pnm[7];
++	pnm[0] = (char)(cid[0] & 0xff);
++	pnm[1] = (char)(cid[1] >> 24);
++	pnm[2] = (char)(cid[1] >> 16);
++	pnm[3] = (char)(cid[1] >> 8);
++	pnm[4] = (char)cid[1];
++	pnm[5] = (char)(cid[2] >> 24);
++	pnm[6] = 0;
++	for (int i = 0; i < 6; i++) {
++		if (pnm[i] < 0x20 || pnm[i] > 0x7e) {
++			pnm[i] = '.';
++		}
++	}
++	printf("SANTONI SDHCI: eMMC MID 0x%02x CBX 0x%02x OID 0x%02x "
++	    "PNM \"%s\" rev %u.%u S/N 0x%08x MDT 0x%02x CSD 0x%08x\n",
++	    (cid[0] >> 24) & 0xff, (cid[0] >> 16) & 0xff,
++	    (cid[0] >> 8) & 0xff, pnm, (cid[2] >> 20) & 0xf,
++	    (cid[2] >> 16) & 0xf,
++	    ((cid[2] & 0xffffu) << 16) | (cid[3] >> 16),
++	    (cid[3] >> 8) & 0xff, csd[0]);
++
 +	printf("SANTONI SDHCI: enumeration: CMD7 SELECT_CARD RCA %u\n",
 +	    se.rca);
 +	error = sdhci_select_card(se.rca);
@@ -1981,69 +2020,77 @@ new file mode 100644
 +	return ENXIO;
 +}
 +
++/*
++ * Verify that the 25 MHz 8-bit High-Speed switch is functionally working
++ * across the 8 data lines (DAT[7:0]) by re-reading EXT_CSD (CMD8) and
++ * verifying that SEC_COUNT and HS_TIMING match expectations.
++ *
++ * (Note: Per JEDEC JESD84-B51, EXT_CSD[183] BUS_WIDTH is write-only and reads
++ * back 0x00, so we check EXT_CSD[185] HS_TIMING == 1 and SEC_COUNT).
++ *
++ * If 8-bit High-Speed sampling fails, fall back to legacy edge timing
++ * (HS_TIMING=0) or 4-bit bus width.
++ */
 +static int
-+sdhci_card_check(void)
++sdhci_verify_highspeed_bus(uint32_t expected_sec_count)
 +{
-+	uint32_t cid[4] = { 0 }, csd[4] = { 0 };
-+	uint32_t sec_count = se.sec_count;
-+	char pnm[7];
++	uint32_t verify_sec_count = 0;
++	uint8_t hs_timing = 0;
 +	int error;
 +
-+	error = sdhci_claim_card();
-+	if (error) {
-+		return error;
-+	}
-+
-+	error = sdhci_read_response128(10, se.rca << 16, cid);
-+	if (error) {
-+		return error;
-+	}
-+	error = sdhci_read_response128(9, se.rca << 16, csd);
-+	if (error) {
-+		return error;
-+	}
-+
-+	/*
-+	 * eMMC CID (JESD84-B51): MID[127:120], CBX[119:112], OID[111:104],
-+	 * PNM[103:56] (6 ASCII), PRV[55:48], PSN[47:16], MDT[15:8].
-+	 */
-+	pnm[0] = (char)(cid[0] & 0xff);
-+	pnm[1] = (char)(cid[1] >> 24);
-+	pnm[2] = (char)(cid[1] >> 16);
-+	pnm[3] = (char)(cid[1] >> 8);
-+	pnm[4] = (char)cid[1];
-+	pnm[5] = (char)(cid[2] >> 24);
-+	pnm[6] = 0;
-+	for (int i = 0; i < 6; i++) {
-+		if (pnm[i] < 0x20 || pnm[i] > 0x7e) {
-+			pnm[i] = '.';
-+		}
-+	}
-+	printf("SANTONI SDHCI: eMMC MID 0x%02x CBX 0x%02x OID 0x%02x "
-+	    "PNM \"%s\" rev %u.%u S/N 0x%08x MDT 0x%02x CSD 0x%08x\n",
-+	    (cid[0] >> 24) & 0xff, (cid[0] >> 16) & 0xff,
-+	    (cid[0] >> 8) & 0xff, pnm, (cid[2] >> 20) & 0xf,
-+	    (cid[2] >> 16) & 0xf,
-+	    ((cid[2] & 0xffffu) << 16) | (cid[3] >> 16),
-+	    (cid[3] >> 8) & 0xff, csd[0]);
-+
-+	/* Extended CSD (CMD8): SEC_COUNT is the last 32-bit little-endian
-+	 * field at offset 212, in 512-byte units. */
++	/* Re-read EXT_CSD (CMD8) at 25 MHz 8-bit High-Speed to exercise DAT[7:0] */
 +	dma_sync(SDHCI_BLOCK, TRUE);
 +	error = sdhci_read_pio(8, 0, 1, (void *)(se.dma + DMA_BOUNCE));
-+	if (error) {
-+		printf("SANTONI SDHCI: no extended CSD (%d), continuing\n", error);
-+	} else {
++	if (error == 0) {
 +		dma_sync(SDHCI_BLOCK, TRUE);
-+		memcpy(&sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
++		memcpy(&verify_sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
++		hs_timing = *(const uint8_t *)(se.dma + DMA_BOUNCE + 185);
++
++		if (verify_sec_count == expected_sec_count && hs_timing == 1) {
++			printf("SANTONI SDHCI: DAT[7:0] 8-bit HS verified "
++			    "(SEC_COUNT %u, HS_TIMING %u)\n",
++			    verify_sec_count, hs_timing);
++			return 0;
++		}
++		printf("SANTONI SDHCI: EXT_CSD mismatch at 8-bit HS (got %u vs %u, HS=%u)\n",
++		    verify_sec_count, expected_sec_count, hs_timing);
++	} else {
++		printf("SANTONI SDHCI: EXT_CSD read failed at 8-bit HS (%d)\n", error);
 +	}
-+	if (sec_count) {
-+		printf("SANTONI SDHCI: eMMC 5.1, %llu MiB (%u x 512-byte sectors)\n",
-+		    (unsigned long long)((uint64_t)sec_count * SDHCI_BLOCK >> 20),
-+		    sec_count);
++
++	/* Fallback 1: Disable Host High-Speed edge mode & revert card HS_TIMING=0 */
++	printf("SANTONI SDHCI: rolling back HS_TIMING to legacy edge at 25 MHz\n");
++	(void)sdhci_switch_ext_csd(EXT_CSD_HS_TIMING, 0, 0, SDHCI_CTRL_HISPD, "HS_TIMING=0");
++
++	dma_sync(SDHCI_BLOCK, TRUE);
++	error = sdhci_read_pio(8, 0, 1, (void *)(se.dma + DMA_BOUNCE));
++	if (error == 0) {
++		dma_sync(SDHCI_BLOCK, TRUE);
++		memcpy(&verify_sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
++		if (verify_sec_count == expected_sec_count) {
++			printf("SANTONI SDHCI: DAT[7:0] 8-bit legacy edge verified (SEC_COUNT %u)\n",
++			    verify_sec_count);
++			return 0;
++		}
 +	}
-+	se.sec_count = sec_count;
-+	return 0;
++
++	/* Fallback 2: Drop from 8-bit to 4-bit bus width */
++	printf("SANTONI SDHCI: rolling back bus width to 4-bit\n");
++	(void)sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_4,
++	    SDHCI_CTRL_4BITBUS, SDHCI_CTRL_BUS_MASK, "BUS_WIDTH=4");
++
++	dma_sync(SDHCI_BLOCK, TRUE);
++	error = sdhci_read_pio(8, 0, 1, (void *)(se.dma + DMA_BOUNCE));
++	if (error == 0) {
++		dma_sync(SDHCI_BLOCK, TRUE);
++		memcpy(&verify_sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
++		if (verify_sec_count == expected_sec_count) {
++			printf("SANTONI SDHCI: 4-bit bus verified (SEC_COUNT %u)\n",
++			    verify_sec_count);
++			return 0;
++		}
++	}
++	return EIO;
 +}
 +
 +static int
@@ -2058,7 +2105,7 @@ new file mode 100644
 +		    se.sec_count);
 +		return EINVAL;
 +	}
-+	return sdhci_read_pio(18, (uint32_t)lba, count, buf);
++	return sdhci_read_pio(count == 1 ? 17 : 18, (uint32_t)lba, count, buf);
 +}
 +
 +static int
@@ -2564,7 +2611,7 @@ new file mode 100644
 +	lck_mtx_lock(&santoni_sdhci_lock);
 +	error = sdhci_take_over();
 +	if (!error) {
-+		error = sdhci_card_check();
++		error = sdhci_verify_highspeed_bus(se.sec_count);
 +	}
 +	if (!error) {
 +		error = santoni_sdhci_find_partition(se.part);

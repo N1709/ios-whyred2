@@ -1,6 +1,48 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## f5146be (2026-10-22, ready to boot): eMMC enumeration and 25 MHz 8-bit high-speed switch
+## Next (2026-10-22, ready to build): CMD17 single-block, CMD18/25 AUTO_CMD12, 8-bit bus verification, remove TRAN-state CMD10
+
+- **State:** Driver updated in `xnu/patches/0142-santoni-sdhci-emmc-driver.patch` and mock synchronized in `tests/test_sdhci_mock.c`. Host tests, unified diff structure, and `STOR-03..STOR-12` pass locally (`tests/run_tests.sh`). Ready for commit, push to `origin santoni`, and GitHub Actions CI build.
+- **Physical Hardware Observation (Boot 4 from `f5146be`, photos `20261022_165014.jpg` & `20261022_165050.jpg`):**
+  - **100% Proven on Real Silicon:**
+    1. `CMD2 (ALL_SEND_CID)` returned raw CID `0x13014e51 0x33345937 0x56100532 0xbc853400`.
+    2. `CMD3 (SET_RELATIVE_ADDR)` assigned RCA 2 (`R1 0x00000500`, transitioned to `STBY`).
+    3. `CMD9 (SEND_CSD)` returned raw CSD `0xd07f0132 0x0f5913ff 0xffffffff 0x92400088`.
+    4. `CMD7 (SELECT_CARD)` transitioned card to `TRAN` (Transfer State).
+    5. `CMD8 (SEND_EXT_CSD)` read 512 bytes via PIO at 400 kHz: `EXT_CSD SEC_COUNT 61071360 (29820 MiB)`!
+    6. GCC `sdcc1_apps_clk` switched cleanly to **25 MHz** (`CFG 0x0000211f`, GPLL0) with `CMD_UPDATE` clearing.
+    7. `CMD6 BUS_WIDTH=8` acknowledged with `R1 0x00000900`, host set to `HOST_CONTROL 0x20` (8-bit).
+    8. `CMD6 HS_TIMING=1` acknowledged with `R1 0x00000900`, host set to `HOST_CONTROL 0x24` (High Speed).
+    9. On-screen banner: `SANTONI SDHCI: enumeration complete: 25 MHz, 8-bit, high-speed`.
+    10. Userspace Mach-O init PID 1 alive and ticking in ramdisk (`rd=md0`).
+  - **The Blocker in Boot 4:**
+    - Immediately following enumeration, probe halted with:
+      `SANTONI SDHCI: command 10 failed (arg 0x00020000, INT_STATUS 0x00010000 cmd-timeout, PRESENT_STATE 0x01f80001, 31666 ns)` followed by `probe failed (5)`.
+    - **Root Cause (Confirmed by Claude & Gemini 4 Argon):**
+      `santoni_sdhci_init()` called obsolete legacy function `sdhci_card_check()`, which issued `CMD10 (SEND_CID)` while card was in `TRAN` state.
+      Per JEDEC JESD84-B51, CMD10 is strictly valid **only in `STBY` (Standby state)**. In `TRAN`, the card ignores CMD10, latches an error, and leaves the controller waiting until timeout (`0x00010000`).
+- **Implementation in this patch:**
+  1. **Eliminated `sdhci_card_check()`**: Obsolete call removed. CID, CSD, and `sec_count` are already retained from enumeration. CID PNM string is decoded and printed during `sdhci_enumerate_card()`.
+  2. **Single-Block vs Multi-Block Transfers (`CMD17` / `CMD18` + `AUTO_CMD12`)**:
+     - Single-block reads (`count == 1`): Strictly issue `CMD17` with `tr_mode = SDHCI_TRNS_READ`. Card transfers 512 bytes + CRC and automatically returns to `TRAN` without requiring CMD12.
+     - Multi-block reads (`count > 1`): Issue `CMD18` with `tr_mode = SDHCI_TRNS_READ | SDHCI_TRNS_BLK_CNT_EN | SDHCI_TRNS_MULTI | SDHCI_TRNS_AUTO_CMD12` (`0x0036`). Qualcomm SDCC v4 automatically issues CMD12 upon block count expiration and delays `SDHCI_INT_DATA_END` (Transfer Complete) until CMD12 R1b response and DAT0 busy release. Prevents open-ended CMD18 streaming hangs during GPT reads.
+     - Single-block writes: `CMD24` with `tr_mode = 0`.
+     - Multi-block writes: `CMD25` with `SDHCI_TRNS_AUTO_CMD12`.
+  3. **8-Bit High-Speed Data Bus Verification (`sdhci_verify_highspeed_bus`)**:
+     - Re-reads EXT_CSD (`CMD8`) at 25 MHz 8-bit High Speed to verify DAT[7:0] data lanes.
+     - Confirms `SEC_COUNT` matches the 1-bit read and `HS_TIMING == 1` (`ext_csd[185] == 1`).
+     - (Does not check write-only `BUS_WIDTH` byte 183 per JEDEC JESD84-B51).
+     - Automated fallback: rolls back `HS_TIMING=0` (legacy edge) if sampling error occurs, then drops to 4-bit bus if upper data lines fail.
+  4. **Error Recovery**: `sdhci_read_response128()` now calls `sdhci_recover()` on error to clear `CMD_INHIBIT`.
+  5. **Unit Tests & Assertions**: Synchronized `tests/test_sdhci_mock.c` and updated `tests/run_tests.sh` with `STOR-12`.
+- **Expected boot markers:**
+  - `SANTONI SDHCI: enumeration complete: 25 MHz, 8-bit, high-speed`
+  - `SANTONI SDHCI: DAT[7:0] 8-bit HS verified (SEC_COUNT 61071360, HS_TIMING 1)`
+  - `SANTONI SDHCI: partition "userdata" ...`
+  - `BSD root: emmcroot0, major ..., minor ...`
+- **Next concrete action:** Push commit to `origin santoni`, monitor GitHub Actions CI, download kernel, package `shim-boot.img`, stage to `/storage/emulated/0/shim-boot.img`, and boot on physical hardware via `fastboot boot`.
+
+## f5146be (2026-10-22, previous): eMMC enumeration and 25 MHz 8-bit high-speed switch
 
 - **State:** Code commit `f5146be` (`fix(04): enumerate eMMC to 25 MHz 8-bit high speed`) pushed to `origin santoni`. Host tests, patch structure and `STOR-03..STOR-11` pass locally. GitHub Actions CI run ID `39768561115` completed with `success`; artifact `xnu-kernel` ID `12421691301`. Downloaded `kernel.development.santoni` (17,316,696 B, SHA256 `78e999f07622ad433cb0aa8a85d14a5d9cf19f9f2bfe6ab8a9a16ff1d5ced4a7`). The new strings (`CMD2 ALL_SEND_CID`, `CMD8 SEND_EXT_CSD`, `BUS_WIDTH=8`, `HS_TIMING=1`, `enumeration complete`, `DAT0 did not release`, `SWITCH_ERROR`) are present. Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `5f9662a7256d860211575923da4c10f3d8c10e8b2a859a78f41d273bfae324dd`). Ready for physical hardware fastboot boot.
 - **User-reported hardware observation (photo `20261022_160539.jpg`, image from

@@ -105,7 +105,6 @@ python3 tools/check_patch.py "$P142" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:#define SANTONI_CARD_RCA' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_send_status(uint32_t rca, uint32_t *r1)' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_cmd(13, rca << 16, 0,' \
-	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_response128(10, se.rca << 16, cid)' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_response128(9, se.rca << 16, csd)' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:out[i] = (lo << 8) | (hi >> 24);' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);' \
@@ -117,9 +116,9 @@ python3 tools/check_patch.py "$P142" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:CMD0 did not complete either: no SDCLK' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:core_wr(CORE_VENDOR_SPEC' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:sdhci_cmd(13, 0, 0,' \
-	--added-lacks 'bsd/dev/santoni_sdhci.c:sdhci_read_response128(10, cid)' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:sdhci_read_response128(10,' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:card is not in transfer state'
-echo "ok   0142 addresses CMD13/CMD9/CMD10 with the RCA and keeps a logged ladder"
+echo "ok   0142 addresses CMD13/CMD9 with RCA and removes illegal TRAN-state CMD10"
 
 echo "== STOR-08: HC datapath clock - vendor MCLK select, DLL CK_OUT_EN,    =="
 echo "==          and status-enable all ones for the polled loop (0142)      =="
@@ -207,6 +206,16 @@ python3 tools/check_patch.py "$P142" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:not downgrading the card bus' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC | SDHCI_CMD_INDEX'
 echo "ok   0142 enumerates READY->TRAN, reads EXT_CSD 1-bit, then switches 25 MHz/8-bit/HS"
+
+echo "== STOR-12: CMD17 single-block, CMD18/25 AUTO_CMD12, and 8-bit bus verification (0142) =="
+python3 tools/check_patch.py "$P142" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_TRNS_AUTO_CMD12   0x0004' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:SDHCI_TRNS_AUTO_CMD12' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_verify_highspeed_bus(uint32_t expected_sec_count)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:error = sdhci_verify_highspeed_bus(se.sec_count);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:return sdhci_read_pio(count == 1 ? 17 : 18, (uint32_t)lba, count, buf);' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:sdhci_card_check(void)'
+echo "ok   0142 uses CMD17 for 1 block, AUTO_CMD12 for multi-block, and verifies 8-bit bus"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).

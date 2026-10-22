@@ -1717,11 +1717,20 @@ sdhci_read_blocks_pio(uint64_t lba, uint32_t count, void *buf)
 	if (count == 0 || count > SDHCI_MAX_BLOCKS || lba > 0xffffffffull) {
 		return EINVAL;
 	}
+	uint8_t cmd = (count == 1) ? 17 : 18;
+	uint16_t tr_mode;
+
 	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
 	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
 
-	int error = sdhci_cmd(18, (uint32_t)lba,
-	    SDHCI_TRNS_MULTI | SDHCI_TRNS_READ | SDHCI_TRNS_BLK_CNT_EN,
+	if (count == 1) {
+		tr_mode = SDHCI_TRNS_READ;
+	} else {
+		tr_mode = SDHCI_TRNS_MULTI | SDHCI_TRNS_READ |
+		    SDHCI_TRNS_BLK_CNT_EN | SDHCI_TRNS_AUTO_CMD12;
+	}
+
+	int error = sdhci_cmd(cmd, (uint32_t)lba, tr_mode,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
 	    SDHCI_CMD_DATA, NULL);
 	if (error) {
@@ -1757,11 +1766,20 @@ sdhci_write_blocks_pio(uint64_t lba, uint32_t count, const void *buf)
 	if (count == 0 || count > SDHCI_MAX_BLOCKS || lba > 0xffffffffull) {
 		return EINVAL;
 	}
+	uint8_t cmd = (count == 1) ? 24 : 25;
+	uint16_t tr_mode;
+
 	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
 	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
 
-	int error = sdhci_cmd(25, (uint32_t)lba,
-	    SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN,
+	if (count == 1) {
+		tr_mode = 0;
+	} else {
+		tr_mode = SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN |
+		    SDHCI_TRNS_AUTO_CMD12;
+	}
+
+	int error = sdhci_cmd(cmd, (uint32_t)lba, tr_mode,
 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
 	    SDHCI_CMD_DATA, NULL);
 	if (error) {
@@ -2412,16 +2430,24 @@ test_read_pio(void)
 	assert(m.blk_count == 3);
 	assert(m.trace[0].cmd == 18);
 	assert(m.trace[0].arg == 2);           /* sector, not byte, addressing */
-	assert(m.trace[0].tr_mode == 0x32);
+	assert(m.trace[0].tr_mode == 0x36);
 	/* CMD18: R1 + CRC + index + data (0x3a) */
 	assert(m.trace[0].word == 0x123a);
 
 	/* Data really came from the addressed card sectors. */
 	assert(memcmp(buf, mock_card + 2 * SDHCI_BLOCK, sizeof(buf)) == 0);
 
-	/* BLK_CNT_EN stops the card itself: no CMD12 on the success path. */
+	/* AUTO_CMD12 / BLK_CNT_EN: no manual CMD12 on success path. */
 	assert(m.cmd_count == 1);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
+
+	/* Single block read uses CMD17 with TRNS_READ (0x10), no AUTO_CMD12 */
+	error = sdhci_read_blocks_pio(5, 1, buf);
+	assert(error == 0);
+	assert(m.trace[1].cmd == 17);
+	assert(m.trace[1].arg == 5);
+	assert(m.trace[1].tr_mode == 0x10);
+	assert(m.cmd_count == 2);
 }
 
 static void
@@ -2441,12 +2467,20 @@ test_write_pio(void)
 
 	assert(m.trace[0].cmd == 25);
 	assert(m.trace[0].arg == 7);
-	assert(m.trace[0].tr_mode == 0x22);     /* MULTI | BLK_CNT_EN, no READ */
+	assert(m.trace[0].tr_mode == 0x26);     /* MULTI | BLK_CNT_EN | AUTO_CMD12 */
 	assert(m.trace[0].word == 0x193a);
 	assert(memcmp(mock_card + 7 * SDHCI_BLOCK, buf, sizeof(buf)) == 0);
-	/* No CMD12 after a successful BLK_CNT_EN transfer. */
+	/* No manual CMD12 after AUTO_CMD12 transfer. */
 	assert(m.cmd_count == 1);
 	assert(hc_rd(SDHCI_INT_STATUS) == 0);
+
+	/* Single block write uses CMD24 with tr_mode 0 */
+	error = sdhci_write_blocks_pio(9, 1, buf);
+	assert(error == 0);
+	assert(m.trace[1].cmd == 24);
+	assert(m.trace[1].arg == 9);
+	assert(m.trace[1].tr_mode == 0x00);
+	assert(m.cmd_count == 2);
 }
 
 static void
