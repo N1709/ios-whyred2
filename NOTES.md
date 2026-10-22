@@ -49,6 +49,40 @@
   `sdcc1_apps_clk`, which needs explicit approval and register definitions
   that are not in this tree.
 
+### GCC fallback facts for SDCC1 (verified 2026-10-22, mainline `gcc-msm8917.c`)
+
+- There is no `gcc-msm8937.c` in this tree: MSM8937 binds to
+  `drivers/clk/qcom/gcc-msm8917.c` (`qcom,gcc-msm8937` ->
+  `gcc_msm8937_desc`); `msm8937_clock_override()` does not touch
+  `sdcc1_apps_clk_src`. DT: `gcc@1800000`, reg `0x01800000+0x80000`;
+  `sdhc_1@7824900`, core clock `GCC_SDCC1_APPS_CLK`.
+- `sdcc1_apps_clk_src.cmd_rcgr = 0x42004`; RCG registers (absolute):
+  CMD `0x01842004` (bit0 UPDATE, bit1 ROOT_EN, bit31 ROOT_OFF),
+  CFG `0x01842008` (DIV[7:0], SRC_SEL[10:8], MODE[13:12]),
+  M `0x0184200C`, N `0x01842010`, D `0x01842014`; branch CBCR
+  `0x01842018` bit0. Parents: XO=0 (19.2 MHz), GPLL0=1 (800 MHz),
+  GPLL4=2 (1152 MHz).
+- Freq table: 144k/400k (XO), 20M/25M/50M/100M/200M (GPLL0), 384M (GPLL4).
+  No 400 MHz entry; HS400's 400 MHz request floors to 384 MHz, so LK's
+  card clock was 192 MHz through the /2 mux and our sel 2 feeds 384 MHz.
+- 400 kHz: M=1, N=~3=0xFC, D=~clamp(4,1,6)=0xFB, CFG=0x2017 (XO,
+  pre_div 23 = 2*12-1, dual edge). Commit with CMD_UPDATE bit0 and poll
+  it clear; gate the SDHCI card clock (`CLOCK_CONTROL=0`) around it.
+  25 MHz: M=1, N=0xFE, D=0xFD, CFG=0x211F (GPLL0, pre_div 31, dual edge).
+- SDHCI 3.0 divider: field=real_div/2; 400 kHz from 384 MHz = field 500 ->
+  `CLOCK_CONTROL 0xF445` (INT_EN|CARD_EN|0xF440). If the field is ignored,
+  the GCC RCG is the only remaining knob.
+- CMD0: BC/no response; resets the card to Idle and 1-bit/legacy (Linux
+  `mmc_init_card` relies on it, "needed for eMMC that are asleep"). RCA
+  becomes 0, so CMD13 on RCA 2 must fail afterwards; only CMD1 works.
+  No card RST_n/PMIC control exists in this driver (sdhci-msm has no
+  card_hw_reset; the DT has no reset-gpios), so a power pulse is a
+  hardware-only last resort, not needed for HS400 -> legacy.
+- Probe order: sel 3 CMD13 (state-preserving, positive is conclusive) ->
+  CMD0 timing at div 0 vs field 500 (tight poll loop: ~0.13 us vs ~130 us;
+  proves the divider without GCC) -> CMD1 R3; then CMD0 -> CMD1 -> CMD2 ->
+  CMD3 -> CMD9 -> CMD7, 1-bit, no EXT_CSD writes.
+
 ## SDHCI review fixes applied to the 0142/0143 rewrite (2026-10-22, previous): BOARD_VAL, restore-controller rung 3, synced mock
 
 - **State:** Committed as `c9787f2` (`fix(04): preserve LK pad supply in 0142/0143 and sync the SDHCI mock`) and pushed to `origin santoni`. Triggered GitHub Actions CI run ID `39734169129`. This change fixes the two blockers from that review and syncs the host test to the code that actually ships. Nothing has been booted on hardware yet - the points below are code-level facts and the test results stated, not hardware observations.
