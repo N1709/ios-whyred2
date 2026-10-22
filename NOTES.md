@@ -2,11 +2,7 @@
 
 ## SDHCI review fixes applied to the 0142/0143 rewrite (2026-10-22, latest): BOARD_VAL, restore-controller rung 3, synced mock
 
-- **State:** `0da5dc8` is still the last commit; `0142` and `0143` carried the
-  working-tree rewrite reviewed today. This change fixes the two blockers from
-  that review and syncs the host test to the code that actually ships. Nothing
-  has been compiled into a kernel or booted yet - the points below are code-level
-  facts and the test results stated, not hardware observations.
+- **State:** Committed as `c9787f2` (`fix(04): preserve LK pad supply in 0142/0143 and sync the SDHCI mock`) and pushed to `origin santoni`. Triggered GitHub Actions CI run ID `39734169129`. This change fixes the two blockers from that review and syncs the host test to the code that actually ships. Nothing has been booted on hardware yet - the points below are code-level facts and the test results stated, not hardware observations.
 - **Blocker 1 (pad supply):** `sdhci_take_over()` and
   `sdhci_restore_controller()` both wrote `CORE_VENDOR_SPEC_POR_VAL`
   (`0xa9c`), which drops LK's `IO_PAD_PWR_SWITCH_EN` (bit 15) and
@@ -45,13 +41,11 @@
 - **Known minor, not fixed:** boot-arg `emmcr=system` walks the GPT for a
   partition named `system` that is not the root and ends in `ENOENT` unless
   `emmcroot=system` is given; it is a usability wart, not a data path.
-- **Next:** commit (trailer `Co-Authored-By: Gemini <noreply@google.com>`) and
-  push so the `xnu` workflow builds `santoni`; then `fastboot boot` the new
-  `shim/out` image and check the takeover log for
-  `board 0x00018a9c`, `POWER_CONTROL 0x0b`, `CLOCK_CONTROL 0x0007` and a CMD13
-  answer on RCA 2. If CMD13 still dies, the next suspect is the LK hand-off
-  state (`CORE_VENDOR_SPEC 0x00358b1c`, MCLK sel 3 / HS400 with dead DLL), not
-  the pad supply.
+- **CI Build & Next Action:**
+  - Commit `c9787f2` pushed to `origin santoni`.
+  - GitHub Actions `xnu` build: Run ID `39734169129`.
+  - Once CI completes green and packages `shim/out/shim-boot.img`, user runs `fastboot boot /storage/emulated/0/shim-boot.img` (`rd=md0`, no `sweetlog=1`).
+  - Expected in boot log: `board 0x00018a9c`, `POWER_CONTROL 0x0b`, `CLOCK_CONTROL 0x0007` and successful CMD13 status response on RCA 2 without inhibit timeout.
 
 ## SDHCI vendor window fix confirmed, CMD0 still inhibited (2026-10-22, previous): missing power + reset-all
 
