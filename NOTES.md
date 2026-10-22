@@ -1,5 +1,74 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## f5146be (2026-10-22, ready to boot): eMMC enumeration and 25 MHz 8-bit high-speed switch
+
+- **State:** Code commit `f5146be` (`fix(04): enumerate eMMC to 25 MHz 8-bit high speed`) pushed to `origin santoni`. Host tests, patch structure and `STOR-03..STOR-11` pass locally. GitHub Actions CI run ID `39768561115` completed with `success`. Downloaded `kernel.development.santoni` (17,300,184 B, SHA256 `78e999f07622ad433cb0aa8a85d14a5d9cf19f9f2bfe6ab8a9a16ff1d5ced4a7`). Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `5f9662a7256d860211575923da4c10f3d8c10e8b2a859a78f41d273bfae324dd`). Ready for physical hardware fastboot boot.
+- **User-reported hardware observation (photo `20261022_160539.jpg`, image from
+  `821d983`):**
+  - Probe Step 0 snapshot and Step 2 400 kHz legacy setup (UHS=0, 1-bit,
+    DLL reset/powered down, `CK_OUT_EN=0`) succeeded.
+  - `CMD5 awake RCA 2` answered `R1 0x00001400`: card state 10 = SLEEP.
+    LK put the card to sleep, and CMD5 woke it.
+  - `CMD0` completed in 148,125 ns at 400 kHz.
+  - `CMD1 attempt 1` OCR `0x00ff8080` (285,937 ns, busy), `attempt 2` OCR
+    `0xc0ff8080` (306,979 ns): bit 31 ready, bit 30 sector addressing.
+  - This proves the UHS=0 feedback-clock fix: the host can now receive.
+- **Implementation in `f5146be`:**
+  - `sdhci_read_response128()` frames R2 as `SDHCI_CMD_RESP_LONG |
+    SDHCI_CMD_CRC`, without `SDHCI_CMD_INDEX`; CMD2/CMD9/CMD10 have no opcode.
+  - `sdhci_enumerate_card()`, called immediately after a ready CMD1:
+    1. CMD2 (arg 0) -> CID, READY -> IDENT.
+    2. CMD3 (RCA 2) -> STBY; `se.rca = 2`.
+    3. CMD9 (RCA 2) -> CSD.
+    4. CMD7 (RCA 2, R1b) -> TRAN.
+    5. CMD8 (arg 0) reads 512-byte EXT_CSD at 400 kHz, 1-bit; refuses to
+       continue if `SEC_COUNT` at offset 212 is zero; stores `se.sec_count`.
+    6. Switches GCC to the 25 MHz entry (GPLL0, M=1 N=0xfe D=0xfd,
+       CFG=0x211f) through `sdhci_gcc_set_apps()`.
+    7. CMD6 `BUS_WIDTH=8` (`0x03b70200`), checks R1 `SWITCH_ERROR`, sets
+       `SDHCI_CTRL_8BITBUS` and clears `SDHCI_CTRL_4BITBUS`.
+    8. CMD6 `HS_TIMING=1` (`0x03b90100`), checks `SWITCH_ERROR`, sets
+       `SDHCI_CTRL_HISPD`.
+  - CMD6 is R1b; the SDHCI core does not wait for DAT0 busy itself.
+    `sdhci_wait_card_ready()` polls `PRESENT_STATE` for DAT0 high and the
+    command/data inhibitors clear (1 s bound), then sends one CMD13 and
+    requires TRAN plus `READY_FOR_DATA`. This is why the host is switched to
+    8-bit/HS immediately after the CMD6 response, before the busy phase ends.
+  - After enumeration `se.enumerated` is set. `sdhci_claim_card()` then uses
+    CMD13 only and fails closed on error; rung 3 refuses the 400 kHz 1-bit
+    restore because the card may still drive eight data bits. This is a
+    deliberate anti-corruption guard, not a recovery path.
+  - Rung 3 now explicitly reprograms GCC to 400 kHz before enabling the clock,
+    instead of inheriting whatever rate was last selected.
+  - `sdhci_card_check()` keeps the enumeration `SEC_COUNT` if its second CMD8
+    read fails, instead of zeroing the device size.
+  - **Card writes:** the two CMD6 writes are the first EXT_CSD configuration
+    writes made by this driver. They do not touch user data. The user
+    explicitly requested this switch.
+- **Expected boot markers:**
+  - `CMD2 ALL_SEND_CID`, `CMD3 SET_RELATIVE_ADDR RCA 2`, `CMD9 SEND_CSD`,
+    `CMD7 SELECT_CARD`, `CMD8 SEND_EXT_CSD`, all at 400 kHz/1-bit.
+  - `EXT_CSD SEC_COUNT <nonzero> (<MiB>)`.
+  - `CLOCK_CONTROL ...` after the 25 MHz switch; GCC `CFG 0x211f`, `M 1`,
+    `N 0xfe`, `D 0xfd`.
+  - `CMD6 BUS_WIDTH=8 (arg 0x03b70200)`, `HOST_CONTROL ... 0x20`,
+    `CMD6 HS_TIMING=1 (arg 0x03b90100)`, `HOST_CONTROL ... 0x24`,
+    `enumeration complete: 25 MHz, 8-bit, high-speed`.
+  - `sdhci_card_check()` CMD13, CID/PNM and `eMMC 5.1, <MiB>` at 25 MHz.
+- **Failure signatures to distinguish:**
+  - CMD2/CMD9 `SDHCI_INT_CMD_INDEX` would mean an R2 index check survived;
+    it should not.
+  - CMD6 `SWITCH_ERROR` leaves `HOST_CONTROL` unchanged and aborts
+    enumeration; the card is still in its old bus/timing mode.
+  - `DAT0 did not release within 1 s` means CMD6 busy never ended or
+    `PRESENT_STATE[20]` is not usable on this core.
+  - A post-enumeration CMD13 failure returns `ENXIO` without downgrading to
+    1-bit; do not "fix" it by re-enabling the legacy rung.
+- **Next concrete action:** wait for CI `39768561115`, download
+  `kernel.development.santoni`, build `shim/out/shim-boot.img`, stage it to
+  `/storage/emulated/0/shim-boot.img`, and have the user boot it with
+  `fastboot boot` and photograph the enumeration log.
+
 ## 821d983 (2026-10-22, ready to boot): UHS=0 fixed feedback clock & CMD1 polling at 400 kHz
 
 - **State:** Commit `821d983` (`fix(04): use UHS=0 feedback clock and poll CMD1 at 400 kHz`) pushed to `origin santoni`.
