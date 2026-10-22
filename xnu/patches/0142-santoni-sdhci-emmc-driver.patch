@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,2636 @@
+@@ -0,0 +1,2637 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -334,6 +334,7 @@ new file mode 100644
 +#define EXT_CSD_CMD_SET_NORMAL  0u
 +#define EXT_CSD_WRITE_BYTE      3u
 +#define EXT_CSD_BUS_WIDTH       183u
++#define EXT_CSD_BUS_WIDTH_4     1u
 +#define EXT_CSD_BUS_WIDTH_8     2u
 +#define EXT_CSD_HS_TIMING       185u
 +#define EXT_CSD_TIMING_HS       1u
@@ -1741,6 +1742,7 @@ new file mode 100644
 +{
 +	uint32_t cid[4] = { 0 }, csd[4] = { 0 };
 +	uint32_t sec_count = 0, r1 = 0;
++	char pnm[7];
 +	int error;
 +
 +	printf("SANTONI SDHCI: enumeration: CMD2 ALL_SEND_CID (R2)\n");
@@ -1774,7 +1776,6 @@ new file mode 100644
 +	printf("SANTONI SDHCI: enumeration: CSD 0x%08x 0x%08x 0x%08x "
 +	    "0x%08x\n", csd[0], csd[1], csd[2], csd[3]);
 +
-+	char pnm[7];
 +	pnm[0] = (char)(cid[0] & 0xff);
 +	pnm[1] = (char)(cid[1] >> 24);
 +	pnm[2] = (char)(cid[1] >> 16);
