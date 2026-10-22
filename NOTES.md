@@ -1,6 +1,6 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## 2026-10-22 (uncommitted at write time): fix EL1 permission fault on `/dev/remmcroot0` reads
+## dff9f18 (2026-10-22): fix EL1 permission fault on `/dev/remmcroot0` reads
 
 - **Symptom:** PID 1 read of `/dev/remmcroot0` panicked in `_memmove` at
   `pc=0xfffffff007b4a978` with `ESR 0x9600004f`, `FAR 0x16df8ee0`,
