@@ -41,10 +41,13 @@
 - **Known minor, not fixed:** boot-arg `emmcr=system` walks the GPT for a
   partition named `system` that is not the root and ends in `ENOENT` unless
   `emmcroot=system` is given; it is a usability wart, not a data path.
-- **CI Build & Next Action:**
+- **CI Build & Artifact State:**
   - Commit `c9787f2` pushed to `origin santoni`.
-  - GitHub Actions `xnu` build: Run ID `39734169129`.
-  - Once CI completes green and packages `shim/out/shim-boot.img`, user runs `fastboot boot /storage/emulated/0/shim-boot.img` (`rd=md0`, no `sweetlog=1`).
+  - GitHub Actions `xnu` build: Run ID `39734169129` succeeded (`completed`, conclusion `success`).
+  - Kernel artifact unpacked: `kernel.development.santoni` 17,300,104 B (SHA256 `0fcaf338210bda3090287784c764d3e12a3029afb6aab6fdba1d3059b18d3c7f`).
+  - Boot image built and staged: `shim/out/shim-boot.img` and `/storage/emulated/0/shim-boot.img` 16,951,296 B (SHA256 `ba8428eab27039ca0c0d9f6ae31a1f7212455d47e38bffc22688008c99d41954`).
+- **Next Hardware Action:**
+  - User boots device via `fastboot boot /storage/emulated/0/shim-boot.img` (`rd=md0`, no `sweetlog=1`).
   - Expected in boot log: `board 0x00018a9c`, `POWER_CONTROL 0x0b`, `CLOCK_CONTROL 0x0007` and successful CMD13 status response on RCA 2 without inhibit timeout.
 
 ## SDHCI vendor window fix confirmed, CMD0 still inhibited (2026-10-22, previous): missing power + reset-all
