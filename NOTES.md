@@ -1,6 +1,17 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## c9787f2 boot (2026-10-22, latest): command path alive, card silent at the inherited HS400 clock
+## 8150832 boot (2026-10-22, ready to boot): SDHCI takeover diagnostic probe & divider timing
+
+- **State:** Committed as `8150832` (`fix(04): implement SDHCI takeover diagnostic probe and sync mock`) and pushed to `origin santoni`. GitHub Actions CI run ID `39740971459` completed with `success`. Downloaded `kernel.development.santoni` (SHA256 `6fe7dd69e0e477247af95ef9e3724886cc952bc5db049f681cc0f64d5c6c72cf`). Assembled `shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (SHA256 `5616cee2d382a9a4d0470ecd98ef6d51453a9d2a71e78e1d967aba49c0897d0f`).
+- **Changes active in this image:**
+  1. Fixed `SDHCI_INT_CMD_*` error macros from bits 23..26 to standard bits 16..19 (`SDHCI_INT_TIMEOUT 0x10000`, `SDHCI_INT_CRC 0x20000`, etc.) so command timeouts are properly decoded and tagged in logs.
+  2. Diagnostic Probe Step 1: Sets `CORE_VENDOR_SPEC_HS400_DIV2_VAL` (`0x18b9c`, MCLK sel 3 = 192/200 MHz) with divider 0 and probes `CMD13 RCA 2`. If the card answers, the 384 MHz over-clock hypothesis is directly confirmed.
+  3. Diagnostic Probe Step 2: Sets `CORE_VENDOR_SPEC_BOARD_VAL` (`0x18a9c`), programs `SDHCI_CLOCK_CONTROL` internal divider field to ~400 kHz (`SDHCI_DIVIDER_400KHZ = 0xf440`), probes `CMD0` and `CMD1` (`0x40FF8080`, R3 short response without CRC).
+  4. Timestamped `CMD0` poll duration measures whether the MSM SDCC1 hardware honors the SDHCI internal clock divider (~130 µs) or ignores it (~0.13 µs).
+  5. Synchronized host unit test `tests/test_sdhci_mock.c` and validated with `tests/run_tests.sh`.
+- **Next concrete action:** User boots `/storage/emulated/0/shim-boot.img` on Redmi 4X via `fastboot boot shim-boot.img` and photographs the on-screen SDHCI probe log.
+
+## c9787f2 boot (2026-10-22, previous): command path alive, card silent at the inherited HS400 clock
 
 - **Hardware observation (photo `20261022_121340.jpg`, Redmi 4X, `c9787f2`):**
   takeover logs `CORE_VENDOR_SPEC 0x00358b1c -> board 0x00018a9c`,
