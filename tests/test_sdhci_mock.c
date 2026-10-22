@@ -104,11 +104,39 @@
 #define SDHCI_CLOCK_INT_STABLE 0x0002u
 #define SDHCI_CLOCK_CARD_EN    0x0004u
 /*
- * SDHCI internal clock divider for ~400 kHz initialization rate.
- * On SDHCI 3.0 (HOST_VERSION 0x4d02), divisor N = 500 yields 400 MHz / (2 * 500) = 400 kHz.
- * 10-bit divider: bits 7:0 (0xf4) in bits 15:8, bits 9:8 (0x01) in bits 7:6.
+ * The SDHCI divider field (CLOCK_CONTROL 15:8 and 7:6) is ignored by this
+ * MSM v4 core. The card rate is the GCC sdcc1_apps_clk_src rate, mapped in
+ * the page at 0x01842000: CMD_RCGR 0x004, CFG_RCGR 0x008, M 0x00c, N 0x010,
+ * D 0x014, CBCR 0x018.
  */
-#define SDHCI_DIVIDER_400KHZ   ((uint16_t)(((500u & 0xff) << 8) | (((500u >> 8) & 3) << 6)))
+#define GCC_SDCC1_APPS_PHYS      0x01842000u
+#define GCC_SDCC1_APPS_SIZE      0x1000u
+#define GCC_SDCC1_APPS_CMD_RCGR  0x004u
+#define GCC_SDCC1_APPS_CFG_RCGR  0x008u
+#define GCC_SDCC1_APPS_M         0x00cu
+#define GCC_SDCC1_APPS_N         0x010u
+#define GCC_SDCC1_APPS_D         0x014u
+#define GCC_SDCC1_APPS_CBCR      0x018u
+
+#define GCC_CMD_UPDATE           0x00000001u
+#define GCC_CMD_ROOT_OFF         0x80000000u
+#define GCC_CFG_DIV_MASK         0x0000001fu
+#define GCC_CFG_SEL_MASK         0x00000700u
+#define GCC_CFG_MODE_MASK        0x00003000u
+#define GCC_CBCR_CLK_OFF         0x80000000u
+
+struct santoni_gcc_rate {
+	const char *name;
+	uint32_t m, n, d;
+	uint32_t cfg;
+};
+
+static const struct santoni_gcc_rate santoni_gcc_rates[] = {
+	{ "400 kHz", 0x01u, 0xfcu, 0xfbu, 0x2017u },
+	{ "25 MHz",  0x01u, 0xfeu, 0xfdu, 0x211fu },
+};
+#define SANTONI_GCC_RATE_400K   0
+#define SANTONI_GCC_RATE_25M    1
 
 /* ------------------------------------------ Qualcomm MSM v4 core registers */
 
@@ -219,6 +247,7 @@ static struct mock {
 	uint16_t reset_value;
 	int hc_mode_write_ignored;      /* HC_MODE_EN never latches */
 	int vendor_spec_hs400_seen;
+	unsigned gcc_updates;           /* CMD_UPDATE writes that self-cleared */
 	/* card model: one eMMC at m.rca, which only answers addressed commands
 	 * whose argument carries that RCA in bits 31:16 */
 	uint32_t rca;
@@ -274,6 +303,44 @@ mock_wr32(uint32_t off, uint32_t val)
 	mock_hc[off + 1] = (uint8_t)(val >> 8);
 	mock_hc[off + 2] = (uint8_t)(val >> 16);
 	mock_hc[off + 3] = (uint8_t)(val >> 24);
+}
+
+/* ------------------------------- GCC sdcc1_apps RCG page (0x01842000) model */
+
+static uint8_t mock_gcc[GCC_SDCC1_APPS_SIZE];
+
+static uint32_t
+mock_gcc_rd32(uint32_t off)
+{
+	return (uint32_t)mock_gcc[off] | ((uint32_t)mock_gcc[off + 1] << 8) |
+	    ((uint32_t)mock_gcc[off + 2] << 16) |
+	    ((uint32_t)mock_gcc[off + 3] << 24);
+}
+
+static void
+mock_gcc_wr32(uint32_t off, uint32_t val)
+{
+	mock_gcc[off] = (uint8_t)val;
+	mock_gcc[off + 1] = (uint8_t)(val >> 8);
+	mock_gcc[off + 2] = (uint8_t)(val >> 16);
+	mock_gcc[off + 3] = (uint8_t)(val >> 24);
+}
+
+static inline uint32_t
+gcc_rd(uint32_t off)
+{
+	return mock_gcc_rd32(off);
+}
+
+/* CMD_UPDATE is write-1 and self-clears when the RCG has retimed. */
+static inline void
+gcc_wr(uint32_t off, uint32_t val)
+{
+	mock_gcc_wr32(off, val);
+	if (off == GCC_SDCC1_APPS_CMD_RCGR && (val & GCC_CMD_UPDATE)) {
+		mock_gcc_wr32(off, mock_gcc_rd32(off) & ~GCC_CMD_UPDATE);
+		m.gcc_updates++;
+	}
 }
 
 /* Load the current block of the fake card into the FIFO model. */
@@ -880,6 +947,47 @@ sdhci_enable_card_clock(void)
 	return 0;
 }
 
+/*
+ * Program sdcc1_apps_clk_src exactly like the driver: close the HC gate,
+ * stage M/N/D, RMW CFG (bit 20 preserved), UPDATE and poll, re-enable the
+ * card clock at divider 0. The branch/AHB gates are never written.
+ */
+static int
+sdhci_gcc_set_apps(const struct santoni_gcc_rate *r)
+{
+	uint32_t cmd, cfg, cbcr;
+	uint64_t deadline;
+
+	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
+	host_delay_us(1);
+
+	cmd = gcc_rd(GCC_SDCC1_APPS_CMD_RCGR);
+	cfg = gcc_rd(GCC_SDCC1_APPS_CFG_RCGR);
+	cbcr = gcc_rd(GCC_SDCC1_APPS_CBCR);
+	if ((cmd & GCC_CMD_ROOT_OFF) || (cbcr & GCC_CBCR_CLK_OFF)) {
+		return ENXIO;
+	}
+
+	gcc_wr(GCC_SDCC1_APPS_M, r->m);
+	gcc_wr(GCC_SDCC1_APPS_N, r->n);
+	gcc_wr(GCC_SDCC1_APPS_D, r->d);
+
+	cfg &= ~(GCC_CFG_DIV_MASK | GCC_CFG_SEL_MASK | GCC_CFG_MODE_MASK);
+	cfg |= r->cfg;
+	gcc_wr(GCC_SDCC1_APPS_CFG_RCGR, cfg);
+	(void)gcc_rd(GCC_SDCC1_APPS_CFG_RCGR);
+
+	gcc_wr(GCC_SDCC1_APPS_CMD_RCGR, cmd | GCC_CMD_UPDATE);
+	deadline = host_now_ns() + 500000ull;   /* 500 us */
+	while (gcc_rd(GCC_SDCC1_APPS_CMD_RCGR) & GCC_CMD_UPDATE) {
+		if (host_now_ns() > deadline) {
+			return ETIMEDOUT;
+		}
+		host_delay_us(1);
+	}
+	return sdhci_enable_card_clock();
+}
+
 static int sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
     uint32_t *resp);
 static int sdhci_recover(void);
@@ -960,23 +1068,15 @@ sdhci_take_over(void)
 	}
 
 	/*
-	 * Probe Step 2: Write CORE_VENDOR_SPEC_BOARD_VAL and program the SDHCI
-	 * internal clock divider in SDHCI_CLOCK_CONTROL to ~400 kHz (divider
-	 * field in bits 15:8). Probe CMD0 followed by CMD1 (arg 0x40FF8080,
-	 * SDHCI_CMD_RESP_SHORT without CRC).
+	 * Probe Step 2: select the free-running MCLK and program the GCC
+	 * sdcc1_apps_clk_src RCG to a real 400 kHz. The SDHCI divider field
+	 * is ignored, so CLOCK_CONTROL stays at divider 0. Probe CMD0 then
+	 * CMD1 (arg 0x40FF8080, SDHCI_CMD_RESP_SHORT without CRC).
 	 */
 	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
-	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
-	hc_wr16(SDHCI_CLOCK_CONTROL, (uint16_t)(SDHCI_DIVIDER_400KHZ | SDHCI_CLOCK_INT_EN));
-	deadline = host_now_ns() + 150000000ull;
-	while (!(hc_rd16(SDHCI_CLOCK_CONTROL) & SDHCI_CLOCK_INT_STABLE)) {
-		if (host_now_ns() > deadline) {
-			break;
-		}
-		host_delay_us(5);
+	if (sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_400K]) != 0) {
+		return ENXIO;
 	}
-	hc_wr16(SDHCI_CLOCK_CONTROL,
-	    (uint16_t)(hc_rd16(SDHCI_CLOCK_CONTROL) | SDHCI_CLOCK_CARD_EN));
 
 	if (sdhci_cmd(0, 0, 0, 0, NULL) != 0) {
 		sdhci_recover();
@@ -1374,6 +1474,12 @@ reset_mock(void)
 	memset(&m, 0, sizeof(m));
 	memset(mock_hc, 0, sizeof(mock_hc));
 	memset(mock_core, 0, sizeof(mock_core));
+	memset(mock_gcc, 0, sizeof(mock_gcc));
+
+	/* LK's GCC sdcc1_apps: GPLL4 / pre_div 5 = 384 MHz, apps branch on.
+	 * The driver must replace this with the 400 kHz entry. */
+	mock_gcc_wr32(GCC_SDCC1_APPS_CFG_RCGR, 0x0205u);
+	mock_gcc_wr32(GCC_SDCC1_APPS_CBCR, 0x00000001u);
 
 	/* LK hand-off: SDCC1 runs through the legacy MCI register set, so HC
 	 * mode is off and the standard window is not decoded yet. The legacy
@@ -1488,11 +1594,20 @@ test_registers(void)
 	assert(SDHCI_INT_CMD_END_BIT == 0x00040000u);
 	assert(SDHCI_INT_CMD_INDEX == 0x00080000u);
 
-	/* HS400 divided clock (MCLK sel 3) and 400 kHz divider constants */
+	/* HS400 divided clock (MCLK sel 3) and the GCC RCG window */
 	assert(CORE_VENDOR_SPEC_HS400_DIV2_VAL == 0x00018b9cu);
 	assert((CORE_VENDOR_SPEC_HS400_DIV2_VAL & CORE_HC_MCLK_SEL_MASK) == (3u << 8));
-	assert(SDHCI_DIVIDER_400KHZ == 0xf440u);
-	assert((SDHCI_DIVIDER_400KHZ & 0xff00) == (0xf4u << 8));
+	assert(GCC_SDCC1_APPS_PHYS == 0x01842000u);
+	assert(GCC_SDCC1_APPS_CMD_RCGR == 0x004u);
+	assert(GCC_SDCC1_APPS_CFG_RCGR == 0x008u);
+	assert(GCC_SDCC1_APPS_M == 0x00cu);
+	assert(GCC_SDCC1_APPS_N == 0x010u);
+	assert(GCC_SDCC1_APPS_D == 0x014u);
+	assert(GCC_SDCC1_APPS_CBCR == 0x018u);
+	assert(GCC_CMD_UPDATE == 0x1u);
+	assert(GCC_CMD_ROOT_OFF == 0x80000000u);
+	assert(santoni_gcc_rates[SANTONI_GCC_RATE_400K].cfg == 0x2017u);
+	assert(santoni_gcc_rates[SANTONI_GCC_RATE_25M].cfg == 0x211fu);
 }
 
 static void
@@ -1511,9 +1626,15 @@ test_take_over(void)
 	/* Power turned on (0x0B = 1.8V + bus on) and acknowledged */
 	assert(hc_rd8(SDHCI_POWER_CONTROL) == SDHCI_POWER_CONTROL_VAL);
 	assert(core_rd(CORE_PWRCTL_CTL) == CORE_PWRCTL_BUS_SUCCESS);
-	/* Clock stabilized, divider programmed in bits 15:8, and card clock gated on */
-	assert((mock_rd16(SDHCI_CLOCK_CONTROL) & 0xff00) == (SDHCI_DIVIDER_400KHZ & 0xff00));
+	/* Card clock gated on; the SDHCI divider stays 0 and the GCC RCG now
+	 * holds the 400 kHz entry (M=1, N=0xfc, D=0xfb, CFG=0x2017). */
+	assert((mock_rd16(SDHCI_CLOCK_CONTROL) & 0xffc0u) == 0);
 	assert(mock_rd16(SDHCI_CLOCK_CONTROL) & SDHCI_CLOCK_CARD_EN);
+	assert(gcc_rd(GCC_SDCC1_APPS_CFG_RCGR) == 0x2017u);
+	assert(gcc_rd(GCC_SDCC1_APPS_M) == 0x01u);
+	assert(gcc_rd(GCC_SDCC1_APPS_N) == 0xfcu);
+	assert(gcc_rd(GCC_SDCC1_APPS_D) == 0xfbu);
+	assert(m.gcc_updates == 1);
 	/* Probe step 1 wrote CORE_VENDOR_SPEC_HS400_DIV2_VAL (MCLK sel 3) */
 	assert(m.vendor_spec_hs400_seen == 1);
 	/* Probe ladder issued 3 commands in takeover */
@@ -2031,7 +2152,11 @@ test_diagnostic_probe_ladder(void)
 	assert(m.trace[1].cmd == 0);
 	assert(m.trace[2].cmd == 1);
 	assert(m.trace[2].arg == 0x40ff8080u);
-	assert((mock_rd16(SDHCI_CLOCK_CONTROL) & 0xff00) == (SDHCI_DIVIDER_400KHZ & 0xff00));
+	assert((mock_rd16(SDHCI_CLOCK_CONTROL) & 0xffc0u) == 0);
+	assert(gcc_rd(GCC_SDCC1_APPS_CFG_RCGR) == 0x2017u);
+	assert(gcc_rd(GCC_SDCC1_APPS_M) == 0x01u);
+	assert(gcc_rd(GCC_SDCC1_APPS_N) == 0xfcu);
+	assert(gcc_rd(GCC_SDCC1_APPS_D) == 0xfbu);
 	assert(hc_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_BOARD_VAL);
 
 	/* Step 1 failing with timeout (card silent on 200 MHz): recovers and runs Step 2 */
@@ -2044,7 +2169,8 @@ test_diagnostic_probe_ladder(void)
 	assert(m.trace[1].cmd == 12);           /* sdhci_recover sends CMD12 */
 	assert(m.trace[2].cmd == 0);
 	assert(m.trace[3].cmd == 1);
-	assert((mock_rd16(SDHCI_CLOCK_CONTROL) & 0xff00) == (SDHCI_DIVIDER_400KHZ & 0xff00));
+	assert((mock_rd16(SDHCI_CLOCK_CONTROL) & 0xffc0u) == 0);
+	assert(gcc_rd(GCC_SDCC1_APPS_CFG_RCGR) == 0x2017u);
 	assert(hc_rd(CORE_VENDOR_SPEC) == CORE_VENDOR_SPEC_BOARD_VAL);
 }
 

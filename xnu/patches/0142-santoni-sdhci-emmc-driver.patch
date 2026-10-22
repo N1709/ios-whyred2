@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,1939 @@
+@@ -0,0 +1,2109 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -129,11 +129,11 @@ new file mode 100644
 +#define SDHCI_CLOCK_INT_STABLE  0x0002
 +#define SDHCI_CLOCK_CARD_EN     0x0004
 +/*
-+ * SDHCI internal clock divider for ~400 kHz initialization rate.
-+ * On SDHCI 3.0 (HOST_VERSION 0x4d02), divisor N = 500 yields 400 MHz / (2 * 500) = 400 kHz.
-+ * 10-bit divider: bits 7:0 (0xf4) in bits 15:8, bits 9:8 (0x01) in bits 7:6.
++ * The SDHCI divider field (CLOCK_CONTROL 15:8, plus 7:6 for SDHCI 3.0)
++ * is ignored by this MSM v4 core; the card rate is the GCC
++ * sdcc1_apps_clk_src rate, so the field stays 0 (see
++ * sdhci_gcc_set_apps()).
 + */
-+#define SDHCI_DIVIDER_400KHZ    ((uint16_t)(((500u & 0xff) << 8) | (((500u >> 8) & 3) << 6)))
 +#define SDHCI_POWER_CONTROL     0x29
 +#define SDHCI_SOFTWARE_RESET    0x2f
 +#define SDHCI_INT_STATUS        0x30
@@ -253,6 +253,56 @@ new file mode 100644
 +#define CORE_MCI_POWER          0x000
 +#define CORE_MCI_CLK            0x004
 +
++/* ---------------------------------------------------- GCC SDCC1 apps clock */
++/*
++ * sdcc1_apps_clk_src is a Qualcomm RCG in the GCC block (DT gcc@1800000,
++ * reg 0x01800000+0x80000; msm8937.dtsi). Only the 4 KiB page holding this
++ * RCG is mapped: CMD_RCGR 0x01842004 -> 0x004, CFG_RCGR 0x008, M 0x00c,
++ * N 0x010, D 0x014, CBCR 0x018.
++ *
++ * The apps branch (CBCR bit 0, halt bit 31) and the AHB branch at 0x4201c
++ * were left enabled by LK; only the RCG rate is written. Register layout:
++ *   CMD_RCGR: bit0 UPDATE, bit1 ROOT_EN, bits4-7 DIRTY, bit31 ROOT_OFF
++ *   CFG_RCGR: [4:0] SRC_DIV, [10:8] SRC_SEL, [13:12] MODE
++ *   parents:  XO=0 (19.2 MHz), GPLL0=1 (800 MHz), GPLL4=2 (1152 MHz)
++ */
++#define GCC_SDCC1_APPS_PHYS      0x01842000u
++#define GCC_SDCC1_APPS_SIZE      0x1000u
++#define GCC_SDCC1_APPS_CMD_RCGR  0x004u
++#define GCC_SDCC1_APPS_CFG_RCGR  0x008u
++#define GCC_SDCC1_APPS_M         0x00cu
++#define GCC_SDCC1_APPS_N         0x010u
++#define GCC_SDCC1_APPS_D         0x014u
++#define GCC_SDCC1_APPS_CBCR      0x018u
++
++#define GCC_CMD_UPDATE           0x00000001u
++#define GCC_CMD_ROOT_OFF         0x80000000u
++#define GCC_CFG_DIV_MASK         0x0000001fu
++#define GCC_CFG_SEL_MASK         0x00000700u
++#define GCC_CFG_MODE_MASK        0x00003000u
++#define GCC_CBCR_CLK_OFF         0x80000000u
++
++/*
++ * RCG divider programs, exactly as clk_rcg2_set_rate() encodes them. The
++ * M/N/D registers hold inverted values and SRC_DIV is (2*h - 1):
++ *   400 kHz: XO 19.2 MHz, h=12 -> pre_div 23, m=1, n=4, dual edge
++ *            M=1, N=~(4-1)=0xfc, D=~clamp(4,1,6)=0xfb, CFG=0x2017
++ *   25 MHz:  GPLL0 800 MHz, h=16 -> pre_div 31, m=1, n=2, dual edge
++ *            M=1, N=~(2-1)=0xfe, D=~clamp(2,1,2)=0xfd, CFG=0x211f
++ */
++struct santoni_gcc_rate {
++	const char *name;
++	uint32_t m, n, d;
++	uint32_t cfg;           /* SRC_DIV | SRC_SEL << 8 | MODE << 12 */
++};
++
++static const struct santoni_gcc_rate santoni_gcc_rates[] = {
++	{ "400 kHz", 0x01u, 0xfcu, 0xfbu, 0x2017u },
++	{ "25 MHz",  0x01u, 0xfeu, 0xfdu, 0x211fu },
++};
++#define SANTONI_GCC_RATE_400K   0
++#define SANTONI_GCC_RATE_25M    1
++
 +/*
 + * The relative card address the bootloader assigned in CMD3. Qualcomm LK/ABL
 + * use MMC_RCA 2 (bootloader_lk include/mmc.h), but it is probed, never
@@ -276,8 +326,10 @@ new file mode 100644
 +
 +static struct {
 +	vm_offset_t regs;                       /* core base, HC at +0x900 */
++	vm_offset_t gcc;                        /* GCC sdcc1_apps RCG page */
 +	vm_offset_t dma;                        /* kernel VA of the bounce buffer */
 +	uint64_t dma_pa;
++	uint64_t last_cmd_ns;                   /* duration of the last command */
 +	char part[64];                          /* GPT partition name */
 +	uint64_t first_block, nblocks;          /* root partition, 512-byte sectors */
 +	uint64_t sys_first_block, sys_nblocks;  /* "system" partition, 512-byte sectors */
@@ -345,6 +397,23 @@ new file mode 100644
 +	*(volatile uint32_t *)(se.regs + off) = val;
 +}
 +
++/*
++ * GCC registers are mapped read/write, uncached and outside the SDHCI reset
++ * domain. They are not touched until sdhci_gcc_set_apps() validates the
++ * branch/root state.
++ */
++static inline uint32_t
++gcc_rd(uint32_t off)
++{
++	return *(volatile uint32_t *)(se.gcc + off);
++}
++
++static inline void
++gcc_wr(uint32_t off, uint32_t val)
++{
++	*(volatile uint32_t *)(se.gcc + off) = val;
++}
++
 +/* PIO is CPU-driven, but the bounce buffer is shared with every later user of
 + * this driver; keep it clean/invalidated like the UFS driver does for DMA. */
 +static void
@@ -370,6 +439,20 @@ new file mode 100644
 +}
 +
 +/*
++ * Record how long the command frame took. Probe step 2 uses it to prove the
++ * GCC RCG write reached the card: CMD0 takes ~0.5 us at the inherited
++ * 384 MHz and ~130 us at 400 kHz, independent of whether the card answers.
++ */
++static void
++sdhci_cmd_stamp(uint64_t start)
++{
++	uint64_t ns = 0;
++
++	absolutetime_to_nanoseconds(mach_absolute_time() - start, &ns);
++	se.last_cmd_ns = ns;
++}
++
++/*
 + * Issue one command and wait for Command Complete.
 + *
 + * The status register is cleared before the command is written: the
@@ -383,9 +466,10 @@ new file mode 100644
 +sdhci_cmd(uint8_t index, uint32_t arg, uint16_t tr_mode, uint16_t flags,
 +    uint32_t *resp)
 +{
-+	uint64_t deadline;
++	uint64_t deadline, start;
 +	int error;
 +
++	se.last_cmd_ns = 0;
 +	error = sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,
 +	    CMD_TIMEOUT_NS);
 +	if (error) {
@@ -398,6 +482,7 @@ new file mode 100644
 +	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
 +	hc_wr(SDHCI_ARGUMENT, arg);
 +	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
++	start = mach_absolute_time();
 +	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(index, flags));
 +
 +	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
@@ -406,18 +491,21 @@ new file mode 100644
 +		uint32_t st = hc_rd(SDHCI_INT_STATUS);
 +
 +		if (st & SDHCI_INT_ERR) {
++			sdhci_cmd_stamp(start);
 +			hc_wr(SDHCI_INT_STATUS, st);
 +			printf("SANTONI SDHCI: command %u failed (arg 0x%08x, "
 +			    "INT_STATUS 0x%08x%s%s%s%s, PRESENT_STATE "
-+			    "0x%08x)\n", index, arg, st,
++			    "0x%08x, %llu ns)\n", index, arg, st,
 +			    (st & SDHCI_INT_CMD_TIMEOUT) ? " cmd-timeout" : "",
 +			    (st & SDHCI_INT_CMD_CRC) ? " cmd-crc" : "",
 +			    (st & SDHCI_INT_CMD_END_BIT) ? " cmd-end-bit" : "",
 +			    (st & SDHCI_INT_CMD_INDEX) ? " cmd-index" : "",
-+			    hc_rd(SDHCI_PRESENT_STATE));
++			    hc_rd(SDHCI_PRESENT_STATE),
++			    (unsigned long long)se.last_cmd_ns);
 +			return EIO;
 +		}
 +		if (st & SDHCI_INT_CC) {
++			sdhci_cmd_stamp(start);
 +			hc_wr(SDHCI_INT_STATUS, SDHCI_INT_CC);
 +			if (resp) {
 +				*resp = hc_rd(SDHCI_RESPONSE);
@@ -425,11 +513,13 @@ new file mode 100644
 +			return 0;
 +		}
 +		if (mach_absolute_time() > deadline) {
++			sdhci_cmd_stamp(start);
 +			printf("SANTONI SDHCI: command %u timed out (arg "
 +			    "0x%08x, INT_STATUS 0x%08x, PRESENT_STATE 0x%08x, "
-+			    "CMD_INHIBIT %u)\n", index, arg, st,
++			    "CMD_INHIBIT %u, %llu ns)\n", index, arg, st,
 +			    hc_rd(SDHCI_PRESENT_STATE),
-+			    hc_rd(SDHCI_PRESENT_STATE) & SDHCI_CMD_INHIBIT);
++			    hc_rd(SDHCI_PRESENT_STATE) & SDHCI_CMD_INHIBIT,
++			    (unsigned long long)se.last_cmd_ns);
 +			return ETIMEDOUT;
 +		}
 +		delay(1);
@@ -897,11 +987,12 @@ new file mode 100644
 +}
 +
 +/*
-+ * MSM SDCC v4 has no usable internal divider: sdhci-msm's
-+ * __sdhci_msm_set_clock() writes 0 to CLOCK_CONTROL, reads it back and calls
-+ * sdhci_enable_clk() with the divider field untouched; the card rate is the
-+ * GCC sdcc1_apps_clk rate programmed by msm_set_clock_rate_for_bus_mode()
-+ * through dev_pm_opp_set_rate().
++ * The MSM SDCC v4 core ignores the SDHCI internal divider. The field-500
++ * boot log timed out CMD1 exactly like divider 0, and probe step 2 now
++ * timestamps CMD0 to measure the real rate. The card clock rate is the GCC
++ * sdcc1_apps_clk rate (sdhci-msm programs it through
++ * msm_set_clock_rate_for_bus_mode()/dev_pm_opp_set_rate()), so the SDHCI
++ * divider field stays 0 and sdhci_gcc_set_apps() programs the RCG.
 + *
 + * LK left CLOCK_CONTROL 0x0003: INT_EN | INT_STABLE, divider 0. That is also
 + * the only divider Linux ever writes on this IP, so 0 is preserved.
@@ -942,6 +1033,82 @@ new file mode 100644
 +		return ENXIO;
 +	}
 +	return 0;
++}
++
++/*
++ * Program sdcc1_apps_clk_src. This mirrors clk_rcg2_set_rate() on the table
++ * entry in santoni_gcc_rates: stage M/N/D, write CFG, set CMD_UPDATE and wait
++ * for the hardware to clear it.
++ *
++ * Ordering and safety:
++ *  - the HC card clock gate is closed first, so the transition cannot reach
++ *    the card mid-frame;
++ *  - the GCC branch (CBCR bit 0, halt bit 31) and the AHB branch at 0x4201c
++ *    are never written; LK left them running and only the RCG rate changes;
++ *  - CFG is read-modify-written so bit 20 (HW clk control) and anything else
++ *    LK set is preserved;
++ *  - the RCG is not touched when its root is parked or the apps branch is
++ *    halted;
++ *  - the card clock is re-enabled at divider 0 afterwards.
++ */
++static int
++sdhci_gcc_set_apps(const struct santoni_gcc_rate *r)
++{
++	uint32_t cmd, cfg, cbcr;
++	uint64_t deadline;
++
++	if (se.gcc == 0) {
++		return ENXIO;
++	}
++
++	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
++	delay(1);
++
++	cmd = gcc_rd(GCC_SDCC1_APPS_CMD_RCGR);
++	cfg = gcc_rd(GCC_SDCC1_APPS_CFG_RCGR);
++	cbcr = gcc_rd(GCC_SDCC1_APPS_CBCR);
++	printf("SANTONI SDHCI: GCC sdcc1_apps before: CMD 0x%08x CFG 0x%08x "
++	    "M 0x%02x N 0x%02x D 0x%02x CBCR 0x%08x\n", cmd, cfg,
++	    gcc_rd(GCC_SDCC1_APPS_M) & 0xffu, gcc_rd(GCC_SDCC1_APPS_N) & 0xffu,
++	    gcc_rd(GCC_SDCC1_APPS_D) & 0xffu, cbcr);
++
++	if ((cmd & GCC_CMD_ROOT_OFF) || (cbcr & GCC_CBCR_CLK_OFF)) {
++		printf("SANTONI SDHCI: GCC sdcc1_apps not running "
++		    "(CMD 0x%08x CBCR 0x%08x), not touching it\n", cmd, cbcr);
++		return ENXIO;
++	}
++
++	gcc_wr(GCC_SDCC1_APPS_M, r->m);
++	gcc_wr(GCC_SDCC1_APPS_N, r->n);
++	gcc_wr(GCC_SDCC1_APPS_D, r->d);
++
++	cfg &= ~(GCC_CFG_DIV_MASK | GCC_CFG_SEL_MASK | GCC_CFG_MODE_MASK);
++	cfg |= r->cfg;
++	gcc_wr(GCC_SDCC1_APPS_CFG_RCGR, cfg);
++	(void)gcc_rd(GCC_SDCC1_APPS_CFG_RCGR);  /* posted before UPDATE */
++
++	gcc_wr(GCC_SDCC1_APPS_CMD_RCGR, cmd | GCC_CMD_UPDATE);
++	nanoseconds_to_absolutetime(500ull * NSEC_PER_USEC, &deadline);
++	deadline += mach_absolute_time();
++	while (gcc_rd(GCC_SDCC1_APPS_CMD_RCGR) & GCC_CMD_UPDATE) {
++		if (mach_absolute_time() > deadline) {
++			printf("SANTONI SDHCI: GCC sdcc1_apps update stuck "
++			    "(CMD 0x%08x)\n",
++			    gcc_rd(GCC_SDCC1_APPS_CMD_RCGR));
++			return ETIMEDOUT;
++		}
++		delay(1);
++	}
++
++	printf("SANTONI SDHCI: GCC sdcc1_apps now: CMD 0x%08x CFG 0x%08x "
++	    "M 0x%02x N 0x%02x D 0x%02x (%s)\n",
++	    gcc_rd(GCC_SDCC1_APPS_CMD_RCGR),
++	    gcc_rd(GCC_SDCC1_APPS_CFG_RCGR),
++	    gcc_rd(GCC_SDCC1_APPS_M) & 0xffu,
++	    gcc_rd(GCC_SDCC1_APPS_N) & 0xffu,
++	    gcc_rd(GCC_SDCC1_APPS_D) & 0xffu, r->name);
++
++	return sdhci_enable_card_clock();
 +}
 +
 +static int
@@ -1083,44 +1250,37 @@ new file mode 100644
 +	}
 +
 +	/*
-+	 * Probe Step 2: Write CORE_VENDOR_SPEC_BOARD_VAL and program the SDHCI
-+	 * internal clock divider in SDHCI_CLOCK_CONTROL to ~400 kHz (divider
-+	 * field in bits 15:8). Probe CMD0 followed by CMD1 (arg 0x40FF8080,
-+	 * SDHCI_CMD_RESP_SHORT without CRC).
++	 * Probe Step 2: select the free-running MCLK again and program the GCC
++	 * sdcc1_apps_clk_src RCG to a real 400 kHz. The SDHCI divider field is
++	 * ignored by this core, so CLOCK_CONTROL stays at divider 0. CMD0 is
++	 * timestamped: ~130 us at 400 kHz versus <1 us at the inherited rate is
++	 * the proof that the RCG write reached the card. Then CMD1 (arg
++	 * 0x40FF8080, SDHCI_CMD_RESP_SHORT without CRC).
 +	 */
-+	printf("SANTONI SDHCI: probe step 2: board vendor spec (0x%08x), divider ~400 kHz\n",
-+	    CORE_VENDOR_SPEC_BOARD_VAL);
++	printf("SANTONI SDHCI: probe step 2: board vendor spec (0x%08x), "
++	    "GCC 400 kHz\n", CORE_VENDOR_SPEC_BOARD_VAL);
 +	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
 +
-+	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
-+	hc_wr16(SDHCI_CLOCK_CONTROL, (uint16_t)(SDHCI_DIVIDER_400KHZ | SDHCI_CLOCK_INT_EN));
-+	nanoseconds_to_absolutetime(CLOCK_STABLE_TIMEOUT_NS, &deadline);
-+	deadline += mach_absolute_time();
-+	for (;;) {
-+		uint16_t clk = hc_rd16(SDHCI_CLOCK_CONTROL);
-+		if (clk & SDHCI_CLOCK_INT_STABLE) {
-+			break;
-+		}
-+		if (mach_absolute_time() > deadline) {
-+			printf("SANTONI SDHCI: probe step 2: clock divider not stable (0x%04x)\n", clk);
-+			break;
-+		}
-+		delay(1);
++	error = sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_400K]);
++	if (error) {
++		printf("SANTONI SDHCI: probe step 2: GCC 400 kHz failed (%d)\n",
++		    error);
++		return error;
 +	}
-+	hc_wr16(SDHCI_CLOCK_CONTROL,
-+	    (uint16_t)(hc_rd16(SDHCI_CLOCK_CONTROL) | SDHCI_CLOCK_CARD_EN));
-+	printf("SANTONI SDHCI: probe step 2: CLOCK_CONTROL 0x%04x\n",
-+	    hc_rd16(SDHCI_CLOCK_CONTROL));
++	printf("SANTONI SDHCI: probe step 2: CLOCK_CONTROL 0x%04x "
++	    "(SDHCI divider ignored)\n", hc_rd16(SDHCI_CLOCK_CONTROL));
 +
 +	err0 = sdhci_cmd(0, 0, 0, 0, NULL);
-+	printf("SANTONI SDHCI: probe step 2: CMD0 -> error %d\n", err0);
++	printf("SANTONI SDHCI: probe step 2: CMD0 -> error %d, %llu ns\n",
++	    err0, (unsigned long long)se.last_cmd_ns);
 +	if (err0) {
 +		sdhci_recover();
 +	}
 +
 +	err_cmd1 = sdhci_cmd(1, 0x40FF8080u, 0, SDHCI_CMD_RESP_SHORT, &probe_ocr);
-+	printf("SANTONI SDHCI: probe step 2: CMD1 (0x40FF8080) -> error %d, OCR 0x%08x\n",
-+	    err_cmd1, probe_ocr);
++	printf("SANTONI SDHCI: probe step 2: CMD1 (0x40FF8080) -> error %d, "
++	    "OCR 0x%08x, %llu ns\n", err_cmd1, probe_ocr,
++	    (unsigned long long)se.last_cmd_ns);
 +	if (err_cmd1) {
 +		sdhci_recover();
 +	}
@@ -1899,6 +2059,16 @@ new file mode 100644
 +	se.secsize = DEV_BSIZE;
 +
 +	se.regs = ml_io_map(reg[0], reg[1]);
++	/*
++	 * Only the GCC page holding sdcc1_apps_clk_src is needed (CMD_RCGR
++	 * 0x42004 through CBCR 0x42018). Map it separately from the HC window;
++	 * both live in device memory and are accessed uncached.
++	 */
++	se.gcc = ml_io_map(GCC_SDCC1_APPS_PHYS, GCC_SDCC1_APPS_SIZE);
++	if (se.gcc == 0) {
++		printf("SANTONI SDHCI: no mapping for GCC sdcc1_apps\n");
++		return ENXIO;
++	}
 +	if (kmem_alloc_contig(kernel_map, &se.dma, BOUNCE_SIZE, PAGE_MASK, 0, 0,
 +	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) !=
 +	    KERN_SUCCESS) {
