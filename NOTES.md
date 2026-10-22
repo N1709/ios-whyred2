@@ -35,7 +35,9 @@
   through block/VFS I/O and has the same fix pending.
 - **Tests:** `tests/run_tests.sh` gained `STOR-13` (asserts `uiomove`, the
   private bounce, `copyin`/`copyout` in `strategy`, and no `return physio(`).
-  Full host suite passes. Not yet booted on hardware.
+  Full host suite passes.
+- **CI Build & Staging:** GitHub Actions CI run ID `39787345261` completed with `success`; artifact `xnu-kernel` ID `12429203484`. Downloaded `kernel.development.santoni` (17,316,736 B, SHA256 `ba898aaf8b9768bc9d2c7558f7edd6505b1b8eb798a96bdd15186c71b6ec59d4`). Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `9c0d332ee30336a054443d71e28bbba193803eb6499d9e99c6e2a3d4b31d906c`).
+- **Next concrete action:** Boot `/storage/emulated/0/shim-boot.img` via `fastboot boot /storage/emulated/0/shim-boot.img`. Verify that PID 1 completes the `/dev/remmcroot0` read without panic and continues ticking alive.
 
 ## cfe2056 (2026-10-22, ready to boot): CMD17 single-block, CMD18/25 AUTO_CMD12, 8-bit bus verification, remove TRAN-state CMD10
 
