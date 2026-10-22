@@ -5,11 +5,11 @@
 - **State:** Commit `821d983` (`fix(04): use UHS=0 feedback clock and poll CMD1 at 400 kHz`) pushed to `origin santoni`.
   GitHub Actions CI run ID `39759294405` completed with `success`.
   Downloaded `kernel.development.santoni` (17,300,184 B, SHA256 `adbf8ce578e66921d795b7f6cc9ae48bfec5d27661742a5dff3fd1af25c9da3b`).
-  Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `97b7b42ab68639a60f73b7b1ff49055c9e736738b082034702abf935d7e803e9`).
+  Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `aafb56b225a45372aef639d505d7b575402c864f7ddb9c0bb7e4065fd9834970`; `mkadt.py` seeds each build, so this hash is per-build, not a content identity of the kernel).
 - **Hardware observation (photo `20261022_135131.jpg`, image from `b6a8788`):**
   - Reprogrammed GCC RCG from `0x00000205` (384 MHz) to `0x00002017` (400 kHz), and `CMD_UPDATE` cleared cleanly.
   - Nanosecond hardware telemetry proved real 400 kHz clock operational on silicon: `CMD0` completed in **146,562 ns** (~146.5 µs, exactly 48 bits at 400 kHz).
-  - However, `CMD1` (`0x40FF8080`) failed with `cmd-timeout` (`INT_STATUS 0x00018000`) after 373,750 ns (64 clock cycles).
+  - However, `CMD1` (`0x40FF8080`) failed with `cmd-timeout` (`INT_STATUS 0x00018000`) after 373,750 ns (~150 clock cycles at 400 kHz).
 - **Root cause analysis (verified against `linux-msm89x7-7.1.3/drivers/mmc/host/sdhci-msm.c` lines 1390–1400):**
   - Qualcomm MSM SDCC v4 hardware requires `HOST_CONTROL2` bits [2:0] (UHS mode select) to be `< 3'b011` (i.e. UHS=0 / legacy SDR12) when clock <= 100 MHz in order to enable the internal fixed feedback clock for response sampling.
   - In `b6a8788`, `HOST_CONTROL2` was left at `0x0003` (SDR104) and `HOST_CONTROL` was at `0x20` (8-bit bus width). Modes >= 3 require the tuned DLL receive path, which was powered down (`0x6000642c`), causing the MSM controller to gate off the response sampling feedback clock.
@@ -17,9 +17,10 @@
 - **Implementation in `821d983`:**
   1. **Probe Step 0 (Pristine LK Snapshot):** `sdhci_snapshot_untouched()` dumps `CORE_HC_MODE`, `MCI_POWER`, `MCI_CLK`, `CORE_VENDOR_SPEC`, `CORE_DLL_CONFIG`, `CORE_DLL_STATUS`, GCC `CMD_RCGR`, `CFG_RCGR`, `M`, `N`, `D`, `CBCR` before any MMIO register writes.
   2. **Standard Window Snapshot:** `sdhci_snapshot_standard("(post-HC-mode, pre-reset)")` dumps the SDHCI standard registers before `RESET_ALL`.
+     - **Why CMD13/CMD5 are not sent in Step 0:** the standard `+0x900` window is not decoded until `HC_MODE_EN`, and LK left the card clock gate closed at 384 MHz with UHS=3 and a dead DLL. A command there would only reproduce the old failure at an illegal rate. The commands run in Step 2 after the clock and receive path are safe.
   3. **Low-Speed Feedback Clock Configuration (`sdhci_set_legacy_host`):**
-     - Clears `HOST_CONTROL2[2:0]` to `0` (UHS mode 0), preserving `VDD_180` (bit 3).
-     - Forces 1-bit bus width (`HOST_CONTROL = 0x00`).
+     - Clears `HOST_CONTROL2[2:0]` to `0` (UHS mode 0), preserving `VDD_180` (bit 3). On this board the hand-off is `0x0003`, so the result is exactly `0x0000`; the bit is preserved in case another hand-off sets it.
+     - Forces 1-bit bus width and clears high-speed/DMA (`HOST_CONTROL 0x20 -> 0x00` here).
      - Resets and powers down DLL (`CORE_DLL_CONFIG |= CORE_DLL_RST | CORE_DLL_PDN`, `CK_OUT_EN = 0`).
   4. **Probe Step 2 Execution (400 kHz):**
      - Sets GCC to 400 kHz via `sdhci_gcc_set_apps()`.
