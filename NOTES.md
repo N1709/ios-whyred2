@@ -1,6 +1,55 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## SDHCI review fixes applied to the 0142/0143 rewrite (2026-10-22, latest): BOARD_VAL, restore-controller rung 3, synced mock
+## c9787f2 boot (2026-10-22, latest): command path alive, card silent at the inherited HS400 clock
+
+- **Hardware observation (photo `20261022_121340.jpg`, Redmi 4X, `c9787f2`):**
+  takeover logs `CORE_VENDOR_SPEC 0x00358b1c -> board 0x00018a9c`,
+  `POWER_CONTROL 0x0b`, `CLOCK_CONTROL 0x0007`, `HOST_CONTROL 0x20`,
+  `HOST_CONTROL2 0x0003`, `TIMEOUT 0x0f`, DLL `0x6000642c` (EN 0, PDN/RST 1).
+  CMD0 completes, so the command shifter is clocked (real progress over the
+  df4395e boot, where CMD0 stuck). All addressed commands (CMD13 RCA 2/1,
+  CMD12, CMD5 RCA 2/1) fail with `INT_STATUS 0x00018000` and
+  `PRESENT_STATE 0x01f80001/0x01f80007` (CMD/DAT lines high, card
+  inserted/stable). Rung 3 changes nothing; final CMD0 completes; probe
+  returns `ENXIO` (6) and the boot continues on the RAM disk.
+- **Decode:** `0x00018000` = bit 15 Error Interrupt + **bit 16 Command
+  Timeout** (Linux `SDHCI_INT_TIMEOUT 0x00010000`, `sdhci.h:182`). This is a
+  no-response timeout, not CRC/end-bit/index. `PRESENT_STATE` bit 24 is the
+  CMD line level (idle high), not a response; bit 0 is CMD_INHIBIT left set
+  by the timed-out command.
+- **Code-level facts (vendor tree, verified):**
+  `msm_get_clock_mult_for_bus_mode()` returns 2 for HS400 at 200 MHz, so LK's
+  HS400 boot programmed GCC `sdcc1_apps_clk` at **400 MHz**;
+  `msm_hc_select_hs400()` selects "the divided clock (free running MCLK/2)"
+  through `VENDOR_SPEC[9:8] = 3`, while every other mode selects free-running
+  MCLK (sel 2). Both paths leave the SDHCI internal divider at 0 (sdhci-msm
+  never programs it: `__sdhci_msm_set_clock()`).
+- **Leading hypothesis (not yet proven):** takeover forces sel 2, so the HC
+  feeds the card the full 400 MHz HS400 GCC rate instead of LK's 200 MHz.
+  At 400 MHz the card cannot decode a frame; CMD0 still completes because it
+  needs no response. If the clock were 200 MHz or lower the card would have
+  answered: command responses do not need the DLL or tuning (tuning is a
+  data-sampling path), so "200 MHz bypass cannot work without the DLL" is
+  false. The secondary inference is that GCC is not low: had LK left 26/52
+  MHz, sel 2 would have worked.
+- **Not supported yet:** "the card lost its RCA and needs CMD1". The timeouts
+  are equally explained by the rate, CMD5 in Transfer state is not a valid
+  command (so those failures carry no information), and RCA 2/1 is still
+  only LK's `MMC_RCA` guess.
+- **Diagnostic bug found:** the driver's `SDHCI_INT_CMD_*` macros are bits
+  23..26 (`0x00800000/0x01000000/0x02000000/0x04000000`), so a real command
+  timeout prints no `cmd-timeout` tag; the real error bits are 16..19
+  (`0x00010000/0x00020000/0x00040000/0x00080000`).
+- **Next (needs approval):** at takeover, probe (1) sel 3 (MCLK/2, 200 MHz)
+  + CMD13 RCA 2; (2) sel 2 + SDHCI divider field 500 (~400 kHz if GCC is 400)
+  + CMD13/CMD5 RCA 2, then CMD0 + CMD1 (R3, no CRC, OCR 0x40FF8080). If CMD1
+  answers, replace the RCA ladder with CMD0 -> CMD1 -> CMD2 -> CMD3 -> CMD9
+  -> CMD7, 1-bit bus, no EXT_CSD writes, then raise the divider to ~25 MHz.
+  If the divider is ignored, the only remaining knob is GCC
+  `sdcc1_apps_clk`, which needs explicit approval and register definitions
+  that are not in this tree.
+
+## SDHCI review fixes applied to the 0142/0143 rewrite (2026-10-22, previous): BOARD_VAL, restore-controller rung 3, synced mock
 
 - **State:** Committed as `c9787f2` (`fix(04): preserve LK pad supply in 0142/0143 and sync the SDHCI mock`) and pushed to `origin santoni`. Triggered GitHub Actions CI run ID `39734169129`. This change fixes the two blockers from that review and syncs the host test to the code that actually ships. Nothing has been booted on hardware yet - the points below are code-level facts and the test results stated, not hardware observations.
 - **Blocker 1 (pad supply):** `sdhci_take_over()` and
