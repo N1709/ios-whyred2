@@ -6,7 +6,10 @@
   400 kHz card clock`) pushed to `origin santoni`. Host tests, patch checker
   and STOR-03..09 pass. CI run ID `39745861536` completed with `success`.
   Downloaded `kernel.development.santoni` (SHA256 `91b971a190ec8585bc139b1599cb57dafd3e2cb69bff58b11cb4dab7f7bd58ba`).
-  Assembled and staged to `/storage/emulated/0/shim-boot.img` (SHA256 `4f99ba6edb9c4981402ccbaeabc9066e6f3b7e845282b619958a190aae64dc09`).
+  Assembled and staged to `/storage/emulated/0/shim-boot.img` (SHA256
+  `2f04cb831ed89dc7c3e6164549677db30aa5d8b5b7876e891d65eb39a7dd8128`;
+  `mkadt.py` writes a random seed, so two builds of the same kernel differ -
+  the SHA is per-build, not a content identity of the kernel).
 - **Hardware observation (photo `20261022_131108.jpg`, image from `99732c5`):**
   - Step 1 (`VENDOR_SPEC` sel 3, HS400 MCLK/2): CMD13 RCA 2 fails with
     `INT_STATUS 0x00018000` (`cmd-timeout`) and `PRESENT_STATE 0x01f80001`
