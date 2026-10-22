@@ -1,5 +1,42 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## 2026-10-22 (uncommitted at write time): fix EL1 permission fault on `/dev/remmcroot0` reads
+
+- **Symptom:** PID 1 read of `/dev/remmcroot0` panicked in `_memmove` at
+  `pc=0xfffffff007b4a978` with `ESR 0x9600004f`, `FAR 0x16df8ee0`,
+  `x0=FAR`, `x2=0x1e0`, `cpsr=0x20600204` (EL1h).
+- **ESR decode:** EC `0x25` = DABT from EL1; DFSC `0x0f` = **permission fault,
+  level 3** (not translation fault `0x07`); WnR=1. The faulting instruction is
+  `stp x12, x13, [x0]` in `_memmove`.
+- **Root cause:** `santoni_sdhci_read()` called `physio()`. `physio()` sets
+  `b_datap` to the raw user VA and `B_PHYS|B_RAW`, but not `B_CLUSTER`;
+  `buf_map()` then returns `b_datap` unchanged. `vslock()` wires the range, but
+  `vm_fault_wire()` enters `vm_fault_internal(change_wiring=TRUE)`, which calls
+  `vm_fault_enter()` with `fault_type=VM_PROT_NONE` while `prot` is still
+  `VM_PROT_WRITE`. The arm pmap therefore maps the page `AP_RORO` with
+  `PP_ATTR_MODFAULT` (expected to be upgraded by the first write from EL0 via
+  `arm_fast_fault()`). A kernel `memcpy()` is an EL1 store with no copyio
+  recovery entry, so `handle_kernel_abort()` resolves the user address against
+  `kernel_map` and panics.
+- **Fix:** the cdev read/write path no longer uses `physio()`. It allocates a
+  private kernel bounce per call (`kmem_alloc`, `BOUNCE_SIZE` cap), reads or
+  writes one chunk through `santoni_sdhci_{read,write}_blocks()` under
+  `santoni_sdhci_lock`, and moves data with `uiomove()` **outside** that lock.
+  `uiomove()` goes through `copyin()`/`copyout()`, which have
+  `COPYIO_RECOVER_RANGE` entries and therefore take the user-pmap fault path.
+  The lock is not held across `uiomove()` because a user fault can page in
+  through the root filesystem and re-enter `strategy()`.
+- **Defence in depth:** `santoni_sdhci_strategy()` still uses `buf_map()` for
+  VFS/UPL buffers, but if `B_PHYS` is set and the mapped address is not a
+  kernel VA, it uses `copyin()`/`copyout()` instead of `memcpy()` and takes the
+  controller lock per hardware operation.
+- **Sweet UFS:** `sweet_ufs.c` has the same latent `physio` + `buf_map` +
+  `memcpy` pattern in its raw cdev path; it was presumably only exercised
+  through block/VFS I/O and has the same fix pending.
+- **Tests:** `tests/run_tests.sh` gained `STOR-13` (asserts `uiomove`, the
+  private bounce, `copyin`/`copyout` in `strategy`, and no `return physio(`).
+  Full host suite passes. Not yet booted on hardware.
+
 ## cfe2056 (2026-10-22, ready to boot): CMD17 single-block, CMD18/25 AUTO_CMD12, 8-bit bus verification, remove TRAN-state CMD10
 
 - **State:** Code commit `cfe2056` pushed to `origin santoni`. Host tests, patch structure and `STOR-03..STOR-12` pass locally. GitHub Actions CI run ID `39776831390` completed with `success`; artifact `xnu-kernel` ID `12424753267`. Downloaded `kernel.development.santoni` (17,316,704 B, SHA256 `ef5caf72136c03e1273d073a03149fe45ae00b76791c804c41a45b1b563154a2`). Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `2b4263aa4cabfb08c40b4d4f5fc7919a5a691ca574e151aafdb0c6dc3563f12e`). Ready for physical hardware fastboot boot.

@@ -217,6 +217,19 @@ python3 tools/check_patch.py "$P142" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:sdhci_card_check(void)'
 echo "ok   0142 uses CMD17 for 1 block, AUTO_CMD12 for multi-block, and verifies 8-bit bus"
 
+echo "== STOR-13: cdev I/O uses uiomove, not physio/user-VA memcpy; B_PHYS ==="
+echo "==          strategy buffers use copyin/copyout (0142)                  =="
+python3 tools/check_patch.py "$P142" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_sdhci_uio(struct uio *uio, bool rd)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:return santoni_sdhci_uio(uio, true);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:kmem_alloc(kernel_map, &bounce, bsize, KMA_DATA,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:error = uiomove(buf + skip, (int)want, uio);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:!santoni_kernel_address(vaddr);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:error = copyout(bounce + skip,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:error = copyin((user_addr_t)(vaddr + done),' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:return physio('
+echo "ok   0142 never hands a user VA to memcpy and keeps the cdev lock off uiomove"
+
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).
 if [ -n "${XNU_SRC:-}" ]; then

@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,2637 @@
+@@ -0,0 +1,2773 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -99,6 +99,8 @@ new file mode 100644
 +#include <sys/errno.h>
 +#include <sys/proc.h>
 +#include <sys/uio.h>
++#include <mach/vm_param.h>
++#include <libkern/copyio.h>
 +#include <miscfs/devfs/devfs.h>
 +#include <kern/locks.h>
 +#include <kern/clock.h>
@@ -2381,6 +2383,17 @@ new file mode 100644
 +	return 0;
 +}
 +
++/*
++ * Is this a kernel VA? buf_map() returns bp->b_datap unchanged for a
++ * non-clustered buffer, so a B_PHYS buffer carries the (user) address that
++ * physio() put there. Kernel VAs live in the high canonical half on arm64.
++ */
++static inline bool
++santoni_kernel_address(caddr_t addr)
++{
++	return (uintptr_t)addr >= VM_MIN_KERNEL_ADDRESS;
++}
++
 +static void
 +santoni_sdhci_strategy(buf_t bp)
 +{
@@ -2390,6 +2403,7 @@ new file mode 100644
 +	uint32_t count = buf_count(bp);
 +	uint64_t part_bytes = se.nblocks * SDHCI_BLOCK;
 +	bool rd = (buf_flags(bp) & B_READ) != 0;
++	bool user;
 +
 +	buf_setresid(bp, count);
 +	if (!rd && !se.writable) {
@@ -2408,7 +2422,19 @@ new file mode 100644
 +		goto done;
 +	}
 +
-+	lck_mtx_lock(&santoni_sdhci_lock);
++	/*
++	 * Normal VFS I/O passes kernel-mapped buffers (or UPL-backed B_CLUSTER
++	 * buffers), for which memcpy() is correct. A B_PHYS buffer without
++	 * B_CLUSTER is different: physio() only vslock()s the pages and leaves
++	 * a raw user VA in b_datap. Such a page can still be mapped read-only
++	 * with PP_ATTR_MODFAULT, so an EL1 store is a permission fault that
++	 * handle_kernel_abort() cannot recover (it looks the address up in
++	 * kernel_map). Use copyin()/copyout() so the copyio recovery entry and
++	 * the user pmap fault path are used instead.
++	 */
++	user = (buf_flags(bp) & B_PHYS) != 0 &&
++	    !santoni_kernel_address(vaddr);
++
 +	for (uint32_t done = 0; done < count;) {
 +		uint64_t pos = off + done;
 +		uint64_t lba = pos / SDHCI_BLOCK;
@@ -2418,20 +2444,39 @@ new file mode 100644
 +		char *bounce = (char *)(se.dma + DMA_BOUNCE);
 +
 +		if (rd) {
++			lck_mtx_lock(&santoni_sdhci_lock);
 +			error = santoni_sdhci_read_blocks(se.first_block + lba,
 +			    blocks, bounce);
++			lck_mtx_unlock(&santoni_sdhci_lock);
 +			if (!error) {
-+				memcpy(vaddr + done, bounce + skip, want);
++				if (user) {
++					error = copyout(bounce + skip,
++					    (user_addr_t)(vaddr + done), want);
++				} else {
++					memcpy(vaddr + done, bounce + skip, want);
++				}
 +			}
 +		} else {
 +			if (skip || (want % SDHCI_BLOCK)) {
++				lck_mtx_lock(&santoni_sdhci_lock);
 +				error = santoni_sdhci_read_blocks(se.first_block + lba,
 +				    blocks, bounce);
++				lck_mtx_unlock(&santoni_sdhci_lock);
++				if (error) {
++					break;
++				}
++			}
++			if (user) {
++				error = copyin((user_addr_t)(vaddr + done),
++				    bounce + skip, want);
++			} else {
++				memcpy(bounce + skip, vaddr + done, want);
 +			}
 +			if (!error) {
-+				memcpy(bounce + skip, vaddr + done, want);
++				lck_mtx_lock(&santoni_sdhci_lock);
 +				error = santoni_sdhci_write_blocks(
 +				    se.first_block + lba, blocks, bounce);
++				lck_mtx_unlock(&santoni_sdhci_lock);
 +			}
 +		}
 +		if (error) {
@@ -2440,7 +2485,6 @@ new file mode 100644
 +		done += want;
 +		buf_setresid(bp, count - done);
 +	}
-+	lck_mtx_unlock(&santoni_sdhci_lock);
 +	buf_unmap(bp);
 +
 +done:
@@ -2516,21 +2560,113 @@ new file mode 100644
 +	       -1;
 +}
 +
++/*
++ * Character-device transfers use a private kernel bounce buffer and
++ * uiomove(), never physio()/buf_map(). physio() only vslock()s the user
++ * range and passes the raw user VA to strategy(); a freshly wired anonymous
++ * page may still be mapped read-only with PP_ATTR_MODFAULT, and the first
++ * store into it from EL1 is a permission fault (ESR DFSC 0x0f). There is no
++ * copyio recovery entry for a plain kernel memcpy(), so handle_kernel_abort()
++ * resolves the address in kernel_map and panics. uiomove() uses copyin()/
++ * copyout(), which have a recovery entry and take the user pmap fault path.
++ *
++ * The controller bounce buffer (se.dma) is shared with strategy() and the log
++ * flusher, so allocate a bounce per call and never hold santoni_sdhci_lock
++ * across uiomove(): a user fault can page in through the root filesystem and
++ * re-enter this driver.
++ */
 +static int
-+santoni_sdhci_read(dev_t dev, struct uio *uio, __unused int ioflag)
++santoni_sdhci_uio(struct uio *uio, bool rd)
 +{
-+	return physio(santoni_sdhci_strategy, NULL, dev, B_READ, minphys, uio,
-+	    (int)se.secsize);
++	uint64_t part_bytes = se.nblocks * SDHCI_BLOCK;
++	vm_offset_t bounce = 0;
++	vm_size_t bsize;
++	int error = 0;
++
++	if (!se.ready) {
++		return ENXIO;
++	}
++	if (uio_resid(uio) <= 0) {
++		return 0;
++	}
++
++	bsize = (vm_size_t)MIN((uint64_t)uio_resid(uio) + SDHCI_BLOCK,
++	    (uint64_t)BOUNCE_SIZE);
++	bsize = roundup(bsize, SDHCI_BLOCK);
++	if (kmem_alloc(kernel_map, &bounce, bsize, KMA_DATA,
++	    VM_KERN_MEMORY_BSD) != KERN_SUCCESS) {
++		return ENOMEM;
++	}
++
++	while (uio_resid(uio) > 0) {
++		off_t uoff = uio_offset(uio);
++		uint64_t pos, left;
++		uint32_t skip, want, blocks;
++		char *buf = (char *)bounce;
++
++		if (uoff < 0 || (uint64_t)uoff >= part_bytes) {
++			break;                  /* EOF: short transfer */
++		}
++		pos = (uint64_t)uoff;
++		left = MIN((uint64_t)uio_resid(uio), part_bytes - pos);
++		skip = (uint32_t)(pos % SDHCI_BLOCK);
++		want = (uint32_t)MIN(left, (uint64_t)(BOUNCE_SIZE - skip));
++		blocks = (skip + want + SDHCI_BLOCK - 1) / SDHCI_BLOCK;
++
++		if (rd) {
++			lck_mtx_lock(&santoni_sdhci_lock);
++			error = santoni_sdhci_read_blocks(se.first_block +
++			    pos / SDHCI_BLOCK, blocks, buf);
++			lck_mtx_unlock(&santoni_sdhci_lock);
++			if (error) {
++				break;
++			}
++			error = uiomove(buf + skip, (int)want, uio);
++		} else {
++			if (!se.writable) {
++				error = EROFS;
++				break;
++			}
++			if (skip || (want % SDHCI_BLOCK)) {
++				lck_mtx_lock(&santoni_sdhci_lock);
++				error = santoni_sdhci_read_blocks(se.first_block +
++				    pos / SDHCI_BLOCK, blocks, buf);
++				lck_mtx_unlock(&santoni_sdhci_lock);
++				if (error) {
++					break;
++				}
++			}
++			error = uiomove(buf + skip, (int)want, uio);
++			if (error) {
++				break;
++			}
++			lck_mtx_lock(&santoni_sdhci_lock);
++			error = santoni_sdhci_write_blocks(se.first_block +
++			    pos / SDHCI_BLOCK, blocks, buf);
++			lck_mtx_unlock(&santoni_sdhci_lock);
++		}
++		if (error) {
++			break;
++		}
++	}
++
++	kmem_free(kernel_map, bounce, bsize);
++	return error;
 +}
 +
 +static int
-+santoni_sdhci_write(dev_t dev, struct uio *uio, __unused int ioflag)
++santoni_sdhci_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	return santoni_sdhci_uio(uio, true);
++}
++
++static int
++santoni_sdhci_write(__unused dev_t dev, struct uio *uio, __unused int ioflag)
 +{
 +	if (!se.writable) {
 +		return EROFS;
 +	}
-+	return physio(santoni_sdhci_strategy, NULL, dev, B_WRITE, minphys, uio,
-+	    (int)se.secsize);
++	return santoni_sdhci_uio(uio, false);
 +}
 +
 +static const struct bdevsw santoni_sdhci_bdevsw = {
