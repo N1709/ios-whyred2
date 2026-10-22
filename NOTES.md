@@ -1,5 +1,50 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
+## b6a8788 (2026-10-22): GCC sdcc1_apps_clk programmed for a real 400 kHz card clock
+
+- **State:** commit `b6a8788` (`fix(04): program GCC sdcc1_apps_clk for a real
+  400 kHz card clock`) pushed to `origin santoni`. Host tests, patch checker
+  and STOR-03..09 pass locally. CI run pending at the time of writing.
+- **Hardware observation (photo `20261022_131108.jpg`, image from `99732c5`):**
+  - Step 1 (`VENDOR_SPEC` sel 3, HS400 MCLK/2): CMD13 RCA 2 fails with
+    `INT_STATUS 0x00018000` (`cmd-timeout`) and `PRESENT_STATE 0x01f80001`
+    (CMD_INHIBIT left set). The error-bit decode from `8150832` works.
+  - Step 2 (`VENDOR_SPEC` board value, `CLOCK_CONTROL 0xF445` = divider field
+    500 + INT_EN/CARD_EN): CMD0 completes (`error 0`), then CMD1 R3
+    (`0x40FF8080`) fails with the same `0x00018000` timeout and
+    `PRESENT_STATE 0x01f80001`.
+  - The same image did **not** print a CMD0 duration, so the divider-ignored
+    conclusion is strongly suggested (400 kHz CMD0 would have left the card
+    able to answer CMD1) but not yet timed. `b6a8788` adds the stamps.
+- **Implementation (`b6a8788`):**
+  - `se.gcc = ml_io_map(0x01842000, 0x1000)`; only the page holding
+    `sdcc1_apps_clk_src` (`CMD_RCGR 0x42004` -> `0x004`, `CFG 0x008`,
+    `M 0x00c`, `N 0x010`, `D 0x014`, `CBCR 0x018`) is mapped. GCC is a
+    separate always-on block; its registers do not need the SDCC apps clock.
+  - `sdhci_gcc_set_apps()` closes the HC card clock (`CLOCK_CONTROL=0`),
+    logs CMD/CFG/M/N/D/CBCR, fails closed if `CMD_ROOT_OFF` (bit31) or
+    `CBCR_CLK_OFF` (bit31) is set, stages M/N/D, RMWs CFG preserving bit20,
+    sets `CMD_UPDATE` (bit0) and polls it clear for 500 us, then re-enables
+    the card clock at divider 0. The branch CBCR (0x42018) and AHB gate
+    (0x4201c) are never written.
+  - RCG entries: 400 kHz `M=1, N=0xfc, D=0xfb, CFG=0x2017` (XO, pre_div 23,
+    dual edge); 25 MHz `M=1, N=0xfe, D=0xfd, CFG=0x211f` (GPLL0, pre_div 31).
+  - Probe step 2 now runs the RCG write, then CMD0 and CMD1, and prints each
+    duration in ns (`sdhci_cmd_stamp()` around the COMMAND write; `delay(1)`
+    is 1 us in XNU, so the poll floor is 1 us).
+  - Mock and STOR-09 updated: GCC model (initial LK CFG `0x0205` = GPLL4,
+    pre_div 5 = 384 MHz), UPDATE self-clear counter, divider-0 and RCG-entry
+    assertions.
+- **Expected next boot:** if the RCG write works and the card is only
+  over-clocked, CMD0 takes ~120 us and CMD1 answers with OCR `0x80ff8080`
+  at ~240 us. If CMD0 is ~1 us, the RCG write did not reach the card (parent
+  mux, branch or wrong page) and the next step is to log the CFG/CBCR after
+  the update and try the 25 MHz entry. If CMD0 is ~120 us but CMD1 still
+  times out, the card is not answering at 400 kHz for a reason other than
+  clock rate; CMD0 timing then rules the clock out.
+- **Next after a successful CMD1:** enumerate (CMD1 -> CMD2 -> CMD3 ->
+  CMD9 -> CMD7, 1-bit, no EXT_CSD writes), then set the 25 MHz entry.
+
 ## 8150832 boot (2026-10-22, ready to boot): SDHCI takeover diagnostic probe & divider timing
 
 - **State:** Committed as `8150832` (`fix(04): implement SDHCI takeover diagnostic probe and sync mock`) and pushed to `origin santoni`. GitHub Actions CI run ID `39740971459` completed with `success`. Downloaded `kernel.development.santoni` (SHA256 `6fe7dd69e0e477247af95ef9e3724886cc952bc5db049f681cc0f64d5c6c72cf`). Assembled `shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (SHA256 `5616cee2d382a9a4d0470ecd98ef6d51453a9d2a71e78e1d967aba49c0897d0f`).
@@ -7,7 +52,8 @@
   1. Fixed `SDHCI_INT_CMD_*` error macros from bits 23..26 to standard bits 16..19 (`SDHCI_INT_TIMEOUT 0x10000`, `SDHCI_INT_CRC 0x20000`, etc.) so command timeouts are properly decoded and tagged in logs.
   2. Diagnostic Probe Step 1: Sets `CORE_VENDOR_SPEC_HS400_DIV2_VAL` (`0x18b9c`, MCLK sel 3 = 192/200 MHz) with divider 0 and probes `CMD13 RCA 2`. If the card answers, the 384 MHz over-clock hypothesis is directly confirmed.
   3. Diagnostic Probe Step 2: Sets `CORE_VENDOR_SPEC_BOARD_VAL` (`0x18a9c`), programs `SDHCI_CLOCK_CONTROL` internal divider field to ~400 kHz (`SDHCI_DIVIDER_400KHZ = 0xf440`), probes `CMD0` and `CMD1` (`0x40FF8080`, R3 short response without CRC).
-  4. Timestamped `CMD0` poll duration measures whether the MSM SDCC1 hardware honors the SDHCI internal clock divider (~130 µs) or ignores it (~0.13 µs).
+  4. The 8150832 image did **not** print a CMD0 duration; `b6a8788` adds the
+     timestamps (`CMD0 -> error %d, %llu ns`) and the GCC RCG write.
   5. Synchronized host unit test `tests/test_sdhci_mock.c` and validated with `tests/run_tests.sh`.
 - **Next concrete action:** User boots `/storage/emulated/0/shim-boot.img` on Redmi 4X via `fastboot boot shim-boot.img` and photographs the on-screen SDHCI probe log.
 
@@ -69,7 +115,7 @@
   `sdhc_1@7824900`, core clock `GCC_SDCC1_APPS_CLK`.
 - `sdcc1_apps_clk_src.cmd_rcgr = 0x42004`; RCG registers (absolute):
   CMD `0x01842004` (bit0 UPDATE, bit1 ROOT_EN, bit31 ROOT_OFF),
-  CFG `0x01842008` (DIV[7:0], SRC_SEL[10:8], MODE[13:12]),
+  CFG `0x01842008` (DIV[4:0], SRC_SEL[10:8], MODE[13:12]),
   M `0x0184200C`, N `0x01842010`, D `0x01842014`; branch CBCR
   `0x01842018` bit0. Parents: XO=0 (19.2 MHz), GPLL0=1 (800 MHz),
   GPLL4=2 (1152 MHz).
