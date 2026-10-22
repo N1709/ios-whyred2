@@ -2,7 +2,7 @@
 
 ## f5146be (2026-10-22, ready to boot): eMMC enumeration and 25 MHz 8-bit high-speed switch
 
-- **State:** Code commit `f5146be` (`fix(04): enumerate eMMC to 25 MHz 8-bit high speed`) pushed to `origin santoni`. Host tests, patch structure and `STOR-03..STOR-11` pass locally. GitHub Actions CI run ID `39768561115` completed with `success`. Downloaded `kernel.development.santoni` (17,300,184 B, SHA256 `78e999f07622ad433cb0aa8a85d14a5d9cf19f9f2bfe6ab8a9a16ff1d5ced4a7`). Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `5f9662a7256d860211575923da4c10f3d8c10e8b2a859a78f41d273bfae324dd`). Ready for physical hardware fastboot boot.
+- **State:** Code commit `f5146be` (`fix(04): enumerate eMMC to 25 MHz 8-bit high speed`) pushed to `origin santoni`. Host tests, patch structure and `STOR-03..STOR-11` pass locally. GitHub Actions CI run ID `39768561115` completed with `success`; artifact `xnu-kernel` ID `12421691301`. Downloaded `kernel.development.santoni` (17,316,696 B, SHA256 `78e999f07622ad433cb0aa8a85d14a5d9cf19f9f2bfe6ab8a9a16ff1d5ced4a7`). The new strings (`CMD2 ALL_SEND_CID`, `CMD8 SEND_EXT_CSD`, `BUS_WIDTH=8`, `HS_TIMING=1`, `enumeration complete`, `DAT0 did not release`, `SWITCH_ERROR`) are present. Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `5f9662a7256d860211575923da4c10f3d8c10e8b2a859a78f41d273bfae324dd`). Ready for physical hardware fastboot boot.
 - **User-reported hardware observation (photo `20261022_160539.jpg`, image from
   `821d983`):**
   - Probe Step 0 snapshot and Step 2 400 kHz legacy setup (UHS=0, 1-bit,
@@ -64,10 +64,14 @@
     `PRESENT_STATE[20]` is not usable on this core.
   - A post-enumeration CMD13 failure returns `ENXIO` without downgrading to
     1-bit; do not "fix" it by re-enabling the legacy rung.
-- **Next concrete action:** wait for CI `39768561115`, download
-  `kernel.development.santoni`, build `shim/out/shim-boot.img`, stage it to
-  `/storage/emulated/0/shim-boot.img`, and have the user boot it with
-  `fastboot boot` and photograph the enumeration log.
+- **Next concrete action:** the new image is already staged at
+  `/storage/emulated/0/shim-boot.img` (SHA256
+  `5f9662a7256d860211575923da4c10f3d8c10e8b2a859a78f41d273bfae324dd`). Boot it
+  with `fastboot boot /storage/emulated/0/shim-boot.img` and photograph the
+  enumeration log. Confirm CMD2 CID, CMD3 RCA 2, CMD9 CSD, CMD7 TRAN, CMD8
+  nonzero SEC_COUNT, GCC 25 MHz (`CFG 0x211f`, M 1, N 0xfe, D 0xfd), both
+  CMD6 writes, and `HOST_CONTROL` ending at `0x24`. If CMD6 fails, do not
+  downgrade the bus; capture the SWITCH_ERROR/DAT0 timeout line.
 
 ## 821d983 (2026-10-22, ready to boot): UHS=0 fixed feedback clock & CMD1 polling at 400 kHz
 
