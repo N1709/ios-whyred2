@@ -1,8 +1,8 @@
 # iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
 
-## Next (2026-10-22, ready to build): CMD17 single-block, CMD18/25 AUTO_CMD12, 8-bit bus verification, remove TRAN-state CMD10
+## cfe2056 (2026-10-22, ready to boot): CMD17 single-block, CMD18/25 AUTO_CMD12, 8-bit bus verification, remove TRAN-state CMD10
 
-- **State:** Driver updated in `xnu/patches/0142-santoni-sdhci-emmc-driver.patch` and mock synchronized in `tests/test_sdhci_mock.c`. Host tests, unified diff structure, and `STOR-03..STOR-12` pass locally (`tests/run_tests.sh`). Ready for commit, push to `origin santoni`, and GitHub Actions CI build.
+- **State:** Code commit `cfe2056` pushed to `origin santoni`. Host tests, patch structure and `STOR-03..STOR-12` pass locally. GitHub Actions CI run ID `39776831390` completed with `success`; artifact `xnu-kernel` ID `12424753267`. Downloaded `kernel.development.santoni` (17,316,704 B, SHA256 `ef5caf72136c03e1273d073a03149fe45ae00b76791c804c41a45b1b563154a2`). Assembled `shim/out/shim-boot.img` and staged to `/storage/emulated/0/shim-boot.img` (16,951,296 B, SHA256 `2b4263aa4cabfb08c40b4d4f5fc7919a5a691ca574e151aafdb0c6dc3563f12e`). Ready for physical hardware fastboot boot.
 - **Physical Hardware Observation (Boot 4 from `f5146be`, photos `20261022_165014.jpg` & `20261022_165050.jpg`):**
   - **100% Proven on Real Silicon:**
     1. `CMD2 (ALL_SEND_CID)` returned raw CID `0x13014e51 0x33345937 0x56100532 0xbc853400`.
@@ -40,7 +40,10 @@
   - `SANTONI SDHCI: DAT[7:0] 8-bit HS verified (SEC_COUNT 61071360, HS_TIMING 1)`
   - `SANTONI SDHCI: partition "userdata" ...`
   - `BSD root: emmcroot0, major ..., minor ...`
-- **Next concrete action:** Push commit to `origin santoni`, monitor GitHub Actions CI, download kernel, package `shim-boot.img`, stage to `/storage/emulated/0/shim-boot.img`, and boot on physical hardware via `fastboot boot`.
+- **Next concrete action:** Boot `/storage/emulated/0/shim-boot.img` on physical hardware via `fastboot boot /storage/emulated/0/shim-boot.img`. Verify on-screen logs for:
+  1. `SANTONI SDHCI: DAT[7:0] 8-bit HS verified (SEC_COUNT 61071360, HS_TIMING 1)`
+  2. GPT header and partition parsing (userdata)
+  3. BSD root mount transition to `emmcroot0`.
 
 ## f5146be (2026-10-22, previous): eMMC enumeration and 25 MHz 8-bit high-speed switch
 
