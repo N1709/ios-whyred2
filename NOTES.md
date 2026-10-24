@@ -36,10 +36,11 @@
   - `loader_test` passed (1080x2340x32 @ 0x9d400000, 16K alignment).
   - `test_sdhci_mock`, `test_gpt_parser`, `test_log_ring` passed all assertions.
   - Staged boot image: `out/shim-boot.img` (159,744 bytes).
+  - GitHub Actions CI run ID `40078069776` initiated on branch `lavender` (job ID `120825643753`).
 - **Next concrete action:**
-  - Push branch `lavender` to GitHub.
-  - Trigger XNU kernel build via GitHub Actions workflow `xnu.yml`.
-  - When user connects device in fastboot mode, test `fastboot boot out/shim-boot.img` and observe on-screen diagnostics.
+  - Monitor CI run `40078069776` completion and download `xnu-kernel` artifact.
+  - Package final combined `shim-boot.img` containing the XNU kernel payload.
+  - When user connects device in fastboot mode, boot via `fastboot boot shim-boot.img`.
 
 # Prior Working Notes (Santoni / Sweet / Topaz)
 
