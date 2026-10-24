@@ -18,7 +18,7 @@ index 94c7552..969c04c 100644
  int
  sweet_cpufreq_max(void)
  {
-+#if defined(ARM64_BOARD_CONFIG_SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 +	/*
 +	 * MSM8937: there is no cpufreq-hw block, so 0xf523000 is never
 +	 * mapped or written. sweetcpufreq has no meaning on this board.
@@ -51,7 +51,7 @@ index 08cdc34..f5830b8 100644
 + * whole topaz engine is compiled out; the battery stays on the static
 + * fallback until a real MSM8937 gauge driver exists.
 + */
-+#if defined(ARM64_BOARD_CONFIG_SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 +int
 +sweet_i2c1_init(void)
 +{
