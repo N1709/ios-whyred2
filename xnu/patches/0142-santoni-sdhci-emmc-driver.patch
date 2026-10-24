@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,2773 @@
+@@ -0,0 +1,2825 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -196,7 +196,33 @@ new file mode 100644
 +#define SDHCI_INT_CMD_END_BIT   0x00040000u
 +#define SDHCI_INT_CMD_INDEX     0x00080000u
 +
-+/* ------------------------------------------ Qualcomm MSM v4 core registers */
++/* ------------------------------------------ Qualcomm MSM core registers */
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define SDHCI_HC_OFFSET         0x000           /* SDCC v5: native Host Controller at 0 */
++#define SDHCI_HOST_VERSION      0xfe
++#define CORE_MCI_VERSION        0x318           /* SDCC v5 core version ID */
++#define CORE_GENERICS           0x320
++#define CORE_HC_MODE            0x78
++#define CORE_PWRCTL_STATUS      0x240
++#define CORE_PWRCTL_MASK        0x244
++#define CORE_PWRCTL_CLEAR       0x248
++#define CORE_PWRCTL_CTL         0x24c
++#define CORE_VENDOR_SPEC        0x20c
++#define CORE_DLL_CONFIG         0x200
++#define CORE_DLL_STATUS         0x208
++#define CORE_MCI_POWER          0x324
++#define CORE_MCI_CLK            0x328
++
++#define GCC_SDCC1_APPS_PHYS      0x00116000u
++#define GCC_SDCC1_APPS_SIZE      0x1000u
++#define GCC_SDCC1_APPS_CMD_RCGR  0x02cu
++#define GCC_SDCC1_APPS_CFG_RCGR  0x030u
++#define GCC_SDCC1_APPS_M         0x034u
++#define GCC_SDCC1_APPS_N         0x038u
++#define GCC_SDCC1_APPS_D         0x03cu
++#define GCC_SDCC1_APPS_CBCR      0x004u
++
++#else
 +#define SDHCI_HC_OFFSET         0x900           /* HC base - core base */
 +#define SDHCI_HOST_VERSION      0xfe
 +#define CORE_MCI_VERSION        0x50            /* read-only core ID */
@@ -289,6 +315,7 @@ new file mode 100644
 +#define GCC_SDCC1_APPS_N         0x010u
 +#define GCC_SDCC1_APPS_D         0x014u
 +#define GCC_SDCC1_APPS_CBCR      0x018u
++#endif
 +
 +#define GCC_CMD_UPDATE           0x00000001u
 +#define GCC_CMD_ROOT_OFF         0x80000000u
@@ -812,6 +839,20 @@ new file mode 100644
 +	uint32_t mci_version = core_rd(CORE_MCI_VERSION);
 +	uint32_t generics = core_rd(CORE_GENERICS);
 +
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++	uint16_t host_version = hc_rd16(SDHCI_HOST_VERSION);
++	if ((mci_version == 0 || mci_version == 0xffffffffu) &&
++	    (host_version == 0 || host_version == 0xffffu)) {
++		printf("SANTONI SDHCI: vendor core does not answer "
++		    "(MCI_VERSION 0x%08x, GENERICS 0x%08x): GCC SDC1 clock "
++		    "branch off or block held in reset\n",
++		    mci_version, generics);
++		return ENXIO;
++	}
++	printf("SANTONI SDHCI: core MCI_VERSION 0x%08x GENERICS 0x%08x (HOST_VERSION 0x%04x)\n",
++	    mci_version, generics, host_version);
++	return 0;
++#else
 +	if (mci_version == 0 || mci_version == 0xffffffffu) {
 +		printf("SANTONI SDHCI: vendor core does not answer "
 +		    "(MCI_VERSION 0x%08x, GENERICS 0x%08x): GCC SDC1 clock "
@@ -822,6 +863,7 @@ new file mode 100644
 +	printf("SANTONI SDHCI: core MCI_VERSION 0x%08x GENERICS 0x%08x\n",
 +	    mci_version, generics);
 +	return 0;
++#endif
 +}
 +
 +/*
@@ -898,6 +940,15 @@ new file mode 100644
 +static int
 +sdhci_enter_hc_mode(void)
 +{
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++	uint16_t host_version = hc_rd16(SDHCI_HOST_VERSION);
++	if (host_version == 0 || host_version == 0xffffu) {
++		printf("SANTONI SDHCI: SDCC v5 HOST_VERSION invalid: 0x%04x\n", host_version);
++		return ENXIO;
++	}
++	printf("SANTONI SDHCI: SDCC v5 in HC mode (HOST_VERSION 0x%04x)\n", host_version);
++	return 0;
++#else
 +	uint32_t hc_mode = core_rd(CORE_HC_MODE);
 +	uint16_t host_version;
 +
@@ -937,6 +988,7 @@ new file mode 100644
 +	printf("SANTONI SDHCI: HC mode enabled (HC_MODE 0x%08x, "
 +	    "HOST_VERSION 0x%04x)\n", hc_mode, hc_rd16(SDHCI_HOST_VERSION));
 +	return 0;
++#endif
 +}
 +
 +/*

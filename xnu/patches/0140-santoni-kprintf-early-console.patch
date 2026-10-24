@@ -6,7 +6,7 @@ index 42362c5..196afcb 100644
  	kernel_startup_initialize_upto(STARTUP_SUB_KPRINTF);
  	kprintf("kprintf initialized\n");
  	sweet_early_mark(20, "kprintf startup complete");
-+#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(SANTONI)
++#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(SANTONI) && !defined(ARM64_BOARD_CONFIG_LAVENDER) && !defined(LAVENDER)
  	if (serial_exists) {
  		sweet_early_disable();
  	}
@@ -22,7 +22,7 @@ index 6928957..27ba2d6 100644
  void
  sweet_early_panic(const char *fmt, va_list *args)
  {
-+#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(SANTONI)
++#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(SANTONI) && !defined(ARM64_BOARD_CONFIG_LAVENDER) && !defined(LAVENDER)
  	if (early_disabled || early_panicking) {
  		return;
  	}
@@ -38,7 +38,7 @@ index 6928957..27ba2d6 100644
  	va_end(copy);
  	sweet_early_putc('\n');
  	__asm__ volatile("dsb sy" ::: "memory");
-+#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER) || defined(LAVENDER)
 +	for (;;) {
 +		__asm__ volatile("wfe");
 +	}
@@ -54,7 +54,7 @@ index 19f27cd..406ed6b 100644
  	.device = SERIAL_SWEET_FBCON
  };
  
-+#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER) || defined(LAVENDER)
 +extern void sweet_early_putc(char c);
 +
 +static void
@@ -104,7 +104,7 @@ index 19f27cd..406ed6b 100644
  static void
  fbcon_probe(void)
  {
-+#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER) || defined(LAVENDER)
 +	register_serial_functions(&santoni_early_serial_functions);
 +	return;
 +#endif

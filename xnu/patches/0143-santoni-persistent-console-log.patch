@@ -154,7 +154,7 @@ index d97cba8..6d1b177 100644
   *             waiting for an interrupt when the hardware device isn't ready
   * @param size The number of characters to print to the console.
   */
-+#if defined(ARM64_BOARD_CONFIG_SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 +extern void santoni_log_append(const char *c, int size);  /* bsd/dev/santoni_sdhci.c */
 +#endif
  #if defined(ARM64_BOARD_CONFIG_SWEET)
@@ -164,11 +164,11 @@ index d97cba8..6d1b177 100644
  {
  	extern int disableConsoleOutput;
  
-+#if defined(ARM64_BOARD_CONFIG_SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 +	santoni_log_append(c, size);
 +#endif
  #if defined(ARM64_BOARD_CONFIG_SWEET)
-+#if !defined(ARM64_BOARD_CONFIG_SANTONI)
++#if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(ARM64_BOARD_CONFIG_LAVENDER)
 +	/* Santoni logs to SYSTEM, not to the Sweet userdata-tail ring. */
  	sweet_log_append(c, size);
 +#endif
