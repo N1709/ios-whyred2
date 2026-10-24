@@ -22,25 +22,28 @@
   - **Power / Reboot / Reset:**
     - `pshold`: `0x010ac000`.
     - `imem` restart reason: `0x146bf65c` (cookie `0x77665500` for bootloader restart).
-  - **Bootloader:** Qualcomm ABL (Android Bootloader, UEFI-based). Standard `fastboot boot` supported.
+  - **Bootloader:** Qualcomm ABL (Android Bootloader, UEFI-based).
+    - Note on `fastboot boot`: Xiaomi MIUI ABL firmware accepts `fastboot boot` over USB (`OKAY`), but stubs out runtime RAM execution. Standalone hardware bring-up on Lavender uses the dedicated `recovery` partition (`fastboot flash recovery out/shim-boot.img` -> `fastboot reboot recovery` / Vol Up + Power), leaving Android OS (`boot`), system, and user data 100% intact.
 
 - **Port Implementation:**
   1. **Core Handoff:** ABL starts execution on Silver core 0 (A53). The shim verifies `ID_AA64MMFR0.TGran16`. Detecting 0, it logs MMFR0/MIDR to the display and invokes PSCI `CPU_ON` (`0xc4000003`) on Gold CPU `0x100` (`secondary_entry`), while the Silver core parks in `wfi`.
   2. **Gold Core Wakeup:** Gold CPU `0x100` executes with full 16KB granule. It sets up GICD (`0x17a00000`), wakes its redistributor (`0x17b00000`), wakes secondary Gold redistributors (0x101..0x103), routes SGIs/PPIs to Group 1, and unmasks VTIMER (INTID 19).
   3. **Display Console:** `shim/console.c` adapted for 32-bit color (`a8r8g8b8`) at `0x9d400000`, 1080x2340 with 3x font scaling for clear readability.
   4. **Device Tree (ADT):** `tools/mkadt.py` updated with 4 Kryo 260 Gold cores (`0x100`..`0x103`), DRAM physical base `0xa0000000` (1 GiB budget), GICv3 (`0x17a00000`/`0x17b00000`), Framebuffer (`0x9d400000`), and SDHCI eMMC controller (`0x0c0c4000`).
-  5. **Packaging:** `shim/build.sh` produces `out/Image` and wraps it via `tools/mkbootimg.py` with SDM660 boot parameters: `--base 0x80000000 --pagesize 4096 --ramdisk_offset 0x01000000 --tags_offset 0x00000100` into `out/shim-boot.img`.
+  5. **Standard ARM64 Image Header:** `shim/start.S` cleaned of legacy 32-bit LK zImage magic (`0x016f2818`) in reserved fields (`res2..res4 = 0`), adhering strictly to ARM64 Linux header specification (`flags = 0xa`).
+  6. **Packaging:** `shim/build.sh` produces `out/Image` and wraps it via `tools/mkbootimg.py` with standard SDM660 boot parameters: `--base 0x00000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 --tags_offset 0x00000100 --pagesize 4096`.
+  7. **Qualcomm Appended DTB:** Extracted matching Lavender board DTB (`qcom,msm-id = <0x13d 0x00>`, `qcom,board-id = <0x20008 0x00>`) into `resources/lavender_dtb.bin` and appended to kernel Image, resolving ABL `EFI_LOAD_ERROR` (`Failed to load/authenticate boot image: Load Error`).
 
 - **Verification:**
   - `bash shim/build.sh` builds cleanly.
   - `loader_test` passed (1080x2340x32 @ 0x9d400000, 16K alignment).
   - `test_sdhci_mock`, `test_gpt_parser`, `test_log_ring` passed all assertions.
-  - Staged boot image: `out/shim-boot.img` (159,744 bytes).
-  - GitHub Actions CI run ID `40078069776` initiated on branch `lavender` (job ID `120825643753`).
-- **Next concrete action:**
-  - Monitor CI run `40078069776` completion and download `xnu-kernel` artifact.
-  - Package final combined `shim-boot.img` containing the XNU kernel payload.
-  - When user connects device in fastboot mode, boot via `fastboot boot shim-boot.img`.
+  - Staged boot image: `out/shim-boot.img` (159,744 bytes diagnostic / 34,242,560 bytes full XNU payload).
+  - GitHub Actions CI run ID `40078069776` completed with success; Mach-O XNU kernel (`kernel.development.santoni`, 17MB) integrated.
+  - Device identified in Fastboot: `2d71cc89`, variant `SDM EMMC`, unlocked `yes`, kernel `uefi`.
+- **Handoff & Next Steps:**
+  - Boot complete iOS kernel image via recovery partition (`fastboot flash recovery out/shim-boot.img && fastboot reboot recovery`).
+  - Monitor screen for transition from splash to Lavender boot shim console, Gold core PSCI bring-up, GICv3 setup, XNU initialization, SDHCI eMMC enumeration, and PID 1 init launch.
 
 # Prior Working Notes (Santoni / Sweet / Topaz)
 

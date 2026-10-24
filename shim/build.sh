@@ -68,13 +68,18 @@ if [ -n "$PAYLOAD" ] && [ -f "out/payload.bin" ]; then
 	python3 -c 'import os,struct,sys; f=open(sys.argv[1],"r+b"); f.seek(16); f.write(struct.pack("<Q", os.path.getsize(sys.argv[1])))' out/Image
 fi
 
+# Append lavender Qualcomm device tree table so Qualcomm ABL finds the DTB at kernel_addr + image_size
+if [ -f ../resources/lavender_dtb.bin ]; then
+	cat ../resources/lavender_dtb.bin >> out/Image
+fi
+
 # Packaging: wrap in boot.img using tools/mkbootimg.py with lavender parameters
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image \
 	--ramdisk "$RAMDISK" \
 	--output out/shim-boot.img \
-	--base 0x80000000 \
-	--kernel_offset 0x00000000 \
+	--base 0x00000000 \
+	--kernel_offset 0x00008000 \
 	--ramdisk_offset 0x01000000 \
 	--tags_offset 0x00000100 \
 	--pagesize 4096 \
