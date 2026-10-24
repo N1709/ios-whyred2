@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the freestanding shim and wrap it in an Android boot.img v0 for MSM8937 (santoni).
+# Build the freestanding shim and wrap it in an Android boot.img for SDM660 (lavender).
 set -euo pipefail
 
 PAYLOAD="${1:-}"
@@ -18,39 +18,36 @@ CFLAGS="-target aarch64-linux-gnu -O2 -ffreestanding -nostdlib -fno-pic -fno-jum
 
 mkdir -p out
 
-for f in start.S shim.c console.c mmu.c fdt.c loader.c gic.c timer.c wdt.c; do
+for f in start.S shim.c console.c mmu.c fdt.c loader.c; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
 done
 
-# The image runs wherever ABL puts it with no relocation pass: only the
-# header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$($READELF -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/gic.o out/timer.o out/wdt.o | grep -c ABS64 || true)
+abs=$($READELF -r out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
 
 $LD -T shim.ld --build-id=none -N \
-	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o out/gic.o out/timer.o out/wdt.o -o out/shim.elf
+	out/start.o out/shim.o out/console.o out/mmu.o out/fdt.o out/loader.o -o out/shim.elf
 
 $OBJCOPY -O binary out/shim.elf out/Image
 
-# Pad to image_size so .bss/stacks exist as zeroed bytes.
 size=$((16#$($NM out/shim.elf | awk '$3=="_end"{print $1}')))
 truncate -s "$size" out/Image
 
 # Build static Mach-O PID 1 init test program
-echo "Building static Mach-O PID 1 init (santoni-init.S)..."
-$CC -target arm64-apple-ios16.0 -c ../tools/santoni-init.S -o out/santoni-init.o
-python3 ../tools/mkinit.py out/santoni-init.o out/init.macho
+echo "Building static Mach-O PID 1 init..."
+$CC -target arm64-apple-ios16.0 -c ../tools/santoni-init.S -o out/lavender-init.o
+python3 ../tools/mkinit.py out/lavender-init.o out/init.macho
 
-# Ramdisk: an xnu payload (tools/mkpayload.py) if given as $1, else an empty
-# newc cpio -> diagnostics.
+# Ramdisk / Payload packaging
 RAMDISK="out/ramdisk.bin"
+CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 lavender"
+
 if [ -n "$PAYLOAD" ]; then
 	magic=$(python3 -c "import sys; f=open(sys.argv[1],'rb'); b=f.read(4); print(b.hex())" "$PAYLOAD" 2>/dev/null || true)
 	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
 		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
-		python3 ../tools/mkadt.py out/santoni.adt
-		CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 santoni"
-		python3 ../tools/mkpayload.py "$PAYLOAD" out/santoni.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
+		python3 ../tools/mkadt.py out/lavender.adt
+		python3 ../tools/mkpayload.py "$PAYLOAD" out/lavender.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
 		RAMDISK="out/payload.bin"
 	else
 		RAMDISK="$PAYLOAD"
@@ -63,35 +60,34 @@ else
 	fi
 fi
 
-# Append Santoni Qualcomm device tree table (29 DTBs including msm8940-xiaomi-santoni)
-# so Qualcomm LK finds the DTB at kernel_addr + image_size
-if [ -f ../resources/santoni_appended_dtbs.bin ]; then
-	cat ../resources/santoni_appended_dtbs.bin >> out/Image
+# Append payload to Image after _end (allows ABL to load payload regardless of ramdisk handling)
+if [ -n "$PAYLOAD" ] && [ -f "out/payload.bin" ]; then
+	align_size=$(( (size + 0xfff) & ~0xfff ))
+	truncate -s "$align_size" out/Image
+	cat out/payload.bin >> out/Image
+	python3 -c 'import os,struct,sys; f=open(sys.argv[1],"r+b"); f.seek(16); f.write(struct.pack("<Q", os.path.getsize(sys.argv[1])))' out/Image
 fi
 
-# Packaging: wrap in boot.img v0 using tools/mkbootimg.py
-CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 santoni"
+# Packaging: wrap in boot.img using tools/mkbootimg.py with lavender parameters
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image \
 	--ramdisk "$RAMDISK" \
 	--output out/shim-boot.img \
 	--base 0x80000000 \
-	--pagesize 2048 \
+	--kernel_offset 0x00000000 \
+	--ramdisk_offset 0x01000000 \
+	--tags_offset 0x00000100 \
+	--pagesize 4096 \
 	--header_version 0 \
 	--cmdline "$CMDLINE"
 
 # Host render of the console layout
 $HOST_CC -O2 -Wall -I. -o out/host_test console.c host_test.c && ./out/host_test
 
-# Host unit test for GICv2 MMIO lifecycle
-$HOST_CC -O2 -Wall -I. -o out/gic_test gic_test.c && ./out/gic_test
-
 # Host unit test for Mach-O segment unroller and boot_args
 $HOST_CC -O2 -Wall -I. -o out/loader_test loader_test.c loader.c && ./out/loader_test
 
-# Phase 4 storage: SDHCI register mock, hardened GPT (CRC32 + SYSTEM log
-# fence) and console log ring, plus unified-diff structure of xnu/patches.
-# Fails the build if any of them regress or a Santoni patch is malformed.
+# Unit tests and patch checks
 HOST_CC="$HOST_CC" OUT_DIR="$PWD/out" bash ../tests/run_tests.sh
 
 ls -l out/Image out/shim-boot.img

@@ -6,9 +6,9 @@ static uint8_t host_fb[FB_H * FB_STRIDE];
 
 int main(void)
 {
-	con_fb = host_fb;
+	con_fb = (volatile uint32_t *)host_fb;
 	con_clear(RED);
-	con_str("SHIM", "santoni bare-metal shim");
+	con_str("SHIM", "lavender bare-metal shim");
 	con_hex("MMFR0", 0x0000000000101122ULL);
 	con_hex2("PSCI", "ver=", 0x10001, "smccc=", 0x10002);
 	con_clear(BLUE);
@@ -19,7 +19,11 @@ int main(void)
 		return 1;
 	fprintf(f, "P6 %d %d 255\n", FB_W, FB_H);
 	for (int y = 0; y < FB_H; y++) {
-		fwrite(host_fb + y * FB_STRIDE, 1, FB_W * 3, f);
+		for (int x = 0; x < FB_W; x++) {
+			uint32_t px = ((uint32_t *)host_fb)[y * (FB_STRIDE / 4) + x];
+			uint8_t rgb[3] = { (uint8_t)((px >> 16) & 0xff), (uint8_t)((px >> 8) & 0xff), (uint8_t)(px & 0xff) };
+			fwrite(rgb, 1, 3, f);
+		}
 	}
 	fclose(f);
 	return 0;

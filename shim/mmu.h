@@ -1,7 +1,7 @@
 #pragma once
 #include <stdint.h>
 
-#define FB_PHYS	0x90001000UL	/* santoni continuous splash framebuffer */
+#define FB_PHYS		0x9d400000UL	/* lavender continuous splash framebuffer */
 
 struct mmu_info {
 	uint64_t img_lo, img_hi, ttbr;

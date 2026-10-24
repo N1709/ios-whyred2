@@ -1,5 +1,5 @@
 /*
- * Host unit test for Mach-O 64-bit segment unroller and boot_args builder.
+ * Host unit test for Mach-O 64-bit segment unroller and boot_args builder for lavender.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -9,7 +9,7 @@
 #include "loader.h"
 
 char _end[4096] __attribute__((aligned(4096)));
-volatile uint8_t *con_fb = NULL;
+volatile uint32_t *con_fb = NULL;
 
 void con_clear(uint32_t bg) { (void)bg; }
 void con_skip(void) {}
@@ -39,7 +39,7 @@ int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out)
 }
 
 #define BOOT_LINE_LENGTH	608
-#define PAGE_4K			0x1000UL
+#define PAGE_16K		0x4000UL
 
 struct payload_seg {
 	uint64_t vmaddr, vmsize, file_off, file_size;
@@ -69,7 +69,7 @@ struct boot_args {
 	uint64_t bootFlags, memSizeActual;
 };
 
-static uint8_t fake_ram[0x20000] __attribute__((aligned(4096)));
+static uint8_t fake_ram[0x40000] __attribute__((aligned(16384)));
 static uint8_t fake_payload[0x10000] __attribute__((aligned(4096)));
 
 int main(void)
@@ -85,17 +85,17 @@ int main(void)
 	p->phys_base = (uintptr_t)fake_ram;
 	p->mem_size = sizeof(fake_ram);
 	p->entry_va = 0xfffffff007000000UL;
-	p->kernel_end = p->virt_base + 0x2000UL;
+	p->kernel_end = p->virt_base + 0x4000UL;
 	p->adt_off = 0x500;
 	p->adt_size = 0x80;
-	snprintf(p->cmdline, sizeof(p->cmdline), "console=null santoni");
+	snprintf(p->cmdline, sizeof(p->cmdline), "console=null lavender");
 
 	p->segs[0].vmaddr = 0xfffffff007000000UL;
-	p->segs[0].vmsize = 0x2000UL;
+	p->segs[0].vmsize = 0x4000UL;
 	p->segs[0].file_off = 0x800;
-	p->segs[0].file_size = 0x1000UL;
+	p->segs[0].file_size = 0x2000UL;
 
-	memset(fake_payload + 0x800, 0xaa, 0x1000);
+	memset(fake_payload + 0x800, 0xaa, 0x2000);
 	memset(fake_payload + 0x500, 0xbb, 0x80);
 
 	mock_rd_start = (uintptr_t)fake_payload;
@@ -106,42 +106,41 @@ int main(void)
 	assert(strcmp(res, "ok") == 0);
 
 	/* Check segment data copied */
-	for (size_t i = 0; i < 0x1000; i++) {
+	for (size_t i = 0; i < 0x2000; i++) {
 		assert(fake_ram[i] == 0xaa);
 	}
 	/* Check zero-fill */
-	for (size_t i = 0x1000; i < 0x2000; i++) {
+	for (size_t i = 0x2000; i < 0x4000; i++) {
 		assert(fake_ram[i] == 0x00);
 	}
 
 	/* Check ADT */
 	for (size_t i = 0; i < 0x80; i++) {
-		assert(fake_ram[0x2000 + i] == 0xbb);
+		assert(fake_ram[0x4000 + i] == 0xbb);
 	}
 
 	/* Check boot_args */
-	uintptr_t adt_pa = (uintptr_t)fake_ram + 0x2000;
-	uintptr_t ba_pa = (adt_pa + 0x80 + PAGE_4K - 1) & ~(PAGE_4K - 1);
-	assert((ba_pa & 0xfff) == 0);
+	uintptr_t adt_pa = (uintptr_t)fake_ram + 0x4000;
+	uintptr_t ba_pa = (adt_pa + 0x80 + PAGE_16K - 1) & ~(PAGE_16K - 1);
+	assert((ba_pa & (PAGE_16K - 1)) == 0);
 
 	struct boot_args *ba = (struct boot_args *)ba_pa;
-	assert(ba->Video.v_depth == 24);
-	assert(ba->Video.v_rowBytes == 2160);
-	assert(ba->Video.v_width == 720);
-	assert(ba->Video.v_height == 1280);
-	assert(ba->Video.v_baseAddr == 0x90001000UL);
-	assert((ba_pa & 0xfff) == 0);
+	assert(ba->Video.v_depth == 32);
+	assert(ba->Video.v_rowBytes == FB_STRIDE);
+	assert(ba->Video.v_width == 1080);
+	assert(ba->Video.v_height == 2340);
+	assert(ba->Video.v_baseAddr == FB_BASE);
 	assert(ba->Revision == 2 && ba->Version == 2);
-	assert(strcmp(ba->CommandLine, "console=null santoni") == 0);
+	assert(strcmp(ba->CommandLine, "console=null lavender") == 0);
 
-	/* Test bounds validation (T-03-07) */
+	/* Test bounds validation */
 	p->nsegs = 33;
 	assert(strcmp(loader_boot(0x1234), "too many segments") == 0);
 	p->nsegs = 1;
 
 	p->segs[0].vmsize = sizeof(fake_ram) + 0x1000;
 	assert(strcmp(loader_boot(0x1234), "segment outside physical memory") == 0);
-	p->segs[0].vmsize = 0x2000UL;
+	p->segs[0].vmsize = 0x4000UL;
 
 	printf("loader_test PASSED\n");
 	return 0;

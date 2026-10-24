@@ -1,4 +1,47 @@
-# iOS 16 on sweet (Redmi Note 10 Pro, SM7150) - working notes
+# iOS 16 on lavender (Redmi Note 7, Qualcomm SDM660) - working notes
+
+## Lavender Bring-up (2026-10-24): initial port and boot configuration
+
+- **Target Hardware Architecture (Redmi Note 7, "lavender"):**
+  - **SoC:** Qualcomm Snapdragon 660 (SDM660).
+  - **CPU Clusters:**
+    - Cluster 0 (Silver): 4x Cortex-A53 / Kryo 260 Silver @ 1.84 GHz (MPIDR 0x000-0x003). Lacks 16KB translation granule (`ID_AA64MMFR0_EL1.TGran16 = 0`).
+    - Cluster 1 (Gold): 4x Cortex-A73 / Kryo 260 Gold @ 2.2 GHz (MPIDR 0x100-0x103). Natively supports 16KB translation granule (`ID_AA64MMFR0_EL1.TGran16 = 1`).
+  - **GIC:** ARM GICv3 (`arm,gic-v3`):
+    - Distributor (GICD): `0x17a00000` (64 KiB)
+    - Redistributors (GICR): `0x17b00000` (1 MiB, 8 PEs, stride 0x20000)
+    - Virtual timer: GIC_PPI 3 = INTID 19 (16 + 3)
+    - Physical timer: GIC_PPI 2 = INTID 18 (16 + 2)
+  - **Display Framebuffer:**
+    - Continuous splash framebuffer left on by stock Xiaomi ABL at `0x9d400000`.
+    - Resolution: 1080 x 2340 pixels, 32-bit `a8r8g8b8`, stride 4320 bytes (1080 * 4).
+  - **Storage:** Internal eMMC 5.1 (`sdhc_1` at `0x0c0c4000`, Qualcomm SDCC v5):
+    - Standard Host Controller registers start directly at offset `0x0000` (no legacy MCI mode shift, `mci_removed = true`).
+    - Vendor space: `CORE_DLL_CONFIG` 0x200, `CORE_VENDOR_SPEC` 0x20c.
+    - Interrupts: GIC SPI 110 (hc_irq).
+  - **Power / Reboot / Reset:**
+    - `pshold`: `0x010ac000`.
+    - `imem` restart reason: `0x146bf65c` (cookie `0x77665500` for bootloader restart).
+  - **Bootloader:** Qualcomm ABL (Android Bootloader, UEFI-based). Standard `fastboot boot` supported.
+
+- **Port Implementation:**
+  1. **Core Handoff:** ABL starts execution on Silver core 0 (A53). The shim verifies `ID_AA64MMFR0.TGran16`. Detecting 0, it logs MMFR0/MIDR to the display and invokes PSCI `CPU_ON` (`0xc4000003`) on Gold CPU `0x100` (`secondary_entry`), while the Silver core parks in `wfi`.
+  2. **Gold Core Wakeup:** Gold CPU `0x100` executes with full 16KB granule. It sets up GICD (`0x17a00000`), wakes its redistributor (`0x17b00000`), wakes secondary Gold redistributors (0x101..0x103), routes SGIs/PPIs to Group 1, and unmasks VTIMER (INTID 19).
+  3. **Display Console:** `shim/console.c` adapted for 32-bit color (`a8r8g8b8`) at `0x9d400000`, 1080x2340 with 3x font scaling for clear readability.
+  4. **Device Tree (ADT):** `tools/mkadt.py` updated with 4 Kryo 260 Gold cores (`0x100`..`0x103`), DRAM physical base `0xa0000000` (1 GiB budget), GICv3 (`0x17a00000`/`0x17b00000`), Framebuffer (`0x9d400000`), and SDHCI eMMC controller (`0x0c0c4000`).
+  5. **Packaging:** `shim/build.sh` produces `out/Image` and wraps it via `tools/mkbootimg.py` with SDM660 boot parameters: `--base 0x80000000 --pagesize 4096 --ramdisk_offset 0x01000000 --tags_offset 0x00000100` into `out/shim-boot.img`.
+
+- **Verification:**
+  - `bash shim/build.sh` builds cleanly.
+  - `loader_test` passed (1080x2340x32 @ 0x9d400000, 16K alignment).
+  - `test_sdhci_mock`, `test_gpt_parser`, `test_log_ring` passed all assertions.
+  - Staged boot image: `out/shim-boot.img` (159,744 bytes).
+- **Next concrete action:**
+  - Push branch `lavender` to GitHub.
+  - Trigger XNU kernel build via GitHub Actions workflow `xnu.yml`.
+  - When user connects device in fastboot mode, test `fastboot boot out/shim-boot.img` and observe on-screen diagnostics.
+
+# Prior Working Notes (Santoni / Sweet / Topaz)
 
 ## dff9f18 (2026-10-22): fix EL1 permission fault on `/dev/remmcroot0` reads
 

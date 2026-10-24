@@ -1,61 +1,44 @@
-# ios-topaz
+# ios-lavender
 
-**Apple's iOS 16 running on a Redmi Note 12 4G.**
+**Apple's iOS 16 running on a Redmi Note 7.**
 
-This is a port of [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) (Apple's open-source XNU kernel, xnu-8796, on a Redmi Note 10 Pro) to the Xiaomi **Redmi Note 12 4G** (`topaz` / `tapas`, Qualcomm **SM6225 "khaje"** / Snapdragon 685). On top of it runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone X**: launchd, the system daemons, backboardd and SpringBoard.
+This is a port of Apple's open-source XNU kernel (xnu-8796) to the Xiaomi **Redmi Note 7** (`lavender`, Qualcomm **SDM660** / Snapdragon 660). On top of it runs the unmodified iOS 16.7.16 (20H392) userland of the iPhone X: launchd, the system daemons, backboardd and SpringBoard.
 
-As of **2026-10-18** the phone boots to the **iOS lock screen** in about 3 minutes, on the four Cortex-A73 cores. Rendering runs entirely on the CPU; there is no GPU driver. Touch is being brought up (see the roadmap); without it the lock screen cannot be unlocked yet.
-
-> Experimental bring-up, not a usable phone OS. Many things are missing or stubbed, and Apple's security model is mostly switched off. It installs into the `userdata` partition and so **erases Android's user data**. Nothing is flashed to the boot partitions; the kernel is started from RAM with `fastboot boot`.
+> Experimental bring-up. It installs into the `userdata` partition and so **erases Android's user data**. Nothing is flashed to the boot partitions; the kernel is started from RAM with `fastboot boot`.
 
 ## What works
 
 | Area | State |
 | --- | --- |
-| Boot | Stock Xiaomi ABL → `fastboot boot` of our shim (boot image v4) → XNU. Boot slots and other OSes on the phone are not touched |
-| CPU | The four Cortex-A73 ("Gold", MPIDR `0x100`–`0x103`) cores, 16K pages, GICv3, timers. The Silver cores are parked (see below) |
-| Memory | The upper DDR bank, `0x1_40000000` + 4 GiB |
-| Storage | UFS host driver (UFS 3.0 at `0x4804000`); the iOS root is a journaled HFS+ volume in `userdata`, read/write |
-| iOS userland | Real iPhone X 16.7.16 root filesystem and shared cache; launchd and the system daemons run |
-| Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); CoreAnimation renders in software into ABL's framebuffer at `0x5c000000` (1080×2400). Presented to iOS as an iPhone X panel |
-| GUI | backboardd, SpringBoard, boot Apple logo, lock screen |
+| Boot | Stock Xiaomi ABL → `fastboot boot` of our shim (boot image v0/v1) → XNU. Boot partitions are not touched |
+| CPU | The four Cortex-A73 ("Gold", MPIDR `0x100`–`0x103`) cores, 16K pages, GICv3, timers. The Silver cores are parked |
+| Memory | DRAM physical base `0x80000000`, safe kernel budget `0xa0000000` + 1 GiB |
+| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110) |
+| iOS userland | iPhone X 16.7.16 root filesystem; launchd and system daemons |
+| Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2340 32-bit `a8r8g8b8`) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
-## What does not work (yet)
+## Hardware architecture & differences
 
-- **Touch and buttons.** The FocalTech FT5452 driver (patch 0083) is written but not yet confirmed on the phone; power/volume keys are not ported.
-- **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS, SEP.** `bluetoothd` and `fairplayd.H2` relaunch constantly because the hardware is missing.
-- **No GPU**, low frame rate (the CPU copies frames to the panel, `sweetfb_hz`).
-- **No real-time clock**: the date starts at 31 December.
-- **Only 4 of 8 cores** (see "Why only the Gold cores").
-- **Security is off**: permissive AMFI and sandbox, stub AppleKeyStore, no data protection.
-
-## How topaz differs from sweet
-
-These are the walls hit during the port; each one stops the boot silently if missed.
-
-| Problem | Fix |
+| Component | Redmi Note 7 (lavender / SDM660) |
 | --- | --- |
-| Xiaomi's topaz ABL ignores boot image v1/v2 and drops the boot v4 ramdisk (it only passes vendor_boot's) | The shim is packed as boot v4 and the XNU payload is appended to the shim's kernel Image after `_end` (`shim/build.sh`, `shim/loader.c`) |
-| ABL starts on a Kryo 260 **Silver** core (Cortex-A53 class, MIDR `0x51AF8014`), which has **no 16K translation granule** (`ID_AA64MMFR0.TGran16 = 0`) | The shim wakes Gold CPU `0x100` with PSCI `CPU_ON`, the Silver core parks in `wfi`, and XNU only ever runs on Gold. The ADT lists the four Gold cores (`tools/mkadt.py`, patch 0082) |
-| The cores are **ARMv8.0**: no LSE atomics, no RCpc (`ldapr`), no PAN. Apple clang keeps its `apple-m1` CPU default under `-arch arm64` even with `-march` | Kernel and `libfirehose_kernel` are built with `-mcpu=cortex-a53`, PAN is off, the commpage PFZ `casa` became an LDAXR/STXR loop (patch 0081, `xnu.yml`) |
-| The iPhone X userland still contains LSE atomics and `ldapr` | They are emulated atomically in `handle_uncategorized` (LDAXR/STLXR on the user address, copyio recovery) (patch 0081) |
-| XNU hangs after `initCPU` on Gold (no SGI / timer interrupt) | The shim prepares the GIC for all Gold cores before the jump: GICD groups, redistributor wake, SGIs/PPIs in Group 1 (`test_gic()` / `gold_gicr_prepare()` in `shim/shim.c`) |
-| Different MMIO map | GIC `0xf200000`/`0xf300000`, UFS `0x4804000`, splash framebuffer `0x5c000000`, PS_HOLD `0x440b000`, IMEM restart reason `0xc12565c`, TLMM tiles WEST `0x500000` / SOUTH `0x900000` / EAST `0xd00000` |
-
-### Why only the Gold cores
-
-XNU for iOS uses 16K pages for the kernel and the userland on every CPU, and the Silver cores cannot translate 16K pages. Using all eight cores needs a 4K-page XNU, which is on the roadmap as an experiment.
+| CPU | Octa-core Kryo 260 (4x Cortex-A73 Gold @ 2.2 GHz + 4x Cortex-A53 Silver @ 1.84 GHz) |
+| 16K Granule | Supported on Gold cluster (`0x100`–`0x103`); Silver cluster is parked via PSCI `CPU_ON` |
+| Interrupt Controller | ARM GICv3: GICD `0x17a00000`, GICR `0x17b00000` |
+| Timers | VTIMER INTID 19 (GIC_PPI 3), PTIMER INTID 18 (GIC_PPI 2) |
+| Storage | eMMC 5.1 (`sdhc_1` at `0x0c0c4000`, Qualcomm SDCC v5) |
+| Framebuffer | `0x9d400000`, 1080x2340, 32-bit `a8r8g8b8`, stride 4320 bytes |
+| Power / Reset | PS_HOLD `0x010ac000`, IMEM restart reason `0x146bf65c` |
 
 ## How it boots
 
 ```
 ABL (stock Xiaomi bootloader, unlocked)
-  -> fastboot boot shim-boot.img        (boot image v4, RAM only)
-     -> shim on Silver CPU0: prints MMFR0/MIDR, wakes Gold CPU 0x100, parks
-        -> shim on Gold: GIC setup, speed probe, finds the payload behind _end
+  -> fastboot boot shim-boot.img        (Android boot image, RAM only)
+     -> shim on Silver CPU0: prints MMFR0/MIDR, wakes Gold CPU 0x100 via PSCI, parks
+        -> shim on Gold: GICv3 setup, timer unmask, locates payload
            -> XNU Mach-O + Apple Device Tree (ADT) + boot-args
-              -> XNU -> UFS driver -> HFS+ root in userdata
+              -> XNU -> SDHCI eMMC driver -> HFS+ root in userdata
                  -> dyld + shared cache -> launchd -> backboardd + SpringBoard
 ```
 

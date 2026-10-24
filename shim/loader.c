@@ -11,10 +11,9 @@
 #include "console.h"
 #include "fdt.h"
 #include "loader.h"
-#include "wdt.h"
 
 #define BOOT_LINE_LENGTH	608
-#define PAGE_4K			0x1000UL
+#define PAGE_16K		0x4000UL
 
 struct payload_seg {
 	uint64_t vmaddr, vmsize, file_off, file_size;
@@ -223,12 +222,12 @@ const char *loader_boot(uintptr_t dtb)
 #endif
 	adt_walk_fix_cpus(adt_pa, 0, p->adt_size, boot_phys);
 	con_hex2("BOOT_CPU", "mpidr=", boot_phys, "adt=", adt_pa);
-	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_4K - 1) & ~(PAGE_4K - 1);
-	uintptr_t top = ba_pa + PAGE_4K;
+	uintptr_t ba_pa = (adt_pa + p->adt_size + PAGE_16K - 1) & ~(PAGE_16K - 1);
+	uintptr_t top = ba_pa + PAGE_16K;
 	if (top > p->phys_base + p->mem_size)
 		return "kernel data exceeds physical memory";
 
-	zero64(ba_pa, PAGE_4K);
+	zero64(ba_pa, PAGE_16K);
 	volatile struct boot_args *ba = (volatile struct boot_args *)ba_pa;
 	ba->Revision = 2;
 	ba->Version = 2;
@@ -241,7 +240,7 @@ const char *loader_boot(uintptr_t dtb)
 	ba->Video.v_rowBytes = FB_STRIDE;
 	ba->Video.v_width = FB_W;
 	ba->Video.v_height = FB_H;
-	ba->Video.v_depth = 24;
+	ba->Video.v_depth = 32;
 	ba->deviceTreeP = adt_pa - pa_of_va_base;	/* xnu reads it with the MMU on: a VA */
 	ba->deviceTreeLength = (uint32_t)p->adt_size;
 	for (int i = 0; i < BOOT_LINE_LENGTH; i++)
@@ -254,14 +253,6 @@ const char *loader_boot(uintptr_t dtb)
 	con_str("XNU", "jumping (fbcon clears screen)");
 
 #if !__STDC_HOSTED__
-	/*
-	 * Last chance to touch the APPS watchdog: the copy above can take a
-	 * while and XNU has no Qualcomm watchdog driver yet, so pet it once
-	 * and leave it disabled (LK leaves whatever it inherited untouched).
-	 */
-	wdt_pet();
-	wdt_disable();
-
 	/* Clean loaded segments and ADT from cache to PoC before jump */
 	uint64_t ctr;
 	__asm__ volatile("mrs %0, ctr_el0" : "=r"(ctr));
