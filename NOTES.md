@@ -38,6 +38,17 @@
   - `bash shim/build.sh` builds cleanly.
   - `loader_test` passed (1080x2340x32 @ 0x9d400000, 16K alignment).
   - `test_sdhci_mock`, `test_gpt_parser`, `test_log_ring` passed all assertions.
+
+- **Milestone 2026-10-24 (XNU Kernel Booting on Lavender Display):**
+  - **Kernel Build:** Dedicated `kernel.development.lavender` built via GitHub Actions CI (run `40085821240`) with `LAVENDER.h` inheriting SWEET 16KB GICv3 architecture, GICv2 conflicts removed from `protos.h`, and `kpc` included for `KPC_MAX_COUNTERS`.
+  - **Display Framebuffer:** Fixed framebuffer address to `0x9d400000` (1080x2340 32bpp ARGB), avoiding TrustZone modem FW conflict at `0x90001000`.
+  - **Hardware Execution:** Flashed to `recovery` partition (`out/shim-boot.img`). Phone booted into recovery and executed the full XNU Mach-O kernel on Kryo 260 Gold core `0x100`.
+  - **On-Screen Proof:** Photographic capture (`boot_screen2.jpg`) confirmed 72 lines of crisp boot console:
+    - Gold core affinity `0x100` alive and verified with SGI1
+    - 16 KiB translation granule MMU active
+    - Full Mach VM zones initialized (`zone_init`)
+    - pthreads, clutch scheduler, firehose, telemetry, AMFI, AppleKeyStore, IOWatchdog, HID, Battery registered
+    - Reached `IOKit IOMD setownership ENABLED` before root device discovery
   - Staged boot image: `out/shim-boot.img` (159,744 bytes diagnostic / 34,242,560 bytes full XNU payload).
   - GitHub Actions CI run ID `40078069776` completed with success; Mach-O XNU kernel (`kernel.development.santoni`, 17MB) integrated.
   - Device identified in Fastboot: `2d71cc89`, variant `SDM EMMC`, unlocked `yes`, kernel `uefi`.
