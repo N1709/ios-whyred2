@@ -7,7 +7,7 @@
 _head:
 	b	_start			/* code0 (offset 0x00) */
 	.long	0			/* code1 (offset 0x04) */
-	.quad	0			/* text_offset (offset 0x08) */
+	.quad	0x80000			/* text_offset (offset 0x08) */
 	.quad	_end			/* image_size (offset 0x10, linked at 0) */
 	.quad	0xa			/* flags: LE, 4K pages, place anywhere (offset 0x18) */
 	.quad	0			/* res2 */
@@ -15,6 +15,10 @@ _head:
 	.quad	0			/* res4 */
 	.ascii	"ARM\x64"		/* magic (offset 0x38) */
 	.long	0			/* res5 (PE offset) (offset 0x3c) */
+
+	/* Entry trampoline at text_offset (0x80000) for ABL implementations that branch to text_offset */
+	.balign	0x80000
+	b	_start
 
 	.text
 	.globl _start
