@@ -1,0 +1,138 @@
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -679,6 +679,7 @@
+ 	int xchar, dchar;
+ 
+ 	// stall here for anyone matching on the IOBSD resource to finish (filesystems)
++#if !defined(ARM64_BOARD_CONFIG_LAVENDER)
+ 	matching = IOService::serviceMatching(gIOResourcesKey);
+ 	assert(matching);
+ 	matching->setObject(gIOResourceMatchedKey, gIOBSDKey);
+@@ -690,6 +691,7 @@
+ 	}
+ 	matching->release();
+ 	matching = NULL;
++#endif
+ 
+ 	if (mountAttempts++) {
+ 		IOLog("mount(%d) failed\n", mountAttempts);
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -793,21 +793,13 @@
+ static int
+ sdhci_core_check(void)
+ {
+-	uint32_t mci_version = core_rd(CORE_MCI_VERSION);
+-	uint32_t generics = core_rd(CORE_GENERICS);
+-
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+ 	uint16_t host_version = hc_rd16(SDHCI_HOST_VERSION);
+-	if ((mci_version == 0 || mci_version == 0xffffffffu) &&
+-	    (host_version == 0 || host_version == 0xffffu)) {
+-		printf("SANTONI SDHCI: vendor core does not answer "
+-		    "(MCI_VERSION 0x%08x, GENERICS 0x%08x): GCC SDC1 clock "
+-		    "branch off or block held in reset\n",
+-		    mci_version, generics);
++	if (host_version == 0 || host_version == 0xffffu) {
++		printf("SANTONI SDHCI: SDCC v5 HOST_VERSION invalid: 0x%04x\n", host_version);
+ 		return ENXIO;
+ 	}
+-	printf("SANTONI SDHCI: core MCI_VERSION 0x%08x GENERICS 0x%08x (HOST_VERSION 0x%04x)\n",
+-	    mci_version, generics, host_version);
++	printf("SANTONI SDHCI: SDCC v5 core present (HOST_VERSION 0x%04x)\n", host_version);
+ 	return 0;
+ #else
+ 	if (mci_version == 0 || mci_version == 0xffffffffu) {
+@@ -844,6 +836,13 @@
+ 	uint32_t dll = hc_rd(CORE_DLL_CONFIG);
+ 	uint32_t status = hc_rd(CORE_DLL_STATUS);
+ 
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++	printf("SANTONI SDHCI: probe step 0: VENDOR_SPEC 0x%08x "
++	    "(MCLK sel %u, SELECT_IN 0x%x), DLL_CONFIG 0x%08x "
++	    "DLL_STATUS 0x%08x\n", vendor,
++	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8,
++	    (vendor & CORE_HC_SELECT_IN_MASK) >> 19, dll, status);
++#else
+ 	printf("SANTONI SDHCI: probe step 0: HC_MODE 0x%08x, "
+ 	    "MCI_POWER 0x%08x, MCI_CLK 0x%08x, VENDOR_SPEC 0x%08x "
+ 	    "(MCLK sel %u, SELECT_IN 0x%x), DLL_CONFIG 0x%08x "
+@@ -851,6 +850,7 @@
+ 	    core_rd(CORE_MCI_POWER), core_rd(CORE_MCI_CLK), vendor,
+ 	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8,
+ 	    (vendor & CORE_HC_SELECT_IN_MASK) >> 19, dll, status);
++#endif
+ 	printf("SANTONI SDHCI: probe step 0: GCC sdcc1_apps CMD 0x%08x "
+ 	    "CFG 0x%08x M 0x%02x N 0x%02x D 0x%02x CBCR 0x%08x\n",
+ 	    gcc_rd(GCC_SDCC1_APPS_CMD_RCGR),
+@@ -1061,6 +1061,11 @@
+ static int
+ sdhci_pwrctl_ack(const char *what, bool wait)
+ {
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++	(void)what;
++	(void)wait;
++	return 0;
++#else
+ 	uint64_t deadline;
+ 	uint32_t pending, ack;
+ 	int retry;
+@@ -1112,6 +1117,7 @@
+ 	printf("SANTONI SDHCI: PWRCTL %s did not clear (STATUS 0x%08x): "
+ 	    "power handshake failed\n", what, core_rd(CORE_PWRCTL_STATUS));
+ 	return ETIMEDOUT;
++#endif
+ }
+ 
+ static int
+@@ -1320,7 +1326,7 @@
+ {
+ 	uint16_t handoff_hc2;
+ 	uint8_t handoff_ctrl, handoff_timeout;
+-	uint32_t mci_clk, mci_power, vendor, probe_r1 = 0, probe_ocr = 0;
++	uint32_t mci_clk = 0, mci_power = 0, vendor, probe_r1 = 0, probe_ocr = 0;
+ 	uint64_t deadline;
+ 	int error, err0, err_cmd1;
+ 
+@@ -1332,6 +1338,7 @@
+ 	/* Probe step 0: the only true pre-write snapshot. */
+ 	sdhci_snapshot_untouched();
+ 
++#if !defined(ARM64_BOARD_CONFIG_LAVENDER)
+ 	/* Disable power IRQ generation on GIC while polled */
+ 	core_wr(CORE_PWRCTL_MASK, 0);
+ 
+@@ -1342,6 +1349,10 @@
+ 	 */
+ 	mci_power = core_rd(CORE_MCI_POWER);
+ 	mci_clk = core_rd(CORE_MCI_CLK);
++#else
++	(void)mci_power;
++	(void)mci_clk;
++#endif
+ 
+ 	/*
+ 	 * Step 1: vendor clock and pad supply before HC mode, in Linux's order
+@@ -1432,6 +1443,14 @@
+ 	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
+ 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
+ 
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++	printf("SANTONI SDHCI: takeover complete (VENDOR_SPEC 0x%08x, "
++	    "POWER_CONTROL 0x%02x, CLOCK_CONTROL 0x%04x, HOST_CONTROL 0x%02x, "
++	    "HOST_CONTROL2 0x%04x, TIMEOUT_CONTROL 0x%02x)\n",
++	    hc_rd(CORE_VENDOR_SPEC), hc_rd8(SDHCI_POWER_CONTROL),
++	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
++	    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd8(SDHCI_TIMEOUT_CONTROL));
++#else
+ 	printf("SANTONI SDHCI: takeover complete (HC_MODE 0x%08x, "
+ 	    "VENDOR_SPEC 0x%08x, legacy MCI_CLK 0x%08x, MCI_POWER 0x%08x, "
+ 	    "POWER_CONTROL 0x%02x, CLOCK_CONTROL 0x%04x, HOST_CONTROL 0x%02x, "
+@@ -1440,6 +1459,7 @@
+ 	    mci_power, hc_rd8(SDHCI_POWER_CONTROL),
+ 	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
+ 	    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd8(SDHCI_TIMEOUT_CONTROL));
++#endif
+ 
+ 	/*
+ 	 * Probe step 2: close the card clock, force the host back to the
