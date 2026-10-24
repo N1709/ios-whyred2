@@ -3,6 +3,13 @@
 set -euo pipefail
 
 PAYLOAD="${1:-}"
+if [ -z "$PAYLOAD" ]; then
+	if [ -f "$(dirname "$0")/../xnu/out/kernel.development.lavender" ]; then
+		PAYLOAD="$(dirname "$0")/../xnu/out/kernel.development.lavender"
+	elif [ -f "$(dirname "$0")/../xnu/out/kernel.development.santoni" ]; then
+		PAYLOAD="$(dirname "$0")/../xnu/out/kernel.development.santoni"
+	fi
+fi
 [ -n "$PAYLOAD" ] && [ -f "$PAYLOAD" ] && PAYLOAD="$(realpath "$PAYLOAD")"
 
 cd "$(dirname "$0")"

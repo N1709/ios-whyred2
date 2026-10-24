@@ -1,11 +1,28 @@
 --- a/osfmk/arm64/start.s
 +++ b/osfmk/arm64/start.s
-@@ -513,7 +513,16 @@
+@@ -513,7 +513,33 @@
  	mov		x20, x0
  	mov		x21, #0
  
 -#if defined(SWEET)
-+#if defined(SANTONI)
++#if defined(LAVENDER)
++	/* Stage 0: white 64x32 band on Lavender display (0x9d400000) with MMU off */
++	MOV64	x0, (0x9d400000 + 2300 * 4320)
++	mov		w1, #-1
++	mov		x2, #32
++	mov		x4, #4320
++Llavender_mark_row:
++	mov		x3, #64
++	mov		x5, x0
++Llavender_mark_pixel:
++	str		w1, [x5], #4
++	subs	x3, x3, #1
++	b.ne	Llavender_mark_pixel
++	add		x0, x0, x4
++	subs	x2, x2, #1
++	b.ne	Llavender_mark_row
++	dsb		sy
++#elif defined(SANTONI)
 +	/* Stage 0: write white pixels to simplefb (0x90001000) with MMU off */
 +	MOV64	x0, 0x90001000
 +	mov		w1, #-1
@@ -18,7 +35,7 @@
  	/* Stage 0: white 64x32 band, no stack or page tables needed. */
  	MOV64	x0, (0x9c000000 + 2368 * 4320)
  	mov		w1, #-1
-@@ -678,7 +687,29 @@
+@@ -678,7 +704,29 @@
  	lsr		x5,  x24, #(ARM_TT_L2_SHIFT)
  	create_bootstrap_mapping x14, x15, x5, x3, x2, x9, x10, x11, x12, x13
  
@@ -49,12 +66,21 @@
  	/*
  	 * Splash framebuffer: one 32MB Normal-NC block in the EXISTING V=P
  	 * L2 table. Both framebuffer and RAM use L1 index 0; another call to
-@@ -836,6 +867,17 @@
+@@ -836,6 +884,26 @@
  	MOV64   x0, SCTLR_EL1_DEFAULT
  	MSR_SCTLR_EL1_X0
  	isb		sy
 +
-+#if defined(SANTONI)
++#if defined(LAVENDER)
++	/* Stage 1: write blue block to simplefb after SCTLR_EL1.M MMU activation */
++	MOV64	x0, (0x9d400000 + 2250 * 4320)
++	mov		w1, #0xff
++	mov		x2, #(1080 * 16)
++1:	str		w1, [x0], #4
++	subs	x2, x2, #1
++	b.ne	1b
++	dsb		sy
++#elif defined(SANTONI)
 +	/* Stage 1: write blue block to simplefb after SCTLR_EL1.M MMU activation */
 +	MOV64	x0, (0x90001000 + 720 * 32 * 4)
 +	mov		w1, #0xff

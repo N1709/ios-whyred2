@@ -14,7 +14,7 @@ diff --git a/iokit/bsddev/IOKitBSDInit.cpp b/iokit/bsddev/IOKitBSDInit.cpp
 --- a/iokit/bsddev/IOKitBSDInit.cpp
 +++ b/iokit/bsddev/IOKitBSDInit.cpp
 @@ -787,3 +787,34 @@
-+#if defined(ARM64_BOARD_CONFIG_SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 +//
 +//	SANTONI: root on a GPT partition of the internal eMMC 5.1
 +//	(bsd/dev/santoni_sdhci.c)
@@ -89,7 +89,7 @@ new file mode 100644
 + * santoni_sdhci_write_log_blocks() is the one write path that needs neither
 + * emmcrw=1 nor the userdata fence, and it refuses anything outside that area.
 + */
-+#if defined(ARM64_BOARD_CONFIG_SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SANTONI) || defined(ARM64_BOARD_CONFIG_LAVENDER)
 +
 +#include <sys/param.h>
 +#include <sys/systm.h>
@@ -2825,4 +2825,4 @@ new file mode 100644
 +	return 0;
 +}
 +
-+#endif /* ARM64_BOARD_CONFIG_SANTONI */
++#endif /* ARM64_BOARD_CONFIG_SANTONI || ARM64_BOARD_CONFIG_LAVENDER */
