@@ -52,7 +52,7 @@ diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/santoni_sdhci.c
-@@ -0,0 +1,2825 @@
+@@ -0,0 +1,2837 @@
 +/*
 + * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
 + *
@@ -196,44 +196,32 @@ new file mode 100644
 +#define SDHCI_INT_CMD_END_BIT   0x00040000u
 +#define SDHCI_INT_CMD_INDEX     0x00080000u
 +
-+/* ------------------------------------------ Qualcomm MSM core registers */
++/* ------------------------------------------ Qualcomm MSM v4 core registers */
 +#if defined(ARM64_BOARD_CONFIG_LAVENDER)
 +#define SDHCI_HC_OFFSET         0x000           /* SDCC v5: native Host Controller at 0 */
 +#define SDHCI_HOST_VERSION      0xfe
-+#define CORE_MCI_VERSION        0x318           /* SDCC v5 core version ID */
++#define CORE_MCI_VERSION        0x318           /* SDCC v5 read-only core ID */
 +#define CORE_GENERICS           0x320
-+#define CORE_HC_MODE            0x78
-+#define CORE_PWRCTL_STATUS      0x240
-+#define CORE_PWRCTL_MASK        0x244
-+#define CORE_PWRCTL_CLEAR       0x248
-+#define CORE_PWRCTL_CTL         0x24c
-+#define CORE_VENDOR_SPEC        0x20c
-+#define CORE_DLL_CONFIG         0x200
-+#define CORE_DLL_STATUS         0x208
-+#define CORE_MCI_POWER          0x324
-+#define CORE_MCI_CLK            0x328
-+
-+#define GCC_SDCC1_APPS_PHYS      0x00116000u
-+#define GCC_SDCC1_APPS_SIZE      0x1000u
-+#define GCC_SDCC1_APPS_CMD_RCGR  0x02cu
-+#define GCC_SDCC1_APPS_CFG_RCGR  0x030u
-+#define GCC_SDCC1_APPS_M         0x034u
-+#define GCC_SDCC1_APPS_N         0x038u
-+#define GCC_SDCC1_APPS_D         0x03cu
-+#define GCC_SDCC1_APPS_CBCR      0x004u
-+
 +#else
 +#define SDHCI_HC_OFFSET         0x900           /* HC base - core base */
 +#define SDHCI_HOST_VERSION      0xfe
 +#define CORE_MCI_VERSION        0x50            /* read-only core ID */
 +#define CORE_GENERICS           0x70
++#endif
 +#define CORE_HC_MODE            0x78
 +#define CORE_HC_MODE_EN         0x00000001u
 +#define CORE_FF_CLK_SW_RST_DIS  0x00002000u
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define CORE_PWRCTL_STATUS      0x240
++#define CORE_PWRCTL_MASK        0x244
++#define CORE_PWRCTL_CLEAR       0x248
++#define CORE_PWRCTL_CTL         0x24c
++#else
 +#define CORE_PWRCTL_STATUS      0xdc
 +#define CORE_PWRCTL_MASK        0xe0
 +#define CORE_PWRCTL_CLEAR       0xe4
 +#define CORE_PWRCTL_CTL         0xe8
++#endif
 +#define CORE_PWRCTL_BUS_OFF     0x00000001u
 +#define CORE_PWRCTL_BUS_ON      0x00000002u
 +#define CORE_PWRCTL_IO_LOW      0x00000004u
@@ -267,7 +255,11 @@ new file mode 100644
 + * POR value is MCLK sel 2 (0xa9c); LK's board value adds the 1.8V pad power
 + * switch (0x18000), which no reset value carries.
 + */
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define CORE_VENDOR_SPEC        0x20c
++#else
 +#define CORE_VENDOR_SPEC        0x10c
++#endif
 +#define CORE_VENDOR_SPEC_POR_VAL 0x00000a9cu
 +#define CORE_VENDOR_SPEC_BOARD_VAL (CORE_VENDOR_SPEC_POR_VAL | \
 +	CORE_IO_PAD_PWR_SWITCH_EN | CORE_IO_PAD_PWR_SWITCH)
@@ -282,8 +274,13 @@ new file mode 100644
 + * Selecting a DLL that is not running drives no card clock; output source
 + * must follow DLL state: bypass if DLL is in reset/off, DLL output if locked.
 + */
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define CORE_DLL_CONFIG         0x200
++#define CORE_DLL_STATUS         0x208
++#else
 +#define CORE_DLL_CONFIG         0x100
 +#define CORE_DLL_STATUS         0x108
++#endif
 +#define CORE_DLL_LOCK           0x00000080u     /* BIT(7) */
 +#define CORE_DLL_EN             0x00010000u     /* BIT(16) */
 +#define CORE_CK_OUT_EN          0x00040000u     /* BIT(18) */
@@ -291,8 +288,13 @@ new file mode 100644
 +#define CORE_DLL_RST            0x40000000u     /* BIT(30) */
 +#define CORE_DLL_OFF            (CORE_DLL_RST | CORE_DLL_PDN)
 +/* Legacy MCI window the bootloader drove (LK mmc.c MMC_BOOT_MCI_POWER/CLK). */
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define CORE_MCI_POWER          0x324
++#define CORE_MCI_CLK            0x328
++#else
 +#define CORE_MCI_POWER          0x000
 +#define CORE_MCI_CLK            0x004
++#endif
 +
 +/* ---------------------------------------------------- GCC SDCC1 apps clock */
 +/*
@@ -307,6 +309,16 @@ new file mode 100644
 + *   CFG_RCGR: [4:0] SRC_DIV, [10:8] SRC_SEL, [13:12] MODE
 + *   parents:  XO=0 (19.2 MHz), GPLL0=1 (800 MHz), GPLL4=2 (1152 MHz)
 + */
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define GCC_SDCC1_APPS_PHYS      0x00116000u
++#define GCC_SDCC1_APPS_SIZE      0x1000u
++#define GCC_SDCC1_APPS_CMD_RCGR  0x02cu
++#define GCC_SDCC1_APPS_CFG_RCGR  0x030u
++#define GCC_SDCC1_APPS_M         0x034u
++#define GCC_SDCC1_APPS_N         0x038u
++#define GCC_SDCC1_APPS_D         0x03cu
++#define GCC_SDCC1_APPS_CBCR      0x004u
++#else
 +#define GCC_SDCC1_APPS_PHYS      0x01842000u
 +#define GCC_SDCC1_APPS_SIZE      0x1000u
 +#define GCC_SDCC1_APPS_CMD_RCGR  0x004u
