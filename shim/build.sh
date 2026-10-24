@@ -42,21 +42,20 @@ python3 ../tools/mkinit.py out/lavender-init.o out/init.macho
 RAMDISK="out/ramdisk.bin"
 CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 lavender"
 
+# Ensure a minimal ramdisk.bin is always present
+if command -v cpio >/dev/null 2>&1; then
+	(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
+else
+	python3 -c 'import gzip; h=b"07070100000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\0\0\0\0"; open("out/ramdisk.bin","wb").write(gzip.compress(h + b"\0"*(512-len(h)), compresslevel=9))'
+fi
+RAMDISK="out/ramdisk.bin"
+
 if [ -n "$PAYLOAD" ]; then
 	magic=$(python3 -c "import sys; f=open(sys.argv[1],'rb'); b=f.read(4); print(b.hex())" "$PAYLOAD" 2>/dev/null || true)
 	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
 		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
 		python3 ../tools/mkadt.py out/lavender.adt
 		python3 ../tools/mkpayload.py "$PAYLOAD" out/lavender.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
-		RAMDISK="out/payload.bin"
-	else
-		RAMDISK="$PAYLOAD"
-	fi
-else
-	if command -v cpio >/dev/null 2>&1; then
-		(cd out && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
-	else
-		python3 -c 'import gzip; h=b"07070100000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\0\0\0\0"; open("out/ramdisk.bin","wb").write(gzip.compress(h + b"\0"*(512-len(h)), compresslevel=9))'
 	fi
 fi
 
@@ -80,7 +79,7 @@ python3 ../tools/mkbootimg.py \
 	--output out/shim-boot.img \
 	--base 0x00000000 \
 	--kernel_offset 0x00008000 \
-	--ramdisk_offset 0x01000000 \
+	--ramdisk_offset 0x02000000 \
 	--tags_offset 0x00000100 \
 	--pagesize 4096 \
 	--header_version 0 \
