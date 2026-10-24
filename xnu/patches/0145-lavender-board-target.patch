@@ -1,6 +1,15 @@
 diff --git a/pexpert/pexpert/arm64/board_config.h b/pexpert/pexpert/arm64/board_config.h
 --- a/pexpert/pexpert/arm64/board_config.h
 +++ b/pexpert/pexpert/arm64/board_config.h
+@@ -97,7 +97,7 @@
+ #define CORE_NCTRS                     8 /* Placeholder; KPC is not enabled for this target */
+ #endif  /* ARM64_BOARD_CONFIG_BCM2837 */
+ 
+-#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(ARM64_BOARD_CONFIG_SANTONI)
++#if defined(ARM64_BOARD_CONFIG_SWEET) && !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(ARM64_BOARD_CONFIG_LAVENDER)
+ #include <pexpert/arm64/SWEET.h>
+ 
+ #define MAX_L2_CLINE                   6
 @@ -118,6 +118,16 @@
  #define CORE_NCTRS                     8
  #endif  /* ARM64_BOARD_CONFIG_SANTONI */
@@ -42,7 +51,7 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
  
 @@ -65,2 +65,3 @@
  MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI -DARM64_BOARD_CONFIG_SWEET -mcpu=cortex-a53 -march=armv8-a+crypto
-+MACHINE_FLAGS_ARM64_LAVENDER = -DARM64_BOARD_CONFIG_LAVENDER -DARM64_BOARD_CONFIG_SWEET -mcpu=cortex-a53 -march=armv8-a+crypto
++MACHINE_FLAGS_ARM64_LAVENDER = -DARM64_BOARD_CONFIG_LAVENDER -DARM64_BOARD_CONFIG_SWEET -DLAVENDER=1 -mcpu=cortex-a53 -march=armv8-a+crypto
  
 @@ -263,7 +264,7 @@
  export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
@@ -57,36 +66,13 @@ diff --git a/pexpert/pexpert/arm64/LAVENDER.h b/pexpert/pexpert/arm64/LAVENDER.h
 new file mode 100644
 --- /dev/null
 +++ b/pexpert/pexpert/arm64/LAVENDER.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,8 @@
 +#ifndef _PEXPERT_ARM64_LAVENDER_H
 +#define _PEXPERT_ARM64_LAVENDER_H
 +
-+#define NO_MONITOR                    1
-+#define NO_ECORE                      1
++#include <pexpert/arm64/SWEET.h>
 +
 +#define LAVENDER                      1
-+#define SWEET                         1
-+#define SWEET_SMP_MAX_CPUS            8
-+
-+#define ARM_ARCH_TIMER
-+#define __ARM_ARCH__                  8
-+#define __ARM_VMSA__                  8
-+#define __ARM_VFP__                   4
-+#define __ARM_COHERENT_CACHE__        1
-+#define __ARM_DEBUG__                 7
-+#define __ARM_ENABLE_SWAP__           1
-+#define __ARM_V8_CRYPTO_EXTENSIONS__  1
-+#define __ARM_PAN_AVAILABLE__         0
-+#define __ARM_16K_PG__                1
-+
-+/* Qualcomm SDM660 has GICv3 system registers. */
-+#define HAS_GIC_V3                    1
-+#define SWEET_VTIMER_INTID            19
-+#define SWEET_IPI_SGI                 1
-+
-+#ifndef ASSEMBLER
-+#define PLATFORM_PANIC_LOG_DISABLED
-+#endif
 +
 +#endif /* _PEXPERT_ARM64_LAVENDER_H */
 diff --git a/config/MASTER.arm64.lavender b/config/MASTER.arm64.lavender
@@ -153,7 +139,7 @@ new file mode 100644
 +#  LIBKERN_RELEASE =[ LIBKERN_BASE zlib ]
 +#  LIBKERN_DEV =    [ LIBKERN_BASE zlib iotracking ]
 +#  LIBKERN_DEBUG =  [ LIBKERN_BASE zlib iotracking ]
-+#  PERF_DBG_BASE =  [ config_dtrace mach_kdp config_serial_kdp kdp_interactive_debugging config_kdp_coredump_encryption config_pervasive_energy PERFMON_BASE kperf ]
++#  PERF_DBG_BASE =  [ config_dtrace mach_kdp config_serial_kdp kdp_interactive_debugging config_kdp_coredump_encryption config_pervasive_energy PERFMON_BASE kperf kpc ]
 +#  PERF_DBG_RELEASE=[ PERF_DBG_BASE ist_kdebug ]
 +#  PERF_DBG_DEV =   [ PERF_DBG_BASE lock_stats zleaks alternate_debugger sched_hygiene_debug config_debug_syscall_rejection config_iotrace ]
 +#  PERF_DBG_DEBUG = [ PERF_DBG_BASE lock_stats zleaks alternate_debugger sched_hygiene_debug config_debug_syscall_rejection config_iotrace ]
