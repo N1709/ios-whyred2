@@ -40,10 +40,9 @@ diff --git a/makedefs/MakeInc.def b/makedefs/MakeInc.def
  
  endif
  
-@@ -64,3 +64,4 @@
- MACHINE_FLAGS_ARM64_SWEET = -DARM64_BOARD_CONFIG_SWEET                -mcpu=cortex-a53
- MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI 	-mcpu=cortex-a53
-+MACHINE_FLAGS_ARM64_LAVENDER = -DARM64_BOARD_CONFIG_LAVENDER 	-mcpu=cortex-a53
+@@ -65,2 +65,3 @@
+ MACHINE_FLAGS_ARM64_SANTONI = -DARM64_BOARD_CONFIG_SANTONI -DARM64_BOARD_CONFIG_SWEET -mcpu=cortex-a53 -march=armv8-a+crypto
++MACHINE_FLAGS_ARM64_LAVENDER = -DARM64_BOARD_CONFIG_LAVENDER -DARM64_BOARD_CONFIG_SWEET -mcpu=cortex-a53 -march=armv8-a+crypto
  
 @@ -263,7 +264,7 @@
  export ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG := $(shell echo $(CURRENT_ARCH_CONFIG) | tr A-Z a-z)
