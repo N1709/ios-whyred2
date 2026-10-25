@@ -176,3 +176,109 @@ jobs:
           name: xnu-kernel
           path: out/
           if-no-files-found: warn
+
+  # Second zip of a completed build: the flashable boot image. The kernel
+  # artifact cannot be downloaded without a token, and packing the shim by hand
+  # needs a Linux toolchain, so every build publishes the ready-to-flash
+  # shim-boot.img next to the kernel.
+  package:
+    name: boot image
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: xnu-kernel
+          path: xnu/out
+
+      - name: Install packaging toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld gcc-aarch64-linux-gnu zopfli
+          clang --version | head -1
+          ld.lld --version
+          zopfli --version
+
+      - name: Build the boot image
+        env:
+          BOARD: whyred
+          CC: clang
+          LD: ld.lld
+          OBJCOPY: aarch64-linux-gnu-objcopy
+          READELF: aarch64-linux-gnu-readelf
+          NM: aarch64-linux-gnu-nm
+          HOST_CC: clang
+          NO_DUMMY_RAMDISK: "1"
+        run: |
+          set -euo pipefail
+          KERNEL=xnu/out/kernel.development.whyred
+          test -f "$KERNEL" || { echo "::error::no whyred kernel in the artifact"; ls -lR xnu/out; exit 1; }
+          test -f resources/whyred_dtb.bin || { echo "::error::resources/whyred_dtb.bin missing"; exit 1; }
+          (cd xnu/out && sha256sum -c SHA256SUMS)
+
+          # First pass produces the uncompressed Image; whyred's ABL rejects a
+          # single download over 6 MiB, and gzip -9 lands at ~6.31 MB, so
+          # compress that Image with zopfli and pack it in a second pass.
+          bash shim/build.sh "$KERNEL"
+          zopfli --i15 -c shim/out/Image > shim/out/Image.z.gz
+          IMAGE_GZ=shim/out/Image.z.gz bash shim/build.sh "$KERNEL"
+
+          # The image only boots if the storage fixes and the ram-disk root are
+          # in it: fail here instead of on the phone.
+          for s in "mockfs" "sweet_hfs" "bus width from ABL kept"; do
+            grep -aq "$s" shim/out/Image || { echo "::error::payload lacks '$s'"; exit 1; }
+          done
+          size=$(stat -c%s shim/out/shim-boot.img)
+          echo "shim-boot.img = $size bytes (ABL limit 6291456)"
+          test "$size" -le 6291456 || { echo "::error::boot image exceeds the ABL download limit"; exit 1; }
+
+      - name: Collect the flashable image
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp shim/out/shim-boot.img dist/
+          (cd dist && sha256sum shim-boot.img > SHA256SUMS)
+          cat > dist/FLASH.txt <<'EOF'
+          whyred (Redmi Note 5 / Note 5 Pro) iOS boot image
+          =================================================
+
+          The image loads the XNU kernel from the kernel artifact of the same
+          CI run and continues from the iOS HFS+ root in userdata.
+
+          Flash it to the recovery partition (slot a on this phone):
+
+              fastboot flash recovery shim-boot.img
+              fastboot reboot recovery
+
+          To test without overwriting recovery:
+
+              fastboot boot shim-boot.img
+
+          Verify before flashing:
+
+              sha256sum -c SHA256SUMS
+          EOF
+          ls -l dist
+
+      - name: Summary
+        run: |
+          {
+            echo "### whyred boot image"
+            echo
+            echo "| file | size | sha256 |"
+            echo "| --- | --- | --- |"
+            for f in dist/*; do
+              [ -f "$f" ] || continue
+              echo "| $(basename "$f") | $(stat -c%s "$f") B | $(sha256sum "$f" | cut -d' ' -f1) |"
+            done
+            echo
+            echo "Kernel zip: \`xnu-kernel\` artifact. Image zip: \`whyred-boot-img\` artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whyred-boot-img
+          path: dist/
+          if-no-files-found: error

@@ -179,6 +179,18 @@
   with the width in the log), and the next step is switching the card with
   CMD6 before the first read.
 
+- **CI packaging (2026-10-25): every green xnu run now ships two zips.**
+  A new `package` job (ubuntu-24.04, `needs: build`) downloads the
+  `xnu-kernel` artifact, builds the shim for WHYRED, compresses `Image` with
+  zopfli (`--i15`, because the ABL refuses a download over 6 MiB), asserts
+  that `mockfs`, `sweet_hfs` and `bus width from ABL kept` are in the payload
+  and that `shim-boot.img` stays <= 6,291,456 bytes, then uploads
+  `whyred-boot-img` containing `shim-boot.img`, `SHA256SUMS` and `FLASH.txt`.
+  `resources/whyred_dtb.bin` (454,567 B, msm-id `0x159` / board-id `0x30008`,
+  extracted from the TWRP image with `tools/extract_appended_dtb.py`) is now
+  tracked so CI appends the exact DTB of the tested builds. No release upload
+  yet: the user wants a bug-free kernel and will ask for it explicitly.
+
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 
 - **Target Hardware Architecture (Redmi Note 7, "lavender"):**
