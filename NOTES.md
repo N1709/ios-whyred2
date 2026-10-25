@@ -1,5 +1,61 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0159 (2026-10-25): prove the data path on LBA 0 before blaming CMD8
+
+- **The 0158 boot log stops before the line that matters.** The phone
+  printed, in order: `bus width from ABL kept (HOST_CONTROL 0x20, 8-bit)`,
+  `probe step 2: reset paths with the clock live (PRESENT_STATE
+  0x01f800f0)`, `PRESENT_STATE 0x01f800f0 after path reset`, `CMD13 RCA 2
+  answered before reset: R1 0x00000900 (state 4, TRAN; CMD5 not needed)`,
+  `CMD0 -> error 0`, `CMD1 attempt 1 OCR 0x40ff8080`, `CMD1 attempt 2 OCR
+  0x40ff0000`, and then nothing from the driver. So 0151's two changes are
+  confirmed on hardware (ABL's 8-bit width is kept, the path reset is
+  clean), and CMD1 is behaving normally (bit 7 busy clears on attempt 2,
+  bit 31 not set yet - the earlier boot needed four attempts) - but the
+  `CMD6 HS_TIMING=0` line and every EXT_CSD line are missing. That log
+  cannot say whether 0158 works.
+- **The log may simply be cut off.** The SDHCI probe sleeps between CMD1
+  polls, so unrelated kernel threads print in the gap (`Skywalk:
+  sk_copyb4_8x ... PASSED`). A truncated photo and a hung probe look the
+  same at the last line; the next boot has to reach `CMD1 ready` before
+  anything is concluded.
+- **`HOST_VERSION` reads `0x6602` here, `0x6b02` in the earlier boots.** It
+  is a read-only register, so the difference is not driver-written; the
+  likely cause is a different takeover state (`fastboot boot` vs the
+  `flash recovery` image ABL had just loaded the kernel from). Recorded as
+  an open observation, not a diagnosis.
+- **0159 (`xnu/patches/0159-sdhci-lba0-data-path-self-test.patch`,
+  commit at the top of this file).** Every data command this port has ever
+  sent was CMD8, so its timeout has never distinguished "the transfer
+  engine cannot complete any read" from "this one command is rejected". The
+  driver now reads **LBA 0 of the user area** once, right after 0158's
+  `HS_TIMING=0` switch and before the EXT_CSD ladder:
+  - LBA 0 is MIUI's protective MBR, so bytes 510/511 must be `0x55/0xaa` -
+    a real block, not a claim that a byte moved.
+  - Read-only, one sector, no writes, no partition change.
+  - Tried at `BUS_WIDTH=1` then `BUS_WIDTH=8` (CMD6 each time, so the card
+    and host always agree), and through **SDMA first, PIO second**, because
+    ABL loaded this kernel through SDMA while the 0156 boot proved the PIO
+    FIFO handshake can report success with an empty block.
+  - Each attempt prints one line: `data self-test LBA0 <width> <engine>:
+    OK|timeout|error, bytes 55 aa, MBR 55aa|absent, words ...`.
+  - Banner: `driver 0159 (LBA0 data-path self-test after the legacy timing
+    switch)`.
+- **How to read the next log.**
+  - `MBR 55aa` at any width/engine: the card, the timing and the controller
+    data path are all good. The failure is CMD8/EXT_CSD-specific, and the
+    EXT_CSD ladder that follows should now succeed.
+  - `MBR absent` with `OK`: a block arrived but is not an MBR - the user
+    area is unpartitioned or LBA 0 is not what MIUI left. Data path works;
+    the payload is the interesting part.
+  - `timeout`/`error` at all four combinations with `words 00000000`: the
+    engine really is not moving bytes. That points at the Qualcomm SDCC v5
+    data path (DLL/clock/preset state), not at the card, and the next patch
+    must stop renegotiating EXT_CSD.
+- **Cost:** in the worst case the self-test adds four 2 s timeouts (~8 s)
+  to boot before the existing ladder runs. It returns as soon as an MBR is
+  seen, so a working path costs one read.
+
 ## 0158 (2026-10-25): the card never left ABL's HS400 timing
 
 - **The unexplained register in the 0156 log names the bug.**

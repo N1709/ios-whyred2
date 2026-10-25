@@ -409,6 +409,19 @@ python3 tools/check_patch.py "$P158" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0157'
 echo "ok   0158 returns the card to legacy timing and keeps a valid EXT_CSD on a status error"
 
+echo "== SDHCI: prove the data path on LBA 0 before blaming CMD8/EXT_CSD   =="
+P159="xnu/patches/0159-sdhci-lba0-data-path-self-test.patch"
+python3 tools/check_patch.py "$P159" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_probe_lba0(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_sdma(17, 0, 1,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_pio_once(17, 0, 1,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:data self-test LBA0' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:MBR %s' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:HS_TIMING=0 took' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0159' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0158'
+echo "ok   0159 reads MBR LBA 0 at 1 and 8 bit through SDMA and PIO"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
