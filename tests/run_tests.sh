@@ -350,7 +350,7 @@ echo "==        because this core does not always latch BRR/TC in INT_STATUS =="
 P155="xnu/patches/0155-sdhci-poll-present-state-for-data-phase.patch"
 python3 tools/check_patch.py "$P155" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PSTATE_BUF_RD_READY 0x00000800u' \
-	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PSTATE_RD_ACTIVE    0x00002000u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PSTATE_RD_ACTIVE' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:static bool santoni_data_moved;' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:buffer ready ' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:PRESENT_STATE from now on' \
@@ -361,6 +361,23 @@ python3 tools/check_patch.py "$P155" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_ext_csd_sane(void)' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:is not real (REV %u '
 echo "ok   0155 falls back to PRESENT_STATE for data and transfer complete"
+
+echo "== SDHCI: PRESENT_STATE transfer-active bits are 9/8, not 13/14,    =="
+echo "==        and a stuck DAT_INHIBIT gets a bounded drain then a reset  =="
+P156="xnu/patches/0156-sdhci-present-state-bits-and-drain.patch"
+python3 tools/check_patch.py "$P156" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:PRESENT_STATE[11:8]' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PSTATE_WR_ACTIVE    0x00000100u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PSTATE_RD_ACTIVE    0x00000200u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_wait_transfer_complete(const char *what, bool all_bytes,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:data machine still busy ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0156' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CMD5 not needed' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:if (!card_in_transfer) {' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_wait_transfer_complete(tag, true, index == 25);' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:0x00002000u' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0155'
+echo "ok   0156 fixes the PRESENT_STATE bits, drains the data path, skips CMD5 in TRAN"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py

@@ -1,0 +1,225 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -113,18 +113,22 @@
+ /* PRESENT_STATE[20]: DAT0 line level, used for R1b/CMD6 busy polling. */
+ #define SDHCI_DATA_0_LVL_MASK   0x00100000u
+ /*
+- * PRESENT_STATE[14:11]. This core does not always latch the data-phase bits
+- * into INT_STATUS: the 0152 boot ended CMD8 with INT_STATUS 0x00000000 while
+- * PRESENT_STATE was 0x01f8aaf6 - BUFFER_READ_ENABLE and READ_TRANSFER_ACTIVE
+- * both set, i.e. the 512-byte block was already sitting in the FIFO. Waiting
+- * only on INT_STATUS therefore reports a timeout for a transfer that ran.
+- * The waits below sample these bits as well; the INT_STATUS bit is still
+- * cleared on the way out so a late edge cannot be consumed by the next wait.
++ * PRESENT_STATE[11:8], as defined by the SD Host Controller spec (and
++ * sdhci.h in Linux): 8 = write transfer active, 9 = read transfer active,
++ * 10 = buffer write enable (space in the FIFO), 11 = buffer read enable
++ * (data in the FIFO). This core does not always latch the corresponding
++ * interrupt bits into INT_STATUS: the 0152 boot ended CMD8 with
++ * INT_STATUS 0x00000000 while PRESENT_STATE was 0x01f8aaf6 - bit 9 (read
++ * transfer active) and bit 11 (buffer read enable) set, i.e. the 512-byte
++ * block already in the FIFO. Waiting only on INT_STATUS therefore reports a
++ * timeout for a transfer that ran. The waits below sample these bits as
++ * well; the INT_STATUS bit is still cleared on the way out so a late edge
++ * cannot be consumed by the next wait.
+  */
++#define SDHCI_PSTATE_WR_ACTIVE    0x00000100u
++#define SDHCI_PSTATE_RD_ACTIVE    0x00000200u
+ #define SDHCI_PSTATE_BUF_WR_READY 0x00000400u
+ #define SDHCI_PSTATE_BUF_RD_READY 0x00000800u
+-#define SDHCI_PSTATE_RD_ACTIVE    0x00002000u
+-#define SDHCI_PSTATE_WR_ACTIVE    0x00004000u
+ #define SDHCI_PSTATE_DATA_ACTIVE \
+ 	(SDHCI_PSTATE_RD_ACTIVE | SDHCI_PSTATE_WR_ACTIVE)
+ 
+@@ -673,11 +677,14 @@
+ /*
+  * Wait for the end of the transfer. all_bytes says the caller's own loop has
+  * already moved every byte it asked for (PIO read/write): in that case the
+- * data is in the buffer even if the engine's state bit or TC never catches
+- * up, and throwing it away would only cost another boot.
++ * data is in the buffer even if the engine state or TC never catches up, and
++ * dropping it would only cost another boot. open_ended marks a multi-block
++ * transfer with AUTO_CMD12, whose data path must not be reset behind the
++ * card's back.
+  */
+ static int
+-sdhci_wait_transfer_complete(const char *what, bool all_bytes)
++sdhci_wait_transfer_complete(const char *what, bool all_bytes,
++    bool open_ended)
+ {
+ 	uint64_t deadline;
+ 	uint32_t ps;
+@@ -704,33 +711,51 @@
+ 		/*
+ 		 * Same latching problem as BRR/BWR: INT_STATUS can stay 0x0
+ 		 * after the last block. Accept the transfer only if bytes
+-		 * moved and the engine itself says it is idle, so a dead
+-		 * transfer still times out instead of looking successful.
++		 * moved and either the caller consumed everything it asked
++		 * for or the engine itself reports idle, so a dead transfer
++		 * still times out instead of looking successful.
+ 		 */
+ 		if (santoni_data_moved &&
+ 		    (all_bytes || !(ps & SDHCI_PSTATE_DATA_ACTIVE))) {
+ 			if (!santoni_pstate_tc_logged) {
+ 				santoni_pstate_tc_logged = true;
+-				printf("SANTONI SDHCI: %s: transfer idle in "
+-				    "PRESENT_STATE 0x%08x but INT_STATUS "
+-				    "0x%08x never set TC; treating the "
+-				    "block(s) as complete\n", what, ps, st);
++				printf("SANTONI SDHCI: %s: no TC in INT_STATUS "
++				    "0x%08x (PRESENT_STATE 0x%08x) but the "
++				    "block(s) are already in the buffer; "
++				    "treating the transfer as complete\n",
++				    what, st, ps);
+ 			}
+ 			/*
+-			 * DAT_INHIBIT can outlive the last byte on this
+-			 * core the same way TC does. The data is already in
+-			 * the caller's buffer, so drop the path instead of
+-			 * timing out and losing it. Only when the engine
+-			 * itself reports idle: an open-ended transfer may
+-			 * still be waiting for the card.
++			 * Let the data machine retire the transfer. If it is
++			 * still inhibiting commands after a generous margin,
++			 * drop the path: every byte this request asked for is
++			 * already in the buffer. An open-ended transfer keeps
++			 * its path so AUTO_CMD12 can still end it on the card.
+ 			 */
+-			ps = hc_rd(SDHCI_PRESENT_STATE);
+-			if (!(ps & SDHCI_PSTATE_DATA_ACTIVE) &&
+-			    (ps & SDHCI_DATA_INHIBIT)) {
+-				printf("SANTONI SDHCI: %s: DAT still "
+-				    "inhibited after the last byte; "
+-				    "resetting the data path\n", what);
+-				(void)sdhci_reset_paths();
++			if (!open_ended) {
++				uint64_t drain;
++
++				nanoseconds_to_absolutetime(
++				    50ull * NSEC_PER_MSEC, &drain);
++				drain += mach_absolute_time();
++				for (;;) {
++					ps = hc_rd(SDHCI_PRESENT_STATE);
++					if (!(ps & (SDHCI_PSTATE_DATA_ACTIVE |
++					    SDHCI_DATA_INHIBIT))) {
++						break;
++					}
++					if (mach_absolute_time() > drain) {
++						printf("SANTONI SDHCI: %s: "
++						    "data machine still busy "
++						    "(PRESENT_STATE 0x%08x) "
++						    "after the last byte; "
++						    "resetting the data "
++						    "path\n", what, ps);
++						(void)sdhci_reset_paths();
++						break;
++					}
++					delay(1);
++				}
+ 			}
+ 			hc_wr(SDHCI_INT_STATUS, SDHCI_INT_TC);
+ 			return 0;
+@@ -872,7 +897,7 @@
+ 		dst[w] = hc_rd(SDHCI_BUFFER);
+ 	}
+ 	/* The word loop above moved every byte this read asked for. */
+-	error = sdhci_wait_transfer_complete(tag, true);
++	error = sdhci_wait_transfer_complete(tag, true, index == 18);
+ 	if (error) {
+ 		sdhci_recover(index == 18);
+ 		return error;
+@@ -920,7 +945,8 @@
+ 		return error;
+ 	}
+ 	/* SDMA: only the engine's own state proves the burst landed. */
+-	error = sdhci_wait_transfer_complete("SDMA block", false);
++	error = sdhci_wait_transfer_complete("SDMA block", false,
++	    index == 18);
+ 	santoni_sdma_active = false;
+ 	if (error) {
+ 		sdhci_recover(index == 18);
+@@ -1253,7 +1279,7 @@
+ 			hc_wr(SDHCI_BUFFER, src[b * (SDHCI_BLOCK / 4) + i]);
+ 		}
+ 	}
+-	error = sdhci_wait_transfer_complete(tag, true);
++	error = sdhci_wait_transfer_complete(tag, true, index == 25);
+ 	if (error) {
+ 		sdhci_recover(index == 25);
+ 		return error;
+@@ -1838,7 +1864,14 @@
+ 	uint32_t mci_clk = 0, mci_power = 0, vendor, probe_r1 = 0, probe_ocr = 0;
+ 	uint64_t deadline;
+ 	int error, err0, err_cmd1;
+-	bool reset_done;
++	bool reset_done, card_in_transfer = false;
++
++	/*
++	 * Name the build in the log. Matching a boot log to a patch by
++	 * guessing from its messages has already cost flash cycles.
++	 */
++	printf("SANTONI SDHCI: driver 0156 (PRESENT_STATE[11:8], data-path "
++	    "drain)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2050,34 +2083,42 @@
+ 
+ 	/*
+ 	 * First prove the inherited hand-off without resetting the card. If
+-	 * CMD13 answers, the feedback-clock fix is already validated; the
+-	 * card is in Transfer. CMD5 awake is still sent because LK may have
+-	 * deselected or slept it first.
++	 * CMD13 answers with state 4, the feedback-clock fix is validated and
++	 * the card is already in Transfer. CMD5 is only legal in Standby or
++	 * Sleep: in TRAN the card ignores it, and the 0155 boot log shows the
++	 * two resulting command timeouts (and their path resets) right
++	 * before CMD0. Only ask when CMD13 did not prove TRAN.
+ 	 */
+ 	error = sdhci_send_status(SANTONI_CARD_RCA, &probe_r1);
+ 	if (!error) {
++		card_in_transfer =
++		    (probe_r1 & SDHCI_R1_STATE_MASK) ==
++		    (SDHCI_R1_STATE_TRAN << 9);
+ 		printf("SANTONI SDHCI: probe step 2: CMD13 RCA 2 answered "
+-		    "before reset: R1 0x%08x (state %u)\n", probe_r1,
+-		    (probe_r1 >> 9) & 0xf);
++		    "before reset: R1 0x%08x (state %u%s)\n", probe_r1,
++		    (probe_r1 >> 9) & 0xf,
++		    card_in_transfer ? ", TRAN; CMD5 not needed" : "");
+ 	} else {
+ 		printf("SANTONI SDHCI: probe step 2: CMD13 RCA 2 failed "
+ 		    "before reset (%d)\n", error);
+ 	}
+ 
+-	error = sdhci_sleep_awake(SANTONI_CARD_RCA, &probe_r1);
+-	if (!error) {
+-		printf("SANTONI SDHCI: probe step 2: CMD5 awake RCA 2 "
+-		    "answered: R1 0x%08x\n", probe_r1);
+-	} else {
+-		(void)sdhci_reset_paths();
+-		error = sdhci_sleep_awake(1, &probe_r1);
++	if (!card_in_transfer) {
++		error = sdhci_sleep_awake(SANTONI_CARD_RCA, &probe_r1);
+ 		if (!error) {
+-			printf("SANTONI SDHCI: probe step 2: CMD5 awake RCA 1 "
++			printf("SANTONI SDHCI: probe step 2: CMD5 awake RCA 2 "
+ 			    "answered: R1 0x%08x\n", probe_r1);
+ 		} else {
+-			printf("SANTONI SDHCI: probe step 2: CMD5 awake got "
+-			    "no answer on RCA 2 or 1\n");
+ 			(void)sdhci_reset_paths();
++			error = sdhci_sleep_awake(1, &probe_r1);
++			if (!error) {
++				printf("SANTONI SDHCI: probe step 2: CMD5 awake "
++				    "RCA 1 answered: R1 0x%08x\n", probe_r1);
++			} else {
++				printf("SANTONI SDHCI: probe step 2: CMD5 "
++				    "awake got no answer on RCA 2 or 1\n");
++				(void)sdhci_reset_paths();
++			}
+ 		}
+ 	}
+ 

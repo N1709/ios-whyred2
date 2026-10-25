@@ -1,5 +1,48 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0156 (2026-10-25): correct PRESENT_STATE[11:8], drain before reset
+
+- **The pasted boot log is pre-0155.** It has no `driver 0155` banner, no
+  `buffer ready in PRESENT_STATE ... polling PRESENT_STATE from now on` line,
+  and its data failure prints only the first line (0153 added the
+  transfer-register dump). The CMD8 timeout it shows is therefore the bug
+  0155 targets, not a new regression.
+- **What it proves about the hardware.** `CMD8 EXT_CSD: INT_STATUS
+  0x00000000, PRESENT_STATE 0x01f80af6`: bit 11 (`BUFFER_READ_ENABLE`) is
+  set, bit 9 (`READ_TRANSFER_ACTIVE`) is clear, and bits 1/2 (`DAT_INHIBIT`,
+  `DAT_LINE_ACTIVE`) are still set. The 512-byte block is in the FIFO, the
+  engine never marks the transfer active or complete, and DAT stays
+  inhibited - so every following command sees `DAT_INHIBIT`. The 0152 log's
+  `0x01f8aaf6` differs only in reserved bits 13/15.
+- **A real bug in 0155.** It defined `SDHCI_PSTATE_RD_ACTIVE`/`WR_ACTIVE` as
+  bits 13/14 (`0x2000`/`0x4000`). The SD Host Controller spec (and Linux
+  `sdhci.h`) puts them at bits 9/8 (`0x200`/`0x100`); bits 10/11 are the
+  buffer enables. The fallback still rescued this read through bit 11, but
+  the "engine idle" test and the drain condition were reading reserved bits.
+- **0156 (`xnu/patches/0156-sdhci-present-state-bits-and-drain.patch`).**
+  - Correct `PRESENT_STATE[11:8]` definitions and comment.
+  - `sdhci_wait_transfer_complete(what, all_bytes, open_ended)`: when the
+    caller's loop already drained every word, wait up to 50 ms for
+    `DATA_ACTIVE | DAT_INHIBIT` to retire, then reset the data path once.
+    An open-ended `AUTO_CMD12` transfer keeps its path.
+  - Skip CMD5 when CMD13 already reported state 4. CMD5 is illegal in TRAN;
+    the pasted log shows its two timeouts (and two path resets) right before
+    CMD0.
+  - `driver 0156 (PRESENT_STATE[11:8], data-path drain)` banner, so a boot
+    log identifies its build without guessing from messages.
+- **Tests.** The SDHCI mock now models the exact hardware state (BRR/TC never
+  latch, the FIFO level stays set, `DAT_INHIBIT` outlives the last byte) and
+  asserts the read returns a sane EXT_CSD, the data path is reset, and CMD13
+  works afterwards. `tests/run_tests.sh` passes; patches 0153..0156 rebuild
+  the working source byte-for-byte from the 0152 base.
+- **Open observation, not diagnosed.** The same log prints `AppleCLCD ...
+  at 0x5d460000` while the board notes say the continuous splash lives at
+  `0x9d400000`. The frame was presented as 1080x2160, so this is likely a
+  separate IOSurface address, but record the next boot's line before
+  changing anything.
+- **Status:** committed and pushed for CI; the image hash and run id are
+  recorded in the follow-up note once the workflow is green.
+
 ## 0155 (2026-10-25): data phase reads PRESENT_STATE, not just INT_STATUS
 
 - **The 0152 hardware log found the real bug.** CMD8 returned

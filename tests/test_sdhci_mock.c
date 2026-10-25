@@ -77,6 +77,10 @@
 #define SDHCI_DATA_AVAILABLE   0x00000800u
 #define SDHCI_SPACE_AVAILABLE  0x00000400u
 #define SDHCI_DATA_0_LVL_MASK  0x00100000u
+/* SDHCI 3.0 PRESENT_STATE[11:8]: buffer enables are FIFO levels, the two
+ * transfer-active bits are 9 (read) and 8 (write), not 13/14. */
+#define SDHCI_PSTATE_WR_ACTIVE 0x00000100u
+#define SDHCI_PSTATE_RD_ACTIVE 0x00000200u
 
 /* HOST_CONTROL: PIO needs the DMA select field cleared, bus width preserved */
 #define SDHCI_CTRL_DMA_MASK    0x18u
@@ -292,6 +296,9 @@ static struct mock {
 	/* data phase */
 	int data_active;
 	int data_read;          /* 1 = card -> host */
+	int no_brr;             /* INT_STATUS never latches BRR/BWR */
+	int stuck_data;         /* DAT_INHIBIT outlives the last FIFO byte */
+	int moved;              /* a data handshake really moved a word */
 	uint32_t cur_lba;
 	uint32_t blocks_left;
 	uint32_t word;
@@ -369,6 +376,19 @@ gcc_wr(uint32_t off, uint32_t val)
 	}
 }
 
+/* Arm one block: the normal core latches BRR/BWR into INT_STATUS, the 0152
+ * hardware only leaves the FIFO level in PRESENT_STATE. */
+static void
+mock_arm_buffer(int read)
+{
+	if (m.no_brr) {
+		m.present_state |= read ? SDHCI_DATA_AVAILABLE :
+		    SDHCI_SPACE_AVAILABLE;
+	} else {
+		m.int_status |= read ? SDHCI_INT_BRR : SDHCI_INT_BWR;
+	}
+}
+
 /* Load the current block of the fake card into the FIFO model. */
 static void
 mock_load_block(void)
@@ -380,7 +400,7 @@ mock_load_block(void)
 		    SDHCI_BLOCK);
 	}
 	m.word = 0;
-	m.int_status |= m.data_read ? SDHCI_INT_BRR : SDHCI_INT_BWR;
+	mock_arm_buffer(m.data_read);
 }
 
 static inline uint32_t core_rd(uint32_t off);
@@ -451,7 +471,7 @@ mock_start_data(uint32_t lba, uint16_t count, int read)
 	} else {
 		memset(m.block, 0, sizeof(m.block));
 		m.word = 0;
-		m.int_status |= SDHCI_INT_BWR;
+		mock_arm_buffer(0);
 	}
 }
 
@@ -486,11 +506,22 @@ mock_buf_read(void)
 			} else {
 				memset(m.block, 0, sizeof(m.block));
 				m.word = 0;
-				m.int_status |= SDHCI_INT_BWR;
+				mock_arm_buffer(0);
 			}
 		} else {
 			m.data_active = 0;
-			m.int_status |= SDHCI_INT_TC;
+			/*
+			 * The 0156 boot state: the FIFO level stays set, the
+			 * engine never raises TC and DAT_INHIBIT outlives the
+			 * last byte. Only a data-path reset clears it.
+			 */
+			if (m.stuck_data) {
+				m.present_state |= SDHCI_DATA_INHIBIT |
+				    SDHCI_DATA_AVAILABLE;
+			} else {
+				m.present_state &= ~SDHCI_DATA_AVAILABLE;
+				m.int_status |= SDHCI_INT_TC;
+			}
 		}
 	}
 	return w;
@@ -515,7 +546,7 @@ mock_buf_write(uint32_t val)
 		if (m.blocks_left) {
 			memset(m.block, 0, sizeof(m.block));
 			m.word = 0;
-			m.int_status |= SDHCI_INT_BWR;
+			mock_arm_buffer(0);
 		} else {
 			m.data_active = 0;
 			m.int_status |= SDHCI_INT_TC;
@@ -744,6 +775,14 @@ mock_hc_write(uint32_t off, uint32_t val)
 		/* A command-path reset releases a stuck CMD_INHIBIT. */
 		if (val & (SDHCI_RESET_CMD | SDHCI_RESET_ALL)) {
 			m.present_state &= ~SDHCI_CMD_INHIBIT;
+		}
+		/* A data-path reset retires the FIFO level and DAT_INHIBIT, which
+		 * is what lets the next command run after a stuck read. */
+		if (val & (SDHCI_RESET_DATA | SDHCI_RESET_ALL)) {
+			m.present_state &= ~(SDHCI_DATA_INHIBIT |
+			    SDHCI_DATA_AVAILABLE | SDHCI_SPACE_AVAILABLE |
+			    SDHCI_PSTATE_RD_ACTIVE | SDHCI_PSTATE_WR_ACTIVE);
+			m.data_active = 0;
 		}
 		if (val & SDHCI_RESET_ALL) {
 			/* RESET_ALL clears the whole SDHCI reset domain:
@@ -1213,7 +1252,8 @@ sdhci_take_over(void)
 	/*
 	 * Probe step 2: close the card clock, select UHS=0/1-bit and a
 	 * powered-down DLL, then program the GCC RCG to 400 kHz. CMD13 first
-	 * (inherited hand-off), then CMD5 awake, CMD0 and CMD1.
+	 * (inherited hand-off); CMD5 only when CMD13 did not prove TRAN, then
+	 * CMD0 and CMD1.
 	 */
 	uint32_t r1 = 0, ocr = 0;
 
@@ -1225,11 +1265,14 @@ sdhci_take_over(void)
 	}
 	host_delay_us(1000);
 
-	(void)sdhci_send_status(SANTONI_CARD_RCA, &r1);
-	if (sdhci_sleep_awake(SANTONI_CARD_RCA, &r1) != 0) {
-		(void)sdhci_reset_paths();
-		if (sdhci_sleep_awake(1, &r1) != 0) {
+	int card_in_transfer = sdhci_send_status(SANTONI_CARD_RCA, &r1) == 0 &&
+	    (r1 & SDHCI_R1_STATE_MASK) == (SDHCI_R1_STATE_TRAN << 9);
+	if (!card_in_transfer) {
+		if (sdhci_sleep_awake(SANTONI_CARD_RCA, &r1) != 0) {
 			(void)sdhci_reset_paths();
+			if (sdhci_sleep_awake(1, &r1) != 0) {
+				(void)sdhci_reset_paths();
+			}
 		}
 	}
 
@@ -1336,11 +1379,14 @@ sdhci_read_cid_csd(uint32_t rca, uint32_t cid[4], uint32_t csd[4])
 	return sdhci_read_response128(9, rca << 16, csd);
 }
 
-/* Poll one data interrupt (BRR for reads, BWR for writes) and clear it. */
+/* Poll one data interrupt (BRR for reads, BWR for writes) or the FIFO level
+ * in PRESENT_STATE, and clear the interrupt bit on the way out. */
 static int
 sdhci_wait_data(uint32_t bit, int *saw_error)
 {
 	uint64_t deadline = host_now_ns() + CMD_TIMEOUT_US * 1000ull;
+	uint32_t ps_bit = (bit == SDHCI_INT_BRR) ?
+	    SDHCI_DATA_AVAILABLE : SDHCI_SPACE_AVAILABLE;
 
 	for (;;) {
 		uint32_t st = hc_rd(SDHCI_INT_STATUS);
@@ -1352,6 +1398,12 @@ sdhci_wait_data(uint32_t bit, int *saw_error)
 		}
 		if (st & bit) {
 			hc_wr(SDHCI_INT_STATUS, bit);
+			m.moved = 1;
+			return 0;
+		}
+		if (hc_rd(SDHCI_PRESENT_STATE) & ps_bit) {
+			hc_wr(SDHCI_INT_STATUS, bit);
+			m.moved = 1;
 			return 0;
 		}
 		if (host_now_ns() > deadline) {
@@ -1361,19 +1413,50 @@ sdhci_wait_data(uint32_t bit, int *saw_error)
 	}
 }
 
+/*
+ * 0156: accept an idle engine only when a byte really moved; all_bytes means
+ * the caller's own loop already drained every word it asked for. When the
+ * data machine stays inhibited, give it 50 ms and then reset the path so the
+ * next command is not blocked. open_ended keeps AUTO_CMD12's path intact.
+ */
 static int
-sdhci_wait_transfer_complete(void)
+sdhci_wait_transfer_complete(int all_bytes, int open_ended)
 {
 	uint64_t deadline = host_now_ns() + CMD_TIMEOUT_US * 1000ull;
 
 	for (;;) {
 		uint32_t st = hc_rd(SDHCI_INT_STATUS);
+		uint32_t ps;
 
 		if (st & SDHCI_INT_ERR) {
 			hc_wr(SDHCI_INT_STATUS, st);
 			return EIO;
 		}
 		if (st & SDHCI_INT_TC) {
+			hc_wr(SDHCI_INT_STATUS, SDHCI_INT_TC);
+			return 0;
+		}
+		ps = hc_rd(SDHCI_PRESENT_STATE);
+		if (m.moved &&
+		    (all_bytes || !(ps & (SDHCI_PSTATE_RD_ACTIVE |
+		    SDHCI_PSTATE_WR_ACTIVE)))) {
+			if (!open_ended) {
+				uint64_t drain = host_now_ns() + 50ull * 1000000ull;
+
+				for (;;) {
+					ps = hc_rd(SDHCI_PRESENT_STATE);
+					if (!(ps & (SDHCI_PSTATE_RD_ACTIVE |
+					    SDHCI_PSTATE_WR_ACTIVE |
+					    SDHCI_DATA_INHIBIT))) {
+						break;
+					}
+					if (host_now_ns() > drain) {
+						(void)sdhci_reset_paths();
+						break;
+					}
+					host_delay_us(1000);
+				}
+			}
 			hc_wr(SDHCI_INT_STATUS, SDHCI_INT_TC);
 			return 0;
 		}
@@ -1504,7 +1587,7 @@ mock_read_ext_csd(uint8_t *buf)
 	for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
 		((uint32_t *)buf)[i] = hc_rd(SDHCI_BUFFER);
 	}
-	error = sdhci_wait_transfer_complete();
+	error = sdhci_wait_transfer_complete(1, 0);
 	if (error) {
 		sdhci_recover();
 		return error;
@@ -1751,7 +1834,7 @@ sdhci_read_blocks_pio(uint64_t lba, uint32_t count, void *buf)
 			dst[b * (SDHCI_BLOCK / 4) + i] = hc_rd(SDHCI_BUFFER);
 		}
 	}
-	error = sdhci_wait_transfer_complete();
+	error = sdhci_wait_transfer_complete(1, count > 1);
 	if (error) {
 		sdhci_recover();
 		return error;
@@ -1800,7 +1883,7 @@ sdhci_write_blocks_pio(uint64_t lba, uint32_t count, const void *buf)
 			hc_wr(SDHCI_BUFFER, src[b * (SDHCI_BLOCK / 4) + i]);
 		}
 	}
-	error = sdhci_wait_transfer_complete();
+	error = sdhci_wait_transfer_complete(1, count > 1);
 	if (error) {
 		sdhci_recover();
 		return error;
@@ -1987,20 +2070,16 @@ test_take_over(void)
 	/* The old 200 MHz HS400 step is gone: the 400 kHz legacy path is the
 	 * only probe, so LK's MCLK sel 3 is never re-selected. */
 	assert(m.vendor_spec_hs400_seen == 0);
-	/* Probe ladder: CMD13 (hand-off), CMD5 awake, CMD0, CMD1. */
-	assert(m.cmd_count == 4);
+	/* Probe ladder: CMD13 proves TRAN, so CMD5 is skipped; CMD0, CMD1. */
+	assert(m.cmd_count == 3);
 	assert(m.trace[0].cmd == 13);
 	assert(m.trace[0].arg == (SANTONI_CARD_RCA << 16));
-	assert(m.trace[1].cmd == 5);
-	assert(m.trace[1].arg == (SANTONI_CARD_RCA << 16));
-	assert((m.trace[1].word & SDHCI_CMD_RESP_SHORT_BUSY) ==
-	    SDHCI_CMD_RESP_SHORT_BUSY);
-	assert(m.trace[2].cmd == 0);
-	assert(m.trace[2].arg == 0);
-	assert(m.trace[3].cmd == 1);
-	assert(m.trace[3].arg == 0x40ff8080u);
-	assert((m.trace[3].word & SDHCI_CMD_RESP_SHORT) != 0);
-	assert((m.trace[3].word & SDHCI_CMD_CRC) == 0);
+	assert(m.trace[1].cmd == 0);
+	assert(m.trace[1].arg == 0);
+	assert(m.trace[2].cmd == 1);
+	assert(m.trace[2].arg == 0x40ff8080u);
+	assert((m.trace[2].word & SDHCI_CMD_RESP_SHORT) != 0);
+	assert((m.trace[2].word & SDHCI_CMD_CRC) == 0);
 	/* 1-bit legacy bus, no high-speed/DMA bits; UHS mode cleared. */
 	assert((hc_rd8(SDHCI_HOST_CONTROL) &
 	    (SDHCI_CTRL_8BITBUS | SDHCI_CTRL_4BITBUS | SDHCI_CTRL_DMA_MASK |
@@ -2067,28 +2146,29 @@ test_enumerate_card(void)
 	assert(m.card_bus_width == 8);
 	assert(m.card_hs == 1);
 
-	/* CMD13, CMD5, CMD0, CMD1, CMD2, CMD3, CMD9, CMD7, CMD8,
-	 * CMD6(BUS_WIDTH), CMD13, CMD6(HS_TIMING), CMD13. */
-	assert(m.cmd_count == 13);
-	assert(m.trace[4].cmd == 2);
-	assert(m.trace[4].arg == 0);
-	assert((m.trace[4].word & SDHCI_CMD_RESP_LONG) != 0);
-	assert((m.trace[4].word & SDHCI_CMD_INDEX) == 0);
-	assert(m.trace[5].cmd == 3);
+	/* CMD13, CMD0, CMD1, CMD2, CMD3, CMD9, CMD7, CMD8,
+	 * CMD6(BUS_WIDTH), CMD13, CMD6(HS_TIMING), CMD13. CMD5 is skipped
+	 * because CMD13 already proved TRAN. */
+	assert(m.cmd_count == 12);
+	assert(m.trace[3].cmd == 2);
+	assert(m.trace[3].arg == 0);
+	assert((m.trace[3].word & SDHCI_CMD_RESP_LONG) != 0);
+	assert((m.trace[3].word & SDHCI_CMD_INDEX) == 0);
+	assert(m.trace[4].cmd == 3);
+	assert(m.trace[4].arg == (SANTONI_CARD_RCA << 16));
+	assert(m.trace[5].cmd == 9);
 	assert(m.trace[5].arg == (SANTONI_CARD_RCA << 16));
-	assert(m.trace[6].cmd == 9);
+	assert((m.trace[5].word & SDHCI_CMD_INDEX) == 0);
+	assert(m.trace[6].cmd == 7);
 	assert(m.trace[6].arg == (SANTONI_CARD_RCA << 16));
-	assert((m.trace[6].word & SDHCI_CMD_INDEX) == 0);
-	assert(m.trace[7].cmd == 7);
-	assert(m.trace[7].arg == (SANTONI_CARD_RCA << 16));
-	assert(m.trace[8].cmd == 8);
-	assert((m.trace[8].word & SDHCI_CMD_DATA) != 0);
-	assert(m.trace[9].cmd == 6);
-	assert(m.trace[9].arg == 0x03b70200u);
-	assert(m.trace[10].cmd == 13);
-	assert(m.trace[11].cmd == 6);
-	assert(m.trace[11].arg == 0x03b90100u);
-	assert(m.trace[12].cmd == 13);
+	assert(m.trace[7].cmd == 8);
+	assert((m.trace[7].word & SDHCI_CMD_DATA) != 0);
+	assert(m.trace[8].cmd == 6);
+	assert(m.trace[8].arg == 0x03b70200u);
+	assert(m.trace[9].cmd == 13);
+	assert(m.trace[10].cmd == 6);
+	assert(m.trace[10].arg == 0x03b90100u);
+	assert(m.trace[11].cmd == 13);
 
 	/* 25 MHz (GPLL0 / 32 / 2, dual edge), not the 400 kHz entry. */
 	assert(gcc_rd(GCC_SDCC1_APPS_CFG_RCGR) == 0x211fu);
@@ -2104,8 +2184,8 @@ test_enumerate_card(void)
 
 	/* Post-enumeration CMD13 takes the direct path, not the 400 kHz ladder. */
 	assert(sdhci_claim_card() == 0);
-	assert(m.trace[13].cmd == 13);
-	assert(m.trace[13].arg == (SANTONI_CARD_RCA << 16));
+	assert(m.trace[12].cmd == 13);
+	assert(m.trace[12].arg == (SANTONI_CARD_RCA << 16));
 }
 
 /*
@@ -2581,18 +2661,16 @@ test_diagnostic_probe_ladder(void)
 {
 	uint32_t ocr = 0;
 
-	/* Awake card in Transfer: CMD13 and CMD5 answer at 400 kHz. */
+	/* Awake card in Transfer: CMD13 proves TRAN, so CMD5 is skipped. */
 	reset_mock();
 	assert(sdhci_take_over() == 0);
 	assert(m.vendor_spec_hs400_seen == 0);
-	assert(m.cmd_count == 4);
+	assert(m.cmd_count == 3);
 	assert(m.trace[0].cmd == 13);
 	assert(m.trace[0].arg == (SANTONI_CARD_RCA << 16));
-	assert(m.trace[1].cmd == 5);
-	assert(m.trace[1].arg == (SANTONI_CARD_RCA << 16));
-	assert(m.trace[2].cmd == 0);
-	assert(m.trace[3].cmd == 1);
-	assert(m.trace[3].arg == 0x40ff8080u);
+	assert(m.trace[1].cmd == 0);
+	assert(m.trace[2].cmd == 1);
+	assert(m.trace[2].arg == 0x40ff8080u);
 	assert((mock_rd16(SDHCI_CLOCK_CONTROL) & 0xffc0u) == 0);
 	assert(gcc_rd(GCC_SDCC1_APPS_CFG_RCGR) == 0x2017u);
 	assert(gcc_rd(GCC_SDCC1_APPS_M) == 0x01u);
@@ -2635,6 +2713,43 @@ test_diagnostic_probe_ladder(void)
 	assert(m.trace[1].cmd == 1);
 }
 
+/*
+ * The 0155/0156 hardware state: the 512-byte block reaches the FIFO, but the
+ * core never latches BRR or TC into INT_STATUS, and DAT_INHIBIT outlives the
+ * last byte. The driver must take the block from PRESENT_STATE, keep it, and
+ * then reset the data path so the next command is not blocked.
+ */
+static void
+test_data_present_state_fallback(void)
+{
+	static uint8_t buf[SDHCI_BLOCK];
+	uint32_t r1 = 0, sec = 0;
+	unsigned resets;
+
+	reset_mock();
+	assert(sdhci_take_over() == 0);
+
+	mock_ext_csd[192] = 8;          /* EXT_CSD_REV: eMMC 5.1 */
+	mock_ext_csd[193] = 0;          /* CSD structure */
+	m.no_brr = 1;
+	m.stuck_data = 1;
+	m.int_status = 0;
+	m.moved = 0;
+	resets = m.reset_writes;
+
+	assert(mock_read_ext_csd(buf) == 0);
+	assert(m.moved);
+	assert(buf[192] == 8);
+	memcpy(&sec, buf + 212, sizeof(sec));
+	assert(sec == MOCK_SEC_COUNT);
+	/* DAT_INHIBIT had to be cleared by a data-path reset. */
+	assert(m.reset_writes > resets);
+	assert((hc_rd(SDHCI_PRESENT_STATE) & SDHCI_DATA_INHIBIT) == 0);
+	/* And the command path is usable again, which is what the boot needs. */
+	assert(sdhci_cmd(13, SANTONI_CARD_RCA << 16, 0,
+	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1) == 0);
+}
+
 int
 main(void)
 {
@@ -2648,6 +2763,7 @@ main(void)
 	test_cid_csd();
 	test_card_ladder();
 	test_read_pio();
+	test_data_present_state_fallback();
 	test_write_pio();
 	test_bounds();
 	test_errors();
