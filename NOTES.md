@@ -55,6 +55,30 @@
   EXT_CSD payload and 25 MHz/8-bit, not more resets. If it does not, the
   failure line now carries the payload, so the next patch targets the
   Qualcomm data path with evidence.
+- **CI run `40202057492`** (commit `7dbd630`) finished **green**. The
+  `whyred-boot-img` artifact was fetched through nightly.link and verified:
+  - `shim-boot.img` 5,849,088 B, SHA-256
+    `95fa4b698f21ea12b4c82f6958757e5c222fcb22d4e23e0d86d77d212db309e2`
+    (kernel section 5,842,792 B: `Image.gz` + 8,012 B DTB, padded to 4 KiB).
+  - Kernel strings: `driver 0160` 1, `data self-test LBA0` 2,
+    `ABL's handoff state` 1, `cycling the card clock` 1, `driver 0159` 0.
+  - The DTB in the kernel section is byte-identical to
+    `resources/whyred_dtb.bin`.
+  - Local copy: `shim/out/shim-boot-whyred-0160-CI.img`.
+- **Next action: `fastboot boot shim-boot-whyred-0160-CI.img`.** The lines
+  that decide the next three weeks of work:
+  - `data self-test LBA0 8-bit handoff SDMA: OK, bytes 55 aa, MBR 55aa` ->
+    the card, ABL's timing and the data path all work; the driver just has
+    to stop switching, and EXT_CSD follows in the same state.
+  - `MBR absent, words 00000000` with a timeout at both engines -> the
+    Qualcomm data path really never moves bytes; the reference is the sdm660
+    `sdhci-msm.c` (already fetched): `msm_init_cm_dll()` for the DLL
+    (DLL_EN/CK_OUT_EN/LOCK, which this driver never sets) and
+    `sdhci_msm_reset_workaround()` for `HC_SW_RST_REQ` in
+    `CORE_VENDOR_SPEC_FUNC2` (bit 21) instead of the SDHCI `SOFTWARE_RESET`
+    that does not clear inhibit here.
+  - `path reset left PRESENT_STATE ...` followed by `stale inhibit cleared
+    by the clock cycle` tells whether the wedge is recoverable at all.
 
 ## 0159 (2026-10-25): prove the data path on LBA 0 before blaming CMD8
 
