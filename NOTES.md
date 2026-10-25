@@ -60,6 +60,14 @@
   answer `getvar:max-download-size`. `gzip -9` produces a 6.31 MB boot image,
   zopfli produces 5.78 MB, which fits: compress `shim/out/Image` with zopfli,
   then `IMAGE_GZ=/path/Image.z.gz BOARD=whyred shim/build.sh`.
+- **Size budget after adding mockfs/sweet_hfs (kernel `212b83cd…`):** the Image
+  grew to 17,931,392 bytes, so zopfli only reaches 5,827,723 (15, 30 and 60
+  iterations differ by <1 KB - it is saturated, more iterations do not help).
+  With the 454,567-byte DTB that is 6,291,456 bytes including the dummy cpio's
+  page, i.e. exactly the limit. `NO_DUMMY_RAMDISK=1` drops the empty cpio (the
+  real ramdisk rides inside the payload), giving 6,287,360 bytes and a 4 KiB
+  margin. If the ABL still refuses, the next lever is pruning the appended DTB
+  (the shim only reads `/chosen`, XNU uses the ADT).
 - **First hardware boot (2026-10-25, image from `74eec59`, 6,062,080 bytes,
   flashed to `recovery`):** the shim started the kernel on Gold `0x100` and
   the XNU console came up. After the ram-disk root was registered the screen
@@ -89,6 +97,8 @@
   (stage, CMD1 error/OCR, SEC_COUNT, RCA, CLOCK/HOST control, INT_STATUS,
   last command time) and `IOKitBSDInit` repeats it on every retry, so the
   next screen photo says exactly which step failed.
+- **Build for that fix:** commit `57304ef`, CI run `40151544308` finished
+  green (`xnu-kernel` artifact is 61,577,486 bytes).
 - **Next concrete action:** let CI build `0145`/`0148`+`0149`, flash the new
   `shim-boot.img`, and photograph the console. If `md0` mounts and PID 1
   starts, the ram-disk milestone is done; the remaining failure should show

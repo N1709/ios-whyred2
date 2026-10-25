@@ -111,9 +111,18 @@ if [ -f "../resources/${BOARD_LC}_dtb.bin" ]; then
 fi
 
 # Packaging: wrap in boot.img using tools/mkbootimg.py with SDM660/SDM636 parameters
+# The dummy cpio only fills the ramdisk field; the real ramdisk rides inside the
+# payload. Dropping it saves one whole 4 KiB page, which matters for whyred: the
+# ABL rejects a single download over 6 MiB.
+if [ "${NO_DUMMY_RAMDISK:-0}" = "1" ]; then
+	RD_ARG=""
+else
+	RD_ARG="--ramdisk $RAMDISK"
+fi
+
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image.gz \
-	--ramdisk "$RAMDISK" \
+	$RD_ARG \
 	--output out/shim-boot.img \
 	--base 0x00000000 \
 	--kernel_offset 0x00008000 \
