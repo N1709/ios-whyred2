@@ -1,5 +1,42 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0163 (2026-10-25): get the card's own answer before guessing again
+
+- **0162 ran on hardware: all three host widths failed.** The summary said
+  `lba0=no-width` and the matrix afterwards was a wall of
+  `command 6 blocked ... PRESENT_STATE 0x01f800f1` with `hostctl=0x20` at the
+  end. So:
+  - 1-bit, 4-bit and 8-bit all failed to move a byte;
+  - the width really is not the blocker;
+  - the shortened `TIMEOUT_CONTROL` did not produce a `DATA_TIMEOUT` either
+    (`INT_STATUS` stayed 0), so the core probably never entered a data phase
+    at all - the command itself did not retire.
+- **Consequence: stop guessing what the card said and read it.** 0163
+  (`xnu/patches/0163-sdhci-data-verdict-with-card-r1.patch`):
+  - `sdhci_read_sdma()` now keeps the R1 response of the data command in
+    `santoni_data_r1`; `sdhci_lba0_attempt()` prints it, and `CMD16` before
+    each pass prints its own R1.
+  - The failure note becomes `no-width e=<errno> r1=0x<r1>`, and the final
+    `probe failed:` line carries it.
+  - When the sweep leaves the core inhibited, `sdhci_read_ext_csd()` prints
+    one `data verdict:` pair - `PRESENT_STATE`, `INT_STATUS`, last error, R1,
+    then `BS`, `BC`, `TM`, `SDMA` address and `HOST_CONTROL` - and returns
+    `EBUSY` instead of the CMD6 ladder plus the 20-line matrix. Those could
+    not work with inhibit latched and they buried the useful lines.
+  - Banner: `driver 0163 (card R1 and transfer registers in the data verdict;
+    stop when the sweep leaves the core inhibited)`.
+- **How to read the next log, from the last four lines only:**
+  - `R1 0x00000900` on `CMD16`/`LBA0` -> the card accepted the command and is
+    in TRAN; the block never arrives, so the problem is the host data path
+    (transfer mode / SDMA address / bounce buffer), not the card.
+  - `R1` with bit 22 (`0x00400000`, ILLEGAL_COMMAND) or bit 31
+    (ADDRESS_OUT_OF_RANGE) -> the card rejects the data command itself; the
+    next step is the card state (RCA, selected, block length), not the DMA.
+  - `R1 0x00000000` with `e=60` (ETIMEDOUT) -> the command never completed at
+    all; the core's command state machine is not retiring data commands.
+  - `data verdict: ... TM 0x0025 SDMA 0x...` -> check that the transfer mode
+    has DMA|READ and that the SDMA address is the bounce buffer, not 0.
+
 ## 0162 (2026-10-25): the core's data timeout is 11 minutes, so it never fails
 
 - **0161 ran on hardware and the width fix is visible, but it did not fix the

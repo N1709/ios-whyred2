@@ -1,0 +1,122 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -428,7 +428,11 @@
+ 
+ /* One-word verdict of the LBA0 data self-test, kept for the failure line so a
+  * screen that scrolled cannot hide it. */
+-static char santoni_lba0_note[24] = "not-run";
++static char santoni_lba0_note[64] = "not-run";
++/* Result of the last data command, so the one summary line that survives a
++ * scrolled console can say what the card actually answered. */
++static uint32_t santoni_data_r1;
++static int santoni_data_error;
+ 
+ static LCK_GRP_DECLARE(santoni_sdhci_grp, "santoni_sdhci");
+ static LCK_MTX_DECLARE(santoni_sdhci_lock, &santoni_sdhci_grp);
+@@ -1076,7 +1080,7 @@
+ 	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
+ 	error = sdhci_cmd(index, arg, tr_mode,
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
+-	    SDHCI_CMD_DATA, NULL);
++	    SDHCI_CMD_DATA, &santoni_data_r1);
+ 	if (error) {
+ 		santoni_sdma_active = false;
+ 		sdhci_recover(index == 18);
+@@ -2067,8 +2071,9 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0162 (short card timeout, host-side "
+-	    "1/4/8-bit sweep on LBA0 before any CMD6)\n");
++	printf("SANTONI SDHCI: driver 0163 (card R1 and transfer registers "
++	    "in the data verdict; stop when the sweep leaves the core "
++	    "inhibited)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2661,19 +2666,23 @@
+ 	int error;
+ 
+ 	sdhci_ext_csd_clear();
++	santoni_data_r1 = 0;
+ 	if (use_sdma) {
+ 		error = sdhci_read_sdma(17, 0, 1, se.dma_pa + DMA_BOUNCE);
+ 	} else {
+ 		error = sdhci_read_pio_once(17, 0, 1,
+ 		    (void *)(se.dma + DMA_BOUNCE));
+ 	}
++	santoni_data_error = error;
+ 	dma_sync(SDHCI_BLOCK, TRUE);
+ 	mbr = blk[510] == 0x55 && blk[511] == 0xaa;
+-	printf("SANTONI SDHCI: data self-test LBA0 %s %s: %s, bytes %02x %02x, "
+-	    "MBR %s, words %08x %08x %08x %08x (PRESENT_STATE 0x%08x)\n",
++	printf("SANTONI SDHCI: data self-test LBA0 %s %s: %s (%d), bytes %02x "
++	    "%02x, MBR %s, R1 0x%08x, words %08x %08x %08x %08x "
++	    "(PRESENT_STATE 0x%08x)\n",
+ 	    width, engine, error ? (error == ETIMEDOUT ? "timeout" : "error") :
+-	    "OK", blk[510], blk[511], mbr ? "55aa" : "absent",
+-	    w[0], w[1], w[2], w[3], hc_rd(SDHCI_PRESENT_STATE));
++	    "OK", error, blk[510], blk[511], mbr ? "55aa" : "absent",
++	    santoni_data_r1, w[0], w[1], w[2], w[3],
++	    hc_rd(SDHCI_PRESENT_STATE));
+ 	return mbr;
+ }
+ 
+@@ -2732,6 +2741,8 @@
+ 		uint8_t want = (uint8_t)((ctrl & ~SDHCI_CTRL_BUS_MASK) |
+ 		    widths[i].ctrl);
+ 
++		uint32_t r1 = 0;
++
+ 		hc_wr8(SDHCI_TIMEOUT_CONTROL, 0x03);
+ 		hc_wr8(SDHCI_HOST_CONTROL, want);
+ 		printf("SANTONI SDHCI: data self-test: host width 0x%02x -> "
+@@ -2739,7 +2750,9 @@
+ 		    hc_rd8(SDHCI_HOST_CONTROL), widths[i].what);
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+-		    NULL);
++		    &r1);
++		printf("SANTONI SDHCI: data self-test: CMD16 %s -> R1 "
++		    "0x%08x\n", widths[i].what, r1);
+ 		if (sdhci_lba0_attempt(widths[i].what, "SDMA", true) ||
+ 		    sdhci_lba0_attempt(widths[i].what, "PIO", false)) {
+ 			printf("SANTONI SDHCI: data self-test: the data path "
+@@ -2753,7 +2766,8 @@
+ 		}
+ 	}
+ 	hc_wr8(SDHCI_TIMEOUT_CONTROL, saved_timeout);
+-	snprintf(santoni_lba0_note, sizeof(santoni_lba0_note), "no-width");
++	snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
++	    "no-width e=%d r1=0x%08x", santoni_data_error, santoni_data_r1);
+ 	return false;
+ }
+ 
+@@ -2845,6 +2859,27 @@
+ 	}
+ 
+ 	/*
++	 * If the sweep left the core inhibited, nothing after it can work:
++	 * every command would print the same EBUSY and bury the one line that
++	 * matters. Print the verdict (with the card's R1 and the transfer
++	 * registers) and stop.
++	 */
++	if (hc_rd(SDHCI_PRESENT_STATE) &
++	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) {
++		printf("SANTONI SDHCI: data verdict: no width or engine moved "
++		    "a byte; core inhibited (PRESENT_STATE 0x%08x, INT_STATUS "
++		    "0x%08x, last error %d, R1 0x%08x)\n",
++		    hc_rd(SDHCI_PRESENT_STATE), hc_rd(SDHCI_INT_STATUS),
++		    santoni_data_error, santoni_data_r1);
++		printf("SANTONI SDHCI: data verdict: BS 0x%04x BC 0x%04x TM "
++		    "0x%04x SDMA 0x%08x HOST_CONTROL 0x%02x\n",
++		    hc_rd16(SDHCI_BLOCK_SIZE), hc_rd16(SDHCI_BLOCK_COUNT),
++		    hc_rd16(SDHCI_TRANSFER_MODE), hc_rd(SDHCI_SDMA_ADDR),
++		    hc_rd8(SDHCI_HOST_CONTROL));
++		return EBUSY;
++	}
++
++	/*
+ 	 * The card may still be in the timing mode ABL handed it, and on this
+ 	 * board that has been HS400: HOST_CONTROL2 reached the data probe
+ 	 * with TUNED_CLK set in the 0156 boot. An HS400 card delivers read

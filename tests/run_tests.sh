@@ -467,6 +467,21 @@ python3 tools/check_patch.py "$P162" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0161'
 echo "ok   0162 shortens the card timeout and finds the real width without CMD6"
 
+echo "== SDHCI: a failed sweep must print the card's R1 and the transfer =="
+echo "==        registers, then stop instead of 20 lines of EBUSY       =="
+P163="xnu/patches/0163-sdhci-data-verdict-with-card-r1.patch"
+python3 tools/check_patch.py "$P163" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:static uint32_t santoni_data_r1;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:SDHCI_CMD_DATA, &santoni_data_r1);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:MBR %s, R1 0x%08x, words' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CMD16 %s -> R1 ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:"no-width e=%d r1=0x%08x"' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:data verdict: no width or engine moved ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:data verdict: BS 0x%04x BC 0x%04x TM ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0163' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0162'
+echo "ok   0163 puts the card R1 in the data verdict and drops the EBUSY wall"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
