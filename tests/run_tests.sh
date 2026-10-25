@@ -345,6 +345,23 @@ python3 tools/check_patch.py "$P154" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:data probe: no configuration moved a byte'
 echo "ok   0154 probes width/engine/preset on the first data phase and keeps a winner"
 
+echo "== SDHCI: the data waits must also sample PRESENT_STATE              =="
+echo "==        because this core does not always latch BRR/TC in INT_STATUS =="
+P155="xnu/patches/0155-sdhci-poll-present-state-for-data-phase.patch"
+python3 tools/check_patch.py "$P155" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PSTATE_BUF_RD_READY 0x00000800u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PSTATE_RD_ACTIVE    0x00002000u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:static bool santoni_data_moved;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:buffer ready ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:PRESENT_STATE from now on' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:never set TC; treating the ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:resetting the data path' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:for (uint32_t w = 0; w < count * (SDHCI_BLOCK / 4); w++) {' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:hc_rd(SDHCI_SDMA_ADDR) != santoni_sdma_start' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_ext_csd_sane(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:is not real (REV %u '
+echo "ok   0155 falls back to PRESENT_STATE for data and transfer complete"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

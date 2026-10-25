@@ -1,5 +1,49 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0155 (2026-10-25): data phase reads PRESENT_STATE, not just INT_STATUS
+
+- **The 0152 hardware log found the real bug.** CMD8 returned
+  `R1 0x00000900` (TRAN) and then the driver waited on `INT_STATUS`, which
+  stayed `0x00000000`. The same log line shows
+  `PRESENT_STATE 0x01f8aaf6`, which decodes to `DAT_INHIBIT |
+  DAT_LINE_ACTIVE | BUFFER_READ_ENABLE (0x800) | READ_TRANSFER_ACTIVE
+  (0x2000)` plus DAT0-3 and CMD high. So the 512-byte block **was in the
+  FIFO** and the core simply never latched Buffer Read Ready / Transfer
+  Complete into `INT_STATUS`. Every earlier theory (bus width, preset bit,
+  engine) was chasing the wrong register. The boot log in the 0154 round was
+  still from 0152: it has `CMD8 failed (68); retrying once` and no
+  `data probe` lines.
+- **0155 (`xnu/patches/0155-sdhci-poll-present-state-for-data-phase.patch`).**
+  - `SDHCI_PSTATE_BUF_WR_READY/BUF_RD_READY/RD_ACTIVE/WR_ACTIVE` defined.
+  - `sdhci_wait_data()` returns on `INT_STATUS & (BRR|BWR)` **or**
+    `PRESENT_STATE & (BUFFER_READ_ENABLE|BUFFER_WRITE_ENABLE)`, prints one
+    line the first time the fallback is used, and marks the transfer as
+    having moved data.
+  - PIO reads now take **one dword per handshake** instead of one wait per
+    block plus a 128-word burst: `BUFFER_READ_ENABLE` is a FIFO level, not a
+    block counter, so the burst could outrun the FIFO.
+  - `sdhci_wait_transfer_complete()` accepts "engine idle" only when data
+    really moved (`santoni_data_moved`), so a dead transfer still times out.
+    For SDMA, "moved" means the SDMA system address advanced past the value
+    the driver programmed. If `DAT_INHIBIT` outlives the last byte, the data
+    path is reset **after** the bytes are already in the buffer.
+  - `sdhci_probe_attempt()` (the 0154 matrix) uses the same signals, so a
+    matrix row can now succeed for the same reason the main path does.
+  - `sdhci_ext_csd_sane()` checks EXT_CSD byte 192 (REV 1..8), byte 193
+    (CSD structure <= 3) and `SEC_COUNT` (non-zero, <= 128 GiB) before a
+    width is trusted, so a fallback that sampled an empty FIFO cannot pass a
+    constant 0x00/0xff burst off as a real EXT_CSD.
+- **Expected screen lines.** First boot with 0155 should show:
+  `CMD8 EXT_CSD: read buffer ready in PRESENT_STATE 0x01f8aaf6 while
+  INT_STATUS 0x00000000 never latched it; polling PRESENT_STATE from now on`,
+  then `EXT_CSD read works at 1-bit`, `EXT_CSD SEC_COUNT 61071360`, and the
+  8-bit/25 MHz switch. If the FIFO turns out to be empty, the matrix still
+  runs and prints its seven rows.
+- **Verification.** Patch rebuilds 0142..0154 byte-for-byte, applies clean
+  (`check_patch`: 1 file, 14 hunks), host tests and the new 0155 assertions
+  pass locally. CI run pending; the image is published as the
+  `whyred-boot-img` artifact.
+
 ## 0154 (2026-10-25): the first data phase is probed, and can fix itself
 
 - **What the 0152 hardware log actually proved.** The card is fully

@@ -15,10 +15,25 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 | Boot | Stock Xiaomi ABL → `fastboot boot` of our shim (boot image v0/v1) → XNU. Boot partitions are not touched |
 | CPU | The four Cortex-A73 ("Gold", MPIDR `0x100`–`0x103`) cores, 16K pages, GICv3, timers. The Silver cores are parked |
 | Memory | DRAM physical base `0x80000000`, safe kernel budget `0xa0000000` + 1 GiB |
-| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110) |
+| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110). Enumeration is complete; the first 512-byte data phase (`CMD8` EXT_CSD) is being finished (0155: data waits poll `PRESENT_STATE`, not only `INT_STATUS`) |
 | iOS userland | iPhone X 16.7.16 root filesystem; launchd and system daemons |
 | Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
+
+## Progress
+
+Last updated 2026-10-25 (commit with patch `0155`).
+
+| Milestone | Progress | Notes |
+| --- | --- | --- |
+| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, launchd reaches PID 1 |
+| eMMC: command path and first data phase | **60%** | Full re-enumeration works; `PRESENT_STATE` shows the EXT_CSD block in the FIFO while `INT_STATUS` stays 0. The 0155 waits poll `PRESENT_STATE`; waiting for the on-device log |
+| Root filesystem from eMMC (`launchd`, real daemons) | **45%** | Block I/O path is the blocker; mockfs currently stands in for the root |
+| Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
+| **Overall port (weighted)** | **~50%** | Kernel and userspace are far ahead of storage and the peripherals |
+
+The percentages describe this port, not the upstream `ios-sweet` project. They
+move only when a change is confirmed on the phone, not when a patch compiles.
 
 ## Hardware architecture & differences
 
@@ -181,6 +196,13 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0146 | Disable topaz MDP/DSI MMIO on lavender |
 | 0147 | SDCC v5 takeover and BSD-root mount without the IOBSD 30 s stall |
 | 0148 | WHYRED machine config; reuses the LAVENDER board code and enables the built-in libpthread/HFS/BearSSL providers |
+| 0149 | Report the failing SDHCI probe step, CMD1 result and controller state |
+| 0150 | Keep ABL's working card after a stuck `RESET_ALL` on SDCC v5 |
+| 0151 | Keep ABL's bus width and name data-phase failures |
+| 0152 | Read EXT_CSD in 1-bit after CMD0, print CMD8's R1 and the settled bus |
+| 0153 | Try EXT_CSD at 1-bit and 8-bit through PIO and SDMA, dump the transfer registers |
+| 0154 | Probe the first data phase across width/engine/preset and keep the winning setup |
+| 0155 | Poll `PRESENT_STATE` for data-ready and transfer-complete; this core does not latch those bits in `INT_STATUS` |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.
