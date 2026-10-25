@@ -53,6 +53,26 @@
     even if the console scrolled.
   - Banner: `driver 0161 (CMD0 resets the card to 1-bit; host follows before
     the first data command)`.
+- **CI run `40205040247`** (commit `dfb0216`) finished **green**. Artifact
+  fetched and verified:
+  - `shim-boot.img` 5,849,088 B, SHA-256
+    `b442272b46f8a8890297de15aa11f8409dc64e1e4fab46bcd6d40643a507784e`
+    (kernel section 5,842,773 B).
+  - Strings: `driver 0161` 1, `CMD0 reset the card to ` 1, `1-bit after CMD0`
+    1, `lba0=%s` 1, `driver 0160` 0.
+  - DTB byte-identical to `resources/whyred_dtb.bin`.
+  - Local copy: `shim/out/shim-boot-whyred-0161-CI.img`.
+- **Next action: `fastboot boot shim-boot-whyred-0161-CI.img`.** Decisive
+  lines, in order:
+  - `CMD0 reset the card to 1-bit; host width 0x20 -> 0x00` -> the fix took.
+  - `data self-test LBA0 1-bit SDMA: OK, bytes 55 aa, MBR 55aa` -> the data
+    path always worked; only the host's width was wrong. eMMC jumps to
+    ~65-70%, next work is EXT_CSD then the GPT.
+  - `MBR absent, words ...` with `no-data` in `probe failed:` -> the width
+    was not the whole story; the next suspects are the transfer-mode setup
+    (block count/DMA direction) and the DMA bounce buffer.
+  - `lba0=switch-failed` -> the inhibit latched again before the 8-bit CMD6;
+    the vendor reset is then the only recovery path to examine.
 
 ## 0160 (2026-10-25): the wedge is the controller, not the card
 
