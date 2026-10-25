@@ -55,7 +55,10 @@ def entries(data, sums):
     """Yield (name, plain) per entry; plain is None when the entry is short."""
     pos = 0
     while pos + 30 <= len(data) and data[pos:pos + 4] == MAGIC:
-        flag, method, crc, csize, usize = struct.unpack_from("<HHIII", data, pos + 6)
+        # 0 sig, 4 version, 6 flags, 8 method, 10 mtime, 12 mdate, 14 crc,
+        # 18 compressed size, 22 uncompressed size.
+        flag, method = struct.unpack_from("<HH", data, pos + 6)
+        crc, csize, usize = struct.unpack_from("<III", data, pos + 14)
         nlen, elen = struct.unpack_from("<HH", data, pos + 26)
         if pos + 30 + nlen + elen > len(data):
             return

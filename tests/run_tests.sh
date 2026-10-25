@@ -294,6 +294,8 @@ python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
 python3 tests/test_prune_dtb.py >/dev/null
 echo "ok   prune_dtb keeps the board ids and drops the nodes nobody reads"
+python3 tests/test_zip_partial.py >/dev/null
+echo "ok   zip_partial proves an entry before calling it the kernel"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).

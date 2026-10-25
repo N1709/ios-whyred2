@@ -128,7 +128,21 @@
   appended DTB to the root properties plus `--keep` nodes; the whyred vendor
   blob drops 454,567 -> 8,012 bytes and still validates as msm-id `0x159` /
   board-id `0x30008`. Not used yet (the 6,287,360-byte image flashed fine).
-- **Next concrete action:** CI builds `0150`, flash the new image, and read
+- **Built for the phone:** 0150 kernel `c040597e692bf9f4…` (CI `40153926604`,
+  17,820,352 B), zopfli 15 iterations 5,828,643 B, `shim-boot.img`
+  6,287,360 B, SHA-256 `5792ec89dfcfc236…`. Both the `continuing without a
+  completed reset` string (0150) and `mockfs` ×54 are in the payload, and the
+  appended DTB still reports msm-id `0x159` / board-id `0x30008`.
+- **Tooling bug found while fetching that kernel:** the first
+  `fetch-ci-kernel.sh` run wrote a 144,419-byte file and called it ready. It was
+  an exact prefix of the real 17,820,352-byte kernel, which means zlib reported
+  end-of-stream on a half-downloaded entry. `tools/zip_partial.py` now requires
+  the entry's data descriptor (or the local header when flag bit 3 is clear) to
+  agree on CRC-32, compressed and uncompressed size, then demands a >=4 MiB
+  arm64 `MH_EXECUTE` with a `Darwin Kernel Version` string and compares it with
+  the archive's `SHA256SUMS`. `tests/test_zip_partial.py` covers truncated
+  archives, wrong sums and stub Mach-Os.
+- **Next concrete action:** flash this image to `recovery` and read
   `RESET_ALL did not self-clear ...` plus the CMD13/CMD5/CMD0/CMD1 lines that
   follow. If the reset path is the only problem, CMD13 answers and the driver
   enumerates without a reset; if CMD1 still times out, the next suspect is the
