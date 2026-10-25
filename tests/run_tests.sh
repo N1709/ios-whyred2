@@ -255,6 +255,10 @@ assert mkadt.BOARDS['lavender']['panel_h'] == 2340
 PY
 echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
 
+echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
+python3 tests/test_payload.py
+echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
+
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).
 if [ -n "${XNU_SRC:-}" ]; then

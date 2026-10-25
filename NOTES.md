@@ -40,16 +40,25 @@
   `bsd/sweet_hfs` first; `tools/check_patch.py` reports exact hunk counts;
   `tests/run_tests.sh` and `BOARD=whyred bash shim/build.sh` pass on the
   host. The lavender ADT output is byte-identical to the old builder with
-  the same seed.
-- **Not verified:** no GitHub Actions run and no physical whyred boot yet.
-  `resources/whyred_dtb.bin` must be extracted from the device/ROM before
-  packaging an ABL-loadable image; without it `shim/build.sh` still builds
-  but the stock bootloader may reject the Image.
-- **Next concrete action:** run `gh workflow run xnu.yml --ref whyred`,
-  download `kernel.development.whyred`, put the whyred appended DTB in
-  `resources/whyred_dtb.bin`, build `BOARD=whyred shim/build.sh`, and boot
-  it through the `recovery` partition (`fastboot flash recovery` +
-  `fastboot reboot recovery`), keeping boot/modem/persist untouched.
+  the same seed. CI run `40148296141` (push to `whyred`) finished green:
+  host tests, patch validation and the WHYRED kernel build all passed.
+- **Payload pre-flight:** `tools/check_payload.py` rejects a kernel that is
+  not an arm64 Mach-O and a DTB whose `qcom,msm-id`/`qcom,board-id` does not
+  match the board, before `shim/build.sh` packs `shim-boot.img`.
+  `tools/extract_appended_dtb.py` pulls the board DTB out of any boot or
+  recovery image (header v0-v2 or an Image.gz-dtb table).
+- **DTB (obtained):** `resources/whyred_dtb.bin` (444 KiB) was extracted from
+  the TWRP 3.7.0 whyred recovery image with the new extractor: msm-id
+  `0x159`, board-id `0x30008`, model "SDM 636 PM660 + PM660L E7S" - the same
+  ids as `sdm636-mtp-whyred.dts`. `resources/` is git-ignored, so the blob
+  stays local.
+- **Not verified:** no physical whyred boot yet. The kernel from CI still has
+  to be downloaded (`xnu-kernel` artifact: `kernel.development.whyred`) -
+  the artifact API needs a token, so the zip is fetched from the run page.
+- **Next concrete action:** put `kernel.development.whyred` in `xnu/out/`,
+  build `BOARD=whyred shim/build.sh`, and boot it through the `recovery`
+  partition (`fastboot flash recovery` + `fastboot reboot recovery`),
+  keeping boot/modem/persist untouched.
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 

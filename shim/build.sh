@@ -34,6 +34,21 @@ CFLAGS="-target aarch64-linux-gnu -O2 -ffreestanding -nostdlib -fno-pic -fno-jum
 
 mkdir -p out
 
+# Fail on the host, not on the phone: a kernel built for another machine, or a
+# DTB whose qcom,msm-id/board-id the ABL does not accept, only shows up as
+# "Failed to load/authenticate boot image" in the bootloader.
+if [ -n "$PAYLOAD" ] && [ -f "$PAYLOAD" ]; then
+	python3 ../tools/check_payload.py --board "$BOARD_LC" --kernel "$PAYLOAD"
+else
+	echo "warning: no kernel payload; the boot image will contain only the shim" >&2
+fi
+if [ -f "../resources/${BOARD_LC}_dtb.bin" ]; then
+	python3 ../tools/check_payload.py --board "$BOARD_LC" --dtb "../resources/${BOARD_LC}_dtb.bin"
+else
+	echo "warning: resources/${BOARD_LC}_dtb.bin is missing; the stock ABL may reject the image" >&2
+	echo "         extract it with: python3 tools/extract_appended_dtb.py <boot.img> --board $BOARD_LC" >&2
+fi
+
 for f in start.S shim.c console.c mmu.c fdt.c loader.c; do
 	$CC $CFLAGS -c $f -o out/${f%.*}.o
 done

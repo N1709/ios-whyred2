@@ -84,16 +84,28 @@ The device tree builder copies `/product` from the real iPhone X device tree. Ta
 
 Needs `aarch64-linux-gnu-gcc` and AOSP `mkbootimg.py` (set `MKBOOTIMG` if it is not at the default path in `shim/build.sh`).
 
-Put the phone's appended DTB in `resources/whyred_dtb.bin` (extract the
-whyred DTB from the stock boot/recovery image). Then:
+The stock ABL matches the appended DTB against `qcom,msm-id`/`qcom,board-id`
+before it boots the kernel, so a whyred image needs the whyred DTB. Extract it
+from any boot or recovery image built for the phone (stock MIUI `boot.img`,
+TWRP/OrangeFox recovery, or a ROM `boot.img`):
 
 ```sh
-# kernel.development.whyred from the CI artifact
+# -> resources/whyred_dtb.bin (msm-id 0x159, board-id 0x30008, "SDM 636 ... E7S")
+python3 tools/extract_appended_dtb.py twrp-whyred.img --board whyred
+```
+
+Put `kernel.development.whyred` from the CI `xnu-kernel` artifact in
+`xnu/out/` (or pass its path: `BOARD=whyred shim/build.sh /path/kernel`), then:
+
+```sh
 BOARD=whyred shim/build.sh      # -> shim/out/shim-boot.img
 ```
 
 The script runs `tools/mkadt.py --board whyred`, packs the kernel with
 `tools/mkpayload.py` and appends `resources/whyred_dtb.bin` when present.
+Before packing, `tools/check_payload.py` verifies that the kernel is an arm64
+Mach-O and that the DTB carries this board's msm-id/board-id: a wrong-machine
+kernel or DTB stops the build instead of failing later in fastboot.
 Build the lavender image with `BOARD=lavender shim/build.sh`.
 
 | Boot-arg | Effect |
@@ -107,6 +119,10 @@ Build the lavender image with `BOARD=lavender shim/build.sh`.
 | `launchd_unsecure_cache=1`, `wdt=-1 wdt_test=no_user_checkin` | launchd without AMFI; no hardware watchdog |
 
 ### 4. Flash the root and boot
+
+The CI artifact (`xnu-kernel.zip`) is **not** flashed: it only contains
+`kernel.development.whyred` (plus `SHA256SUMS`) for `shim/build.sh`. The file
+to flash is the packaged boot image, `shim/out/shim-boot.img`.
 
 ```sh
 fastboot -S 512M flash userdata ios16-root.simg   # ~5 minutes; do not unplug
