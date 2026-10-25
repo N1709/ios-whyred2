@@ -1,5 +1,59 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0161 (2026-10-25): CMD0 returns the card to 1-bit, the host did not follow
+
+- **The root cause of the 0160 wedge is a state bug in this driver.** 0160
+  deliberately kept ABL's 8-bit `HOST_CONTROL` and read LBA 0 "in the handoff
+  state". But CMD0 (GO_IDLE_STATE) is sent earlier in the same probe, and
+  JEDEC says it resets the card's data interface to **1-bit**. The card was
+  1-bit, the host was 8-bit, and the first data command was CMD8
+  `SEND_EXT_CSD`:
+  - the card drives only DAT0;
+  - the controller waits for a block on DAT[7:0];
+  - the block never completes, so `DAT_LINE_ACTIVE` + `CMD_INHIBIT` latch,
+    all DAT lines read high (nothing is being driven), `INT_STATUS` stays 0
+    (there is no error to report), and every later command returns `EBUSY`.
+  That is exactly the `PRESENT_STATE 0x01f800f1`/`0x01f800f7` +
+  `INT_STATUS 0x00000000` picture decoded in the 0160 section. It is
+  controller-side *symptom*, card/probe-side *cause*.
+- **Evidence from TWRP on the same phone** (`twrp-3.7.0_9-0-whyred.img`,
+  dmesg pulled over adb):
+  ```
+  [2.137790] mmc0: SDHCI controller on c0c4000.sdhci ... 64-bit ADMA in CMDQ mode
+  [2.243641] mmc0: new HS400 Enhanced strobe MMC card at address 0001
+  [2.244376] mmcblk0: mmc0:0001 HCG8a4 58.2 GiB
+  ```
+  - The card is healthy and reaches HS400 Enhanced Strobe. Our `PNM` decode
+    `"HCG8a4"` was right (the earlier `"HGB4e"` was a decode bug).
+  - `androidboot.bootdevice=c0c4000.sdhci` confirms the controller base, and
+    the DTBs in that image are all `qcom,sdhci-msm-v5`: vendor registers live
+    at `HC+0x200/0x20C/0x210`, not the msm8937 `0x100/0x10C/0x110`.
+  - Linux also runs this card at 1-bit until `mmc_set_bus_width()` after
+    CMD0; 8-bit only comes later, after the EXT_CSD read. The 4.4 kernel
+    never calls `msm_init_cm_dll()` below HS400, so a 400 kHz read with the
+    DLL off (`0x6000642c`) is *normal* and was never the blocker.
+  - The generic DTBs carry no `qcom,dll-config`, so hunting the stock
+    `boot.img` for DLL values would have been a dead end.
+- **0161 (`xnu/patches/0161-sdhci-cmd0-returns-card-to-1-bit.patch`).**
+  - Immediately after a successful CMD0 the host width is cleared to 1-bit
+    (`CMD0 reset the card to 1-bit; host width 0x.. -> 0x..`).
+  - `sdhci_probe_lba0(phase, &lanes)` now reads LBA 0 at **1-bit with no
+    CMD6** first; only if that fails does it ask for 8-bit with a busy-free
+    CMD6. It reports the width it actually proved.
+  - The EXT_CSD read follows at the proven width instead of assuming
+    `handoff_lanes`.
+  - Recovery is unchanged: if inhibit still sticks, `sdhci_reset_paths()`
+    first tries the vendor reset (`HC_SW_RST_REQ` bit 21 in
+    `CORE_VENDOR_SPEC_FUNC2`, `HC_SW_RST_WAIT_IDLE_DIS` bit 20 on timeout)
+    before cycling the card clock. The offset is `0x210` on lavender (v5);
+    it was `0x110` in the first draft of this patch and would have written
+    the msm8937 register.
+  - `probe failed:` now ends with `lba0=ok-1bit|ok-8bit|no-data|
+    switch-failed|not-run`, so the one-line summary carries the data verdict
+    even if the console scrolled.
+  - Banner: `driver 0161 (CMD0 resets the card to 1-bit; host follows before
+    the first data command)`.
+
 ## 0160 (2026-10-25): the wedge is the controller, not the card
 
 - **The 0159 image really was on the phone.** The `shim-boot.img` in

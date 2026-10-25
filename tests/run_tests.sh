@@ -437,6 +437,23 @@ python3 tools/check_patch.py "$P160" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0159'
 echo "ok   0160 reads LBA 0 before CMD6 and drops the R1b busy wait"
 
+echo "== SDHCI: CMD0 returns the card to 1-bit, so the host must follow =="
+echo "==        before the first data command (the 0160 wedge)          =="
+P161="xnu/patches/0161-sdhci-cmd0-returns-card-to-1-bit.patch"
+python3 tools/check_patch.py "$P161" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CMD0 reset the card to ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:host width 0x%02x -> 0x%02x' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_probe_lba0(const char *phase, uint32_t *lanes)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:1-bit after CMD0 (phase %s)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CMD0 left the card at ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CORE_VENDOR_SPEC_FUNC2      0x210' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:HC_SW_RST_REQ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:vendor reset cleared the inhibit' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:last=%llu us lba0=%s' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0161' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0160'
+echo "ok   0161 follows CMD0 to 1-bit and keeps the vendor reset as recovery"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

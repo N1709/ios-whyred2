@@ -1,0 +1,353 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -197,6 +197,21 @@
+ #endif
+ #define CORE_HC_MODE            0x78
+ #define CORE_HC_MODE_EN         0x00000001u
++/*
++ * Vendor-only reset request in CORE_VENDOR_SPEC_FUNC2. sdhci-msm's
++ * sdhci_msm_reset_workaround() uses it when the SDHCI SOFTWARE_RESET cannot
++ * complete because pending data transfers never drain: bit 21 asks the core
++ * to reset, and bit 20 tells it to stop waiting for the AXI side to go idle.
++ * The SDHCI reset bits never self-clear on this board, so this is the reset
++ * path that is left.
++ */
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define CORE_VENDOR_SPEC_FUNC2      0x210
++#else
++#define CORE_VENDOR_SPEC_FUNC2      0x110
++#endif
++#define CORE_HC_SW_RST_REQ          (1u << 21)
++#define CORE_HC_SW_RST_WAIT_IDLE_DIS (1u << 20)
+ #define CORE_FF_CLK_SW_RST_DIS  0x00002000u
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+ #define CORE_PWRCTL_STATUS      0x240
+@@ -411,6 +426,10 @@
+ 	bool ready;
+ } se;
+ 
++/* One-word verdict of the LBA0 data self-test, kept for the failure line so a
++ * screen that scrolled cannot hide it. */
++static char santoni_lba0_note[24] = "not-run";
++
+ static LCK_GRP_DECLARE(santoni_sdhci_grp, "santoni_sdhci");
+ static LCK_MTX_DECLARE(santoni_sdhci_lock, &santoni_sdhci_grp);
+ 
+@@ -794,6 +813,49 @@
+ 	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
+ }
+ 
++/*
++ * Vendor reset: the one sequence sdhci-msm uses when the standard reset cannot
++ * complete. Returns 0 when the core accepted it and dropped the request.
++ */
++static int
++sdhci_vendor_core_reset(void)
++{
++	uint32_t f2 = hc_rd(CORE_VENDOR_SPEC_FUNC2);
++	int i;
++
++	printf("SANTONI SDHCI: vendor reset: FUNCTION2 0x%08x -> 0x%08x "
++	    "(HC_SW_RST_REQ)\n", f2, f2 | CORE_HC_SW_RST_REQ);
++	hc_wr(CORE_VENDOR_SPEC_FUNC2, f2 | CORE_HC_SW_RST_REQ);
++	for (i = 0; i < 100; i++) {
++		if (!(hc_rd(CORE_VENDOR_SPEC_FUNC2) & CORE_HC_SW_RST_REQ)) {
++			printf("SANTONI SDHCI: vendor reset: request accepted "
++			    "after %d ms\n", i);
++			return 0;
++		}
++		delay(1);
++	}
++
++	/*
++	 * The core is waiting for AXI to drain, which is exactly what a stuck
++	 * transfer never does. Disabling that wait is the documented
++	 * workaround; the reset then completes in the background.
++	 */
++	f2 = hc_rd(CORE_VENDOR_SPEC_FUNC2);
++	printf("SANTONI SDHCI: vendor reset: request did not clear in 100 ms; "
++	    "disabling the wait for idle (FUNCTION2 0x%08x -> 0x%08x)\n",
++	    f2, f2 | CORE_HC_SW_RST_WAIT_IDLE_DIS);
++	hc_wr(CORE_VENDOR_SPEC_FUNC2, f2 | CORE_HC_SW_RST_WAIT_IDLE_DIS);
++	delay(10);
++	if (!(hc_rd(CORE_VENDOR_SPEC_FUNC2) & CORE_HC_SW_RST_REQ)) {
++		printf("SANTONI SDHCI: vendor reset: request accepted after "
++		    "the wait-idle workaround\n");
++		return 0;
++	}
++	printf("SANTONI SDHCI: vendor reset: request still pending "
++	    "(FUNCTION2 0x%08x)\n", hc_rd(CORE_VENDOR_SPEC_FUNC2));
++	return ETIMEDOUT;
++}
++
+ /* Reset the command and data paths and wait for the core to self-clear. */
+ static int
+ sdhci_reset_paths(void)
+@@ -825,9 +887,18 @@
+ 	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT))) {
+ 		return 0;
+ 	}
+-	printf("SANTONI SDHCI: path reset left PRESENT_STATE 0x%08x; "
+-	    "cycling the card clock to resample the lines\n",
++	printf("SANTONI SDHCI: path reset left PRESENT_STATE 0x%08x: "
++	    "CMD_INHIBIT/DAT_INHIBIT still set\n",
+ 	    hc_rd(SDHCI_PRESENT_STATE));
++	(void)sdhci_vendor_core_reset();
++	(void)hc_rd(SDHCI_INT_STATUS);
++	if (!(hc_rd(SDHCI_PRESENT_STATE) &
++	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT))) {
++		printf("SANTONI SDHCI: vendor reset cleared the inhibit\n");
++		return 0;
++	}
++	printf("SANTONI SDHCI: cycling the card clock to resample the "
++	    "lines\n");
+ 	if (sdhci_enable_card_clock() != 0) {
+ 		return ETIMEDOUT;
+ 	}
+@@ -1996,8 +2067,8 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0160 (LBA0 in the handoff state first; "
+-	    "CMD6 without the R1b busy handshake)\n");
++	printf("SANTONI SDHCI: driver 0161 (CMD0 resets the card to 1-bit; "
++	    "host follows before the first data command)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2170,9 +2241,9 @@
+ 	 */
+ 	hc_wr8(SDHCI_HOST_CONTROL,
+ 	    (uint8_t)(handoff_ctrl & SDHCI_CTRL_BUS_MASK));
+-	printf("SANTONI SDHCI: probe step 2: bus width from ABL kept "
+-	    "(HOST_CONTROL 0x%02x, %u-bit)\n",
+-	    hc_rd8(SDHCI_HOST_CONTROL),
++	printf("SANTONI SDHCI: probe step 2: bus width from ABL kept until "
++	    "CMD0 (HOST_CONTROL 0x%02x, %u-bit); CMD0 returns the card to "
++	    "1-bit and the host follows\n", hc_rd8(SDHCI_HOST_CONTROL),
+ 	    (handoff_ctrl & SDHCI_CTRL_8BITBUS) ? 8 :
+ 	    ((handoff_ctrl & SDHCI_CTRL_4BITBUS) ? 4 : 1));
+ 
+@@ -2258,6 +2329,24 @@
+ 	    err0, (unsigned long long)se.last_cmd_ns);
+ 	if (err0) {
+ 		sdhci_recover(false);
++	} else {
++		/*
++		 * GO_IDLE_STATE resets the card's data interface to 1-bit,
++		 * whatever width ABL used for its last transfer. Keeping the
++		 * host at 8-bit does not hurt the command line, which is why
++		 * enumeration still worked, but it breaks the first data
++		 * command: the card drives DAT0 only while the controller waits
++		 * for DAT[7:0] to finish the block. DAT_LINE_ACTIVE then stays
++		 * set forever and no error bit is raised - the 0160 wedge.
++		 * Follow the card now; 8-bit is renegotiated with CMD6 only
++		 * after a read has completed.
++		 */
++		uint8_t now = hc_rd8(SDHCI_HOST_CONTROL);
++		hc_wr8(SDHCI_HOST_CONTROL,
++		    (uint8_t)(now & ~SDHCI_CTRL_BUS_MASK));
++		printf("SANTONI SDHCI: probe step 2: CMD0 reset the card to "
++		    "1-bit; host width 0x%02x -> 0x%02x\n", now,
++		    hc_rd8(SDHCI_HOST_CONTROL));
+ 	}
+ 
+ 	err_cmd1 = sdhci_cmd1_poll(&probe_ocr);
+@@ -2589,67 +2678,78 @@
+ }
+ 
+ /*
+- * Read LBA 0 as a data-path self-test, before anything changes the card's
+- * timing or bus width.
++ * Read LBA 0 as a data-path self-test, in the state the card is actually in
++ * after enumeration.
+  *
+- * Every data command this port has sent so far was CMD8, so its failure could
+- * never say whether the transfer engine is dead or that one command is
+- * rejected. Worse, the 0159 boot shows the first CMD6 in this path latching
+- * CMD_INHIBIT+DAT_INHIBIT for good, after which every command returns EBUSY
+- * and nothing is learned.
+- *
+- * So the first attempt uses exactly the state ABL handed over - same bus
+- * width, same card timing, no CMD6 at all. ABL read this kernel from this
+- * card moments earlier, and that is the one configuration the hardware is
+- * known to complete. A block with the MBR signature there proves the card,
+- * the timing and the data path are fine. Only if that fails are the 1-bit
+- * and 8-bit switches tried, and each failure is named.
++ * 0160 assumed ABL's 8-bit handoff still applied here. It does not: CMD0 was
++ * sent during this probe, and GO_IDLE_STATE resets the card's data interface
++ * to 1-bit. The host kept 8-bit, so the first data command (CMD8 SEND_EXT_CSD)
++ * had the card driving DAT0 while the controller waited for DAT[7:0]. That is
++ * the observed wedge: DAT_LINE_ACTIVE + CMD_INHIBIT latched, every DAT line
++ * high, INT_STATUS 0, and every later command returning EBUSY.
++ *
++ * So the first attempt keeps the host and card both at 1-bit with no CMD6.
++ * Only after that read works is 8-bit requested, and a failure to switch is
++ * named instead of silently skipped.
+  */
+ static bool
+-sdhci_probe_lba0(void)
++sdhci_probe_lba0(const char *phase, uint32_t *lanes)
+ {
+-	static const struct {
+-		uint8_t value;
+-		uint8_t set;
+-		const char *what;
+-	} widths[] = {
+-		{ EXT_CSD_BUS_WIDTH_1, 0, "1-bit" },
+-		{ EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS, "8-bit" },
+-	};
+ 	uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
+-	const char *handoff = (ctrl & SDHCI_CTRL_8BITBUS) ? "8-bit handoff" :
+-	    ((ctrl & SDHCI_CTRL_4BITBUS) ? "4-bit handoff" : "1-bit handoff");
+-	unsigned int i;
+ 
++	printf("SANTONI SDHCI: data self-test: phase %s, HOST_CONTROL "
++	    "0x%02x\n", phase, ctrl);
++	/*
++	 * The card has been through CMD0, so its data interface is 1-bit no
++	 * matter what ABL left behind. Match the host first, with no CMD6: a
++	 * read in this state is the one configuration that cannot be blamed
++	 * on a switch command.
++	 */
++	if ((ctrl & SDHCI_CTRL_BUS_MASK) != 0) {
++		hc_wr8(SDHCI_HOST_CONTROL,
++		    (uint8_t)(ctrl & ~SDHCI_CTRL_BUS_MASK));
++		printf("SANTONI SDHCI: data self-test: CMD0 left the card at "
++		    "1-bit; host width 0x%02x -> 0x%02x (no CMD6)\n", ctrl,
++		    hc_rd8(SDHCI_HOST_CONTROL));
++	}
+ 	(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
+-	if (sdhci_lba0_attempt(handoff, "SDMA", true) ||
+-	    sdhci_lba0_attempt(handoff, "PIO", false)) {
+-		printf("SANTONI SDHCI: data self-test: the data path works in "
+-		    "ABL's handoff state (%s); no timing switch needed\n",
+-		    handoff);
++	if (sdhci_lba0_attempt("1-bit", "SDMA", true) ||
++	    sdhci_lba0_attempt("1-bit", "PIO", false)) {
++		printf("SANTONI SDHCI: data self-test: the data path works at "
++		    "1-bit after CMD0 (phase %s)\n", phase);
++		snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
++		    "ok-1bit");
++		*lanes = 1;
+ 		return true;
+ 	}
+ 
+-	for (i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+-		if (sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH, widths[i].value,
+-		    widths[i].set, SDHCI_CTRL_BUS_MASK,
+-		    "LBA0 probe width") != 0) {
+-			printf("SANTONI SDHCI: data self-test LBA0 %s: width "
+-			    "switch failed, no data command sent\n",
+-			    widths[i].what);
+-			continue;
+-		}
+-		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+-		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+-		    NULL);
+-		if (sdhci_lba0_attempt(widths[i].what, "SDMA", true) ||
+-		    sdhci_lba0_attempt(widths[i].what, "PIO", false)) {
+-			printf("SANTONI SDHCI: data self-test: the data path "
+-			    "works at %s\n", widths[i].what);
+-			return true;
+-		}
++	/*
++	 * Only now ask for 8-bit, with a CMD6 that carries no busy wait. If
++	 * this hangs the inhibit, at least the 1-bit verdict above is already
++	 * on the console.
++	 */
++	if (sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_8,
++	    SDHCI_CTRL_8BITBUS, SDHCI_CTRL_BUS_MASK,
++	    "LBA0 probe width") != 0) {
++		printf("SANTONI SDHCI: data self-test LBA0 8-bit: width switch "
++		    "failed, no data command sent\n");
++		snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
++		    "switch-failed");
++		return false;
++	}
++	(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
++	if (sdhci_lba0_attempt("8-bit", "SDMA", true) ||
++	    sdhci_lba0_attempt("8-bit", "PIO", false)) {
++		printf("SANTONI SDHCI: data self-test: the data path works at "
++		    "8-bit (phase %s)\n", phase);
++		snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
++		    "ok-8bit");
++		*lanes = 8;
++		return true;
+ 	}
++	snprintf(santoni_lba0_note, sizeof(santoni_lba0_note), "no-data");
+ 	return false;
+ }
+ 
+@@ -2676,9 +2776,7 @@
+ 		{ EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS,
+ 		    "BUS_WIDTH=8 (EXT_CSD read)" },
+ 	};
+-	uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
+-	uint32_t handoff_lanes = (ctrl & SDHCI_CTRL_8BITBUS) ? 8 :
+-	    ((ctrl & SDHCI_CTRL_4BITBUS) ? 4 : 1);
++	uint32_t lba0_lanes = 1;
+ 	unsigned int i;
+ 	int error, last = EIO;
+ 
+@@ -2708,7 +2806,7 @@
+ 	 * CMD6 in this path can latch CMD/DAT inhibit for good, so the fewer
+ 	 * switches the better.
+ 	 */
+-	if (sdhci_probe_lba0()) {
++	if (sdhci_probe_lba0("after CMD0", &lba0_lanes)) {
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 		    NULL);
+@@ -2716,9 +2814,9 @@
+ 		error = sdhci_read_sdma(8, 0, 1, se.dma_pa + DMA_BOUNCE);
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		if (sdhci_ext_csd_sane()) {
+-			*width = handoff_lanes;
++			*width = lba0_lanes;
+ 			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
+-			    "at %u-bit (handoff state%s)\n", handoff_lanes,
++			    "at %u-bit (LBA0 state%s)\n", lba0_lanes,
+ 			    error ? ", status error ignored" : "");
+ 			return 0;
+ 		}
+@@ -2730,16 +2828,16 @@
+ 		    (void *)(se.dma + DMA_BOUNCE));
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		if (sdhci_ext_csd_sane()) {
+-			*width = handoff_lanes;
++			*width = lba0_lanes;
+ 			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
+-			    "at %u-bit (handoff state, PIO%s)\n",
+-			    handoff_lanes,
++			    "at %u-bit (LBA0 state, PIO%s)\n",
++			    lba0_lanes,
+ 			    error ? ", status error ignored" : "");
+ 			return 0;
+ 		}
+ 		printf("SANTONI SDHCI: enumeration: LBA0 reads but EXT_CSD "
+-		    "does not in the handoff state (%d); trying the legacy "
+-		    "timing ladder\n", error);
++		    "does not at %u-bit (%d); trying the width ladder\n",
++		    lba0_lanes, error);
+ 	}
+ 
+ 	/*
+@@ -3943,12 +4041,13 @@
+ 		snprintf(santoni_fail_text, sizeof(santoni_fail_text),
+ 		    "step=%s err=%d cmd1=%d ocr=0x%08x sec=%u rca=%u enum=%d\n"
+ 		    "clkctl=0x%04x hostctl=0x%02x hostctl2=0x%04x "
+-		    "int=0x%08x last=%llu us",
++		    "int=0x%08x last=%llu us lba0=%s",
+ 		    stage, error, se.cmd1_error, se.cmd1_ocr, se.sec_count,
+ 		    se.rca, se.enumerated ? 1 : 0,
+ 		    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
+ 		    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd(SDHCI_INT_STATUS),
+-		    (unsigned long long)(se.last_cmd_ns / 1000));
++		    (unsigned long long)(se.last_cmd_ns / 1000),
++		    santoni_lba0_note);
+ 		printf("SANTONI SDHCI: probe failed: %s\n", santoni_fail_text);
+ 		return error;
+ 	}
