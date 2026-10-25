@@ -17,5 +17,8 @@ SECTIONS
 	_sec_stacks = .;
 	. += 8 * 0x1000;
 	_end = .;
+	/* Loader-visible end of the shim image.  A dedicated symbol keeps the
+	 * host test from colliding with the linker-provided `_end`. */
+	_shim_end = .;
 	/DISCARD/ : { *(.comment) *(.note*) *(.eh_frame*) }
 }

@@ -8,7 +8,7 @@ int main(void)
 {
 	con_fb = (volatile uint32_t *)host_fb;
 	con_clear(RED);
-	con_str("SHIM", "lavender bare-metal shim");
+	con_str("SHIM", BOARD_NAME " bare-metal shim");
 	con_hex("MMFR0", 0x0000000000101122ULL);
 	con_hex2("PSCI", "ver=", 0x10001, "smccc=", 0x10002);
 	con_clear(BLUE);

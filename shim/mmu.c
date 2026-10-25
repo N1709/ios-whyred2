@@ -1,5 +1,5 @@
 /*
- * Stage-1 MMU driver for lavender (SDM660, Cortex-A73 Gold cores):
+ * Stage-1 MMU driver for lavender/whyred (SDM660/SDM636, Cortex-A73 Gold):
  * 16 KiB translation granule XNU uses (TCR_EL1.TG0 = 16K, 36-bit VA).
  *
  * T0SZ=28 gives a 36-bit VA whose walk starts at level 2: one 16K table of

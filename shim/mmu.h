@@ -1,7 +1,8 @@
 #pragma once
 #include <stdint.h>
+#include "board.h"
 
-#define FB_PHYS		0x9d400000UL	/* lavender continuous splash framebuffer */
+#define FB_PHYS		FB_BASE		/* ABL continuous-splash framebuffer */
 
 struct mmu_info {
 	uint64_t img_lo, img_hi, ttbr;

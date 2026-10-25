@@ -1,8 +1,10 @@
-# ios-lavender
+# ios-whyred
 
-**Apple's iOS 16 running on a Redmi Note 7.**
+**Apple's iOS 16 running on a Redmi Note 5 / Note 5 Pro.**
 
-This is a port of Apple's open-source XNU kernel (xnu-8796) to the Xiaomi **Redmi Note 7** (`lavender`, Qualcomm **SDM660** / Snapdragon 660). On top of it runs the unmodified iOS 16.7.16 (20H392) userland of the iPhone X: launchd, the system daemons, backboardd and SpringBoard.
+This is a port of Apple's open-source XNU kernel (xnu-8796) to the Xiaomi **Redmi Note 5 / Note 5 Pro** (`whyred`, Qualcomm **SDM636** / Snapdragon 636). On top of it runs the unmodified iOS 16.7.16 (20H392) userland of the iPhone X: launchd, the system daemons, backboardd and SpringBoard.
+
+The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comparison. WHYRED inherits the LAVENDER board code because the two SoCs share the GICv3, timer, SDCC v5 and continuous-splash layout; the panel is 1080x2160 instead of 1080x2340.
 
 > Experimental bring-up. It installs into the `userdata` partition and so **erases Android's user data**. Nothing is flashed to the boot partitions; the kernel is started from RAM with `fastboot boot`.
 
@@ -15,20 +17,21 @@ This is a port of Apple's open-source XNU kernel (xnu-8796) to the Xiaomi **Redm
 | Memory | DRAM physical base `0x80000000`, safe kernel budget `0xa0000000` + 1 GiB |
 | Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110) |
 | iOS userland | iPhone X 16.7.16 root filesystem; launchd and system daemons |
-| Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2340 32-bit `a8r8g8b8`) |
+| Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## Hardware architecture & differences
 
-| Component | Redmi Note 7 (lavender / SDM660) |
+| Component | Redmi Note 5 / Note 5 Pro (whyred / SDM636) |
 | --- | --- |
-| CPU | Octa-core Kryo 260 (4x Cortex-A73 Gold @ 2.2 GHz + 4x Cortex-A53 Silver @ 1.84 GHz) |
+| CPU | Octa-core Kryo 260 (4x Cortex-A73 Gold @ 1.8 GHz + 4x Cortex-A53 Silver @ 1.6 GHz) |
 | 16K Granule | Supported on Gold cluster (`0x100`–`0x103`); Silver cluster is parked via PSCI `CPU_ON` |
 | Interrupt Controller | ARM GICv3: GICD `0x17a00000`, GICR `0x17b00000` |
-| Timers | VTIMER INTID 19 (GIC_PPI 3), PTIMER INTID 18 (GIC_PPI 2) |
+| Timers | VTIMER INTID 19 (GIC_PPI 3), PTIMER INTID 18 (GIC_PPI 2), 19.2 MHz |
 | Storage | eMMC 5.1 (`sdhc_1` at `0x0c0c4000`, Qualcomm SDCC v5) |
-| Framebuffer | `0x9d400000`, 1080x2340, 32-bit `a8r8g8b8`, stride 4320 bytes |
+| Framebuffer | `0x9d400000`, 1080x2160, 32-bit `a8r8g8b8`, stride 4320 bytes |
 | Power / Reset | PS_HOLD `0x010ac000`, IMEM restart reason `0x146bf65c` |
+| Touch | Novatek NT36672 (not enabled in this kernel build yet) |
 
 ## How it boots
 
@@ -46,16 +49,19 @@ There is no serial console. The kernel draws its console into ABL's framebuffer;
 
 ## How to do it yourself
 
-You need a Redmi Note 12 4G (`topaz`/`tapas`, SM6225) with an **unlocked bootloader**, a Linux PC with `fastboot`, and a GitHub account for the kernel build. **Everything on `userdata` is lost.** Boot, vendor_boot, firmware and other partitions are never written.
+You need a Redmi Note 5 / Note 5 Pro (`whyred`, SDM636) with an **unlocked bootloader**, a Linux PC with `fastboot`, and a GitHub account for the kernel build. **Everything on `userdata` is lost.** Boot, vendor_boot, firmware and other partitions are never written. On Xiaomi ABL, `fastboot boot` is often stubbed out; the tested path is the `recovery` partition (`fastboot flash recovery` + `fastboot reboot recovery`), leaving the Android `boot` partition intact.
 
 ### 1. Build the kernel
 
-The kernel builds on GitHub's macOS runners (macos-14, Xcode 15) with [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build); newer Xcode's `iig` does not match the xnu-8796 IORPC ABI. Fork the repo and run, on the `topaz` branch:
+The kernel builds on GitHub's macOS runners (macos-14, Xcode 15) with [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build); newer Xcode's `iig` does not match the xnu-8796 IORPC ABI. Fork the repo and run, on the `whyred` branch:
 
 ```sh
-gh workflow run xnu.yml -R YOU/ios-topaz --ref topaz
-gh run download RUN_ID -R YOU/ios-topaz -n xnu-kernel -D xnu/out
+gh workflow run xnu.yml -R YOU/ios-whyred --ref whyred
+gh run download RUN_ID -R YOU/ios-whyred -n xnu-kernel -D xnu/out
 ```
+
+The workflow defaults to `MACHINE_CONFIG=WHYRED`; pass
+`-f machine_config=LAVENDER` to build the Redmi Note 7 kernel instead.
 
 A build takes about 8 minutes. If the artifact upload times out on GitHub's side, rerun the job. Check that the kernel has no LSE left (`llvm-objdump -d --mattr=+v8.5a ... | grep -P '\t(cas|ldadd|ldset|ldclr|swp|ldapr)'`; the only hit should be the `K256` SHA table).
 
@@ -78,12 +84,17 @@ The device tree builder copies `/product` from the real iPhone X device tree. Ta
 
 Needs `aarch64-linux-gnu-gcc` and AOSP `mkbootimg.py` (set `MKBOOTIMG` if it is not at the default path in `shim/build.sh`).
 
+Put the phone's appended DTB in `resources/whyred_dtb.bin` (extract the
+whyred DTB from the stock boot/recovery image). Then:
+
 ```sh
-python3 tools/mkadt.py shim/out/topaz.adt --highmem
-python3 tools/mkpayload.py xnu/out/kernel.development.sweet shim/out/topaz.adt shim/out/payload.bin \
-    --cmdline 'debug=0xc serial=3 cpus=4 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_noconsole=1 sweetfb_hz=30'
-shim/build.sh ../shim/out/payload.bin      # -> shim/out/shim-boot.img
+# kernel.development.whyred from the CI artifact
+BOARD=whyred shim/build.sh      # -> shim/out/shim-boot.img
 ```
+
+The script runs `tools/mkadt.py --board whyred`, packs the kernel with
+`tools/mkpayload.py` and appends `resources/whyred_dtb.bin` when present.
+Build the lavender image with `BOARD=lavender shim/build.sh`.
 
 | Boot-arg | Effect |
 | --- | --- |
@@ -99,7 +110,11 @@ shim/build.sh ../shim/out/payload.bin      # -> shim/out/shim-boot.img
 
 ```sh
 fastboot -S 512M flash userdata ios16-root.simg   # ~5 minutes; do not unplug
-fastboot boot shim/out/shim-boot.img
+# whyred: Xiaomi ABL stubs fastboot boot, so use the recovery slot
+fastboot flash recovery shim/out/shim-boot.img
+fastboot reboot recovery
+# or, on a bootloader that allows it:
+# fastboot boot shim/out/shim-boot.img
 ```
 
 The shim screen (red) shows `MMFR0`, the Gold hand-off and `SPEED silver=… gold=…` for 8 seconds, then XNU starts. The first boot spends a while on the Apple logo (SpringBoard waits for LaunchServices to build its database); the lock screen follows after about 3 minutes. To get back to fastboot, hold Power + Volume down.
@@ -111,53 +126,58 @@ The shim screen (red) shows `MMFR0`, the Gold hand-off and `SPEED silver=… gol
 
 ## Roadmap
 
-1. **Touch** (FT5452 at I²C `0x38` on QUP0 SE2 `0x4a88000`, IRQ GPIO80, reset GPIO86, AVDD GPIO36): patch 0083, needs confirmation on the phone.
-2. **Buttons**: power and volume down on the PM6125 PON block, volume up on PM6125 GPIO5.
+1. **Touch**: whyred uses Novatek NT36672 (I²C, panel variants tianma/huaxing/td4310), not lavender's FocalTech. Port the NT36672 driver from the whyred vendor kernel into the XNU I²C/HID path.
+2. **Buttons**: power and volume keys on the PM660/PM660L PON block, volume up on a PMIC GPIO.
 3. **Smoother display**: higher `sweetfb_hz`; check whether the Gold cores run at a low clock without cpufreq (the shim's speed probe) and raise it if so.
 4. **Narrow the GIC fix** to the register that actually matters, then move it into XNU.
 5. **Real-time clock** from the PMIC RTC or passed in by the shim.
 6. **All 8 cores (experiment, later):** build XNU with 4K pages (drop `__ARM_16K_PG__` from `SWEET.h`, as XNU's own `BCM2837` Raspberry Pi 3 config does on Cortex-A53) and describe two clusters, Gold as `P` and Silver as `E`, so the AMP scheduler uses both. Risk: the iOS 16 userland was only ever run on 16K pages (hard-coded 16K in malloc, JIT guard pages, IOSurface, commpage layout), and the 16K assumptions in the shim and sweet's patches have to be checked too. The 16K Gold-only kernel stays as the fallback.
 7. **Silver cores as a coprocessor** (idea): run bare-metal shim code on them for the panel frame copy instead of XNU.
-8. **6 GB model** (requested): the RAM layout is hard-coded for the 4 GB phone (`mkadt.py --highmem`, 4 GiB at `0x1_40000000`). Have the shim read the DDR ranges from the `/memory` node of the DTB that ABL passes and write them into the ADT and boot args, so one image boots both the 4 GB and the 6 GB versions. Everything else (SoC, panel, touch, battery) is the same hardware.
-**GPU plan (2026-10-19):** a kernel Adreno 610 driver (topaz-woa `TopazGpuW` sequences) with an msm DRM style user client for Mesa freedreno, so QuartzCore's OpenGL ES renderer draws the UI on the GPU; Metal for apps after that.
-
-9. **Wi-Fi** (port from [MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa) `TopazWifi`, which has scan, WPA2 and working internet on Windows): bring up the modem/WLAN firmware through TrustZone, SMEM/QMI and the WCN3988 WLAN commands exactly as `TopazWifi` does, in an XNU driver. Expose it to iOS first as a network interface (IONetworkingFamily, network set by config), then emulate the IO80211 interface that `wifid` talks to, so Settings → Wi-Fi shows the scan list and joins networks.
-10. **Speaker** (port from topaz-woa `TopazAudio` (ADSP / AudioReach) + `TopazSpeaker`, see its `docs/P9_audio.md`): ADSP firmware through TrustZone, AudioReach graph to the speaker, and an XNU audio driver that CoreAudio can output to.
-11. **Also ready in topaz-woa to port**: brightness (display adapter), USB host/OTG (`TopazOtgDxe` + XHCI), RPM requests (`TopazRpm`: rails, clocks, GPU CX level), SIM/LTE registration (`docs/P9_sim.md`). The GPU work follows `TopazGpuW`.
+8. **3/4/6 GB variants:** the ADT uses a fixed safe 1 GiB budget at `0xa0000000`, so the same image works on all whyred RAM variants. A larger budget needs the shim to read the DDR ranges from ABL's `/memory` node.
+9. **Wi-Fi:** bring up the WCN3990 firmware through TrustZone/SMEM/QMI in an XNU driver. Expose it to iOS first as an IONetworkingFamily interface, then emulate the IO80211 interface that `wifid` talks to.
+10. **Speaker:** ADSP/AudioReach through TrustZone, then an XNU audio driver that CoreAudio can output to.
+11. **GPU:** the whyred Adreno 509 is close to the Adreno 610 work in [MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa) (`TopazGpuW`); a kernel msm/DRM-style user client is the long-term path for QuartzCore's OpenGL ES renderer.
 
 ## Repository layout
 
 | Path | What |
 | --- | --- |
 | `shim/` | Bare-metal boot shim (C + asm), boot image v4, Gold hand-off, GIC setup, payload loader |
-| `xnu/patches/` | XNU patch series (applied in order by CI): sweet's 0001–0079, topaz's 0080+ |
-| `.github/workflows/xnu.yml` | Kernel CI build |
-| `tools/mkadt.py` | Apple Device Tree for topaz (Gold cores, memory map, MMIO) and the iPhone X identity |
+| `xnu/patches/` | XNU patch series (applied in order by CI): sweet's 0001–0079, santoni/lavender/whyred 0080+ |
+| `.github/workflows/xnu.yml` | Kernel CI build (defaults to `WHYRED`) |
+| `shim/board.h` | Per-board panel/SoC constants for whyred and lavender |
+| `tools/mkadt.py` | Apple Device Tree for whyred/lavender (Gold cores, memory map, MMIO) and the iPhone X identity; `--board whyred` selects 1080x2160 |
 | `tools/mkpayload.py` | Packs kernel + ADT + boot-args into the shim payload |
 | `tools/mkiosroot.sh`, `tools/sweet-root-tweaks.py` | Build and adjust the HFS+ iOS root |
 | `tools/sweet-crash.py`, `sweet-log.py` | Symbolicate crash reports, read the persistent log |
-| `NOTES.md` | sweet's engineering log (history of the original port) |
+| `NOTES.md` | Engineering log and active handoff |
 
 Not in git: partition backups, live device trees, Apple firmware and root images, build trees.
 
-## topaz kernel patches
+## whyred/lavender kernel patches
 
 | # | What |
 | --- | --- |
-| 0080 | CPU topology for SM6225; sweet's SM7150 key/touch/USB drivers gated behind `sweethw=1` |
-| 0081 | ARMv8.0: `-mcpu=cortex-a53`, no PAN, PFZ without CASA, userland LSE/LDAPR emulation |
-| 0082 | Boot CPU is Gold MPIDR `0x100` |
-| 0083 | Touch: FocalTech FT5452 on QUP0 SE2 (values from [topaz-woa](https://github.com/MakrSas/topaz-woa) TopazTouch) |
+| 0142 | SDHCI eMMC 5.1 driver for the Qualcomm SDCC v5 controller |
+| 0143 | Persistent console log on the SYSTEM partition |
+| 0144 | 4 KiB page support for the 16 KiB-signed dyld shared cache |
+| 0145 | LAVENDER machine config (`ARM64_BOARD_CONFIG_LAVENDER`, 16K GICv3 board) |
+| 0146 | Disable topaz MDP/DSI MMIO on lavender |
+| 0147 | SDCC v5 takeover and BSD-root mount without the IOBSD 30 s stall |
+| 0148 | WHYRED machine config; reuses the LAVENDER board code and enables the built-in libpthread/HFS/BearSSL providers |
 
-## Key hardware facts (topaz)
+The earlier 0080-0141 topaz/santoni patches remain in the series for the
+other devices.
 
-- SoC SM6225 "khaje": 4× Kryo 260 Silver (A53 class, MPIDR `0x0`–`0x3`) + 4× Kryo 260 Gold (A73 class, `0x100`–`0x103`). Only Gold has the 16K granule.
-- DDR banks `0x40000000`+`0x3bb00000`, `0x80000000`+3 GiB, `0x1_40000000`+4 GiB; all fixed carve-outs are below `0x63900000`.
-- GICv3 at `0xf200000` (redistributors `0xf300000`, stride `0x20000`), virtual timer INTID 19, 19.2 MHz.
-- Panel: 1080×2400 DSI video mode with DSC, continuous splash at `0x5c000000`.
-- Touch: FocalTech FT5452 at `0x38` on QUP0 SE2, raw range 1350×3000 (1.25× the panel).
-- More hardware notes for this phone: [MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa) (`docs/AGENT_BRIEF_drivers.md`).
+## Key hardware facts (whyred)
+
+- SoC SDM636: 4× Kryo 260 Silver (A53 class, MPIDR `0x0`–`0x3`, 1.6 GHz) + 4× Kryo 260 Gold (A73 class, `0x100`–`0x103`, 1.8 GHz). Only Gold has the 16K granule.
+- GICv3 at `0x17a00000` (redistributors `0x17b00000`, 8 PEs, stride `0x20000`), virtual timer INTID 19, physical timer INTID 18, 19.2 MHz.
+- eMMC 5.1 SDCC v5 at `0x0c0c4000`, GIC SPI 110.
+- Panel: 1080×2160 DSI video mode, continuous splash at `0x9d400000` (`cont_splash_mem` in the vendor DTS), 32-bit `a8r8g8b8`, stride 4320.
+- Touch: Novatek NT36672 (not yet enabled).
+- Vendor DTS source: [LineageOS/android_kernel_xiaomi_sdm660](https://github.com/LineageOS/android_kernel_xiaomi_sdm660), `arch/arm64/boot/dts/vendor/qcom/xiaomi/longcheer/whyred/`.
 
 ## Credits
 
-Based on [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet), which did the hard part: XNU on a Qualcomm phone with the iPhone X userland. Built on Apple's open-source releases (xnu, IOHIDFamily, libpthread, hfs), [BearSSL](https://bearssl.org), [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build), [ipsw](https://github.com/blacktop/ipsw), Qualcomm/Xiaomi's published Linux kernel sources, and the topaz hardware work in [MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa). iOS itself is Apple's and is not distributed here.
+Based on [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet), which did the hard part: XNU on a Qualcomm phone with the iPhone X userland, and the lavender port this whyred target is derived from. Built on Apple's open-source releases (xnu, IOHIDFamily, libpthread, hfs), [BearSSL](https://bearssl.org), [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build), [ipsw](https://github.com/blacktop/ipsw), Qualcomm/Xiaomi's published Linux kernel sources, and the hardware work in [MakrSas/topaz-woa](https://github.com/MakrSas/topaz-woa). iOS itself is Apple's and is not distributed here.

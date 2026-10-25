@@ -1,10 +1,6 @@
 #pragma once
 #include <stdint.h>
-
-#define FB_BASE		0x9d400000UL	/* lavender continuous splash framebuffer */
-#define FB_W		1080
-#define FB_H		2340
-#define FB_STRIDE	(FB_W * 4)	/* 4320 bytes, a8r8g8b8 matching mainline simplefb */
+#include "board.h"
 
 #define RED		0xffff0000U
 #define BLUE		0xff0000a0U

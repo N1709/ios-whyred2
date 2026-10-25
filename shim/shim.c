@@ -17,8 +17,8 @@
 #define RESTART_BOOTLOADER	0x77665500U
 #define PSHOLD			0x010ac000UL	/* qcom,pshold@10ac000 */
 
-#define GICD_BASE		0x17a00000UL	/* SDM660 GICD (64 KiB) */
-#define GICR_BASE		0x17b00000UL	/* SDM660 GICR (1 MiB, 8 PEs) */
+#define GICD_BASE		0x17a00000UL	/* SDM660/SDM636 GICD (64 KiB) */
+#define GICR_BASE		0x17b00000UL	/* SDM660/SDM636 GICR (1 MiB, 8 PEs) */
 #define GICR_SIZE		0x100000UL
 #define GICR_PE_SIZE		0x20000UL
 #define GICR_TYPER		0x08
@@ -31,8 +31,8 @@
 #define GICR_ISPENDR0		(GICR_SGI + 0x200)
 #define GICR_ISACTIVER0		(GICR_SGI + 0x300)
 
-#define VTIMER_INTID		19	/* SDM660: <GIC_PPI 3 ...> = 16 + 3 */
-#define PTIMER_INTID		18	/* SDM660: <GIC_PPI 2 ...> = 16 + 2 */
+#define VTIMER_INTID		19	/* <GIC_PPI 3 ...> = 16 + 3 */
+#define PTIMER_INTID		18	/* <GIC_PPI 2 ...> = 16 + 2 */
 #define SGI_INTID		1
 
 #define PSCI_VERSION		0x84000000UL
@@ -283,14 +283,14 @@ void shim_main(uint64_t dtb)
 {
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "lavender bare-metal shim (SDM660)");
+	con_str("SHIM", BOARD_NAME " bare-metal shim (" BOARD_SOC ")");
 
 	uint64_t mmfr0 = rsr("id_aa64mmfr0_el1");
 	con_hex2("MMFR0", "lo=", (uint32_t)mmfr0, "tg16=", (mmfr0 >> 20) & 0xf);
 	con_hex2("MIDR", "el1=", (uint32_t)rsr("midr_el1"), "mpidr=", (uint32_t)rsr("mpidr_el1"));
 
 	/*
-	 * lavender: XNU requires 16K translation granule. ABL may start us on
+	 * XNU requires 16K translation granule. ABL may start us on
 	 * a Kryo 260 Silver core (Cortex-A53 class, TGran16 = 0). The Gold A73
 	 * cluster (0x100..0x103) has 16K support. Hand off to Gold 0x100 via PSCI.
 	 */

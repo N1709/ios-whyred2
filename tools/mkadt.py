@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build the minimal Apple Device Tree that the LAVENDER xnu needs to boot.
+"""Build the minimal Apple Device Tree that the LAVENDER/WHYRED xnu needs to boot.
 
-Only what the early boot path actually reads; MMIO addresses come from
-the lavender (Redmi Note 7, Qualcomm SDM660) live FDT.
-Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--native]
+Only what the early boot path actually reads; MMIO addresses come from the
+lavender (Redmi Note 7, SDM660) and whyred (Redmi Note 5, SDM636) live FDTs.
+Usage:  mkadt.py OUT.adt [--board lavender|whyred] [--dump] [--qemu] [--native]
 """
 import hashlib, os, struct, sys
 
@@ -19,17 +19,38 @@ SOC_BASE = 0x01000000
 # interrupt-controller@17a00000 (redistributor-stride 0x20000, 8 cores)
 GICD, GICD_SIZE = 0x17a00000, 0x10000
 GICR, GICR_SIZE = 0x17b00000, 0x100000
-# Continuous splash simplefb left lit by Qualcomm ABL (1080x2340 32-bit a8r8g8b8)
-FB, FB_SIZE = 0x9d400000, 1080 * 2340 * 4
-SWEET_ECID = 0x4c4156454e444552  # 'LAVENDER', synthetic
-FB_W, FB_H, FB_STRIDE = 1080, 2340, 1080 * 4
+# Continuous splash simplefb left lit by Qualcomm ABL at the same physical
+# address on both boards.
+FB = 0x9d400000
+
+# Board facts. SDM660 (lavender) and SDM636 (whyred) are the same Kryo 260
+# family: four Cortex-A73 Gold cores (MPIDR 0x100-0x103) with the 16 KiB
+# translation granule, GICv3 at 0x17a00000/0x17b00000, SDCC v5 at 0x0c0c4000.
+BOARDS = {
+    'lavender': {
+        'name': 'lavender', 'soc': 'sdm660',
+        'panel_w': 1080, 'panel_h': 2340,
+        'cpu_hz': 2200000000,
+        'ecid': 0x4c4156454e444552,          # 'LAVENDER', synthetic
+        'manifest': b'lavender boot manifest',
+    },
+    'whyred': {
+        'name': 'whyred', 'soc': 'sdm636',
+        'panel_w': 1080, 'panel_h': 2160,
+        'cpu_hz': 1800000000,
+        'ecid': 0x5748595245440001,          # 'WHYRED\0\1', synthetic
+        'manifest': b'whyred boot manifest',
+    },
+}
+DEFAULT_BOARD = 'lavender'
+FB_W, FB_H = BOARDS[DEFAULT_BOARD]['panel_w'], BOARDS[DEFAULT_BOARD]['panel_h']
+FB_STRIDE = FB_W * 4
+FB_SIZE = FB_W * FB_H * 4
 TIMEBASE = 19200000
 VTIMER_INTID = 19
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
-
-BOOT_MANIFEST_HASH = hashlib.sha384(b'lavender boot manifest').digest()
 
 # The iOS userland is the iPhone X (iPhone10,3 / D22AP) IPSW. MobileGestalt
 # derives product type, device class, home-button-less UI, artwork etc. from
@@ -61,8 +82,11 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, native=False):
+def build(seed=None, qemu=False, native=False, board=DEFAULT_BOARD):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ."""
+    cfg = BOARDS[board]
+    fb_w, fb_h, fb_stride = cfg['panel_w'], cfg['panel_h'], cfg['panel_w'] * 4
+    fb_size = fb_stride * fb_h
     phys_base, mem_size = PHYS_BASE, MEM_SIZE
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
     seed = seed if seed is not None else os.urandom(64)
@@ -75,12 +99,12 @@ def build(seed=None, qemu=False, native=False):
         ('dram-size', u64(mem_size)),
         ('random-seed', seed),
         ('debug-enabled', u32(1)),
-        ('firmware-version', cstr('lavender-shim')),
-        ('system-firmware-version', cstr('lavender-shim')),
-        ('boot-manifest-hash', BOOT_MANIFEST_HASH),
+        ('firmware-version', cstr(cfg['name'] + '-shim')),
+        ('system-firmware-version', cstr(cfg['name'] + '-shim')),
+        ('boot-manifest-hash', hashlib.sha384(cfg['manifest']).digest()),
         ('crypto-hash-method', cstr('sha2-384')),
         ('display-scale', u32(3)),
-        ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
+        ('unique-chip-id', struct.pack('<Q', cfg['ecid'])),
         ('chip-id', u32(0x8015)),
         ('certificate-production-status', u32(0)),
         ('effective-production-status-ap', u32(0)),
@@ -110,7 +134,7 @@ def build(seed=None, qemu=False, native=False):
             ('l3-cache-id', u32(0)),
             ('state', cstr(state)),
             ('timebase-frequency', u32(timebase)),
-            ('clock-frequency', u32(2200000000)),
+            ('clock-frequency', u32(cfg['cpu_hz'])),
             ('bus-frequency', u32(100000000)),
             ('memory-frequency', u32(1866000000)),
             ('peripheral-frequency', u32(timebase)),
@@ -145,16 +169,16 @@ def build(seed=None, qemu=False, native=False):
             ph(),
             ('device_type', cstr('display-subsystem')),
             ('compatible', cstr('sweet,display')),
-            ('canvas-width', u32(1080 if native else 1125)),
-            ('canvas-height', u32(2340 if native else 2436)),
+            ('canvas-width', u32(fb_w if native else 1125)),
+            ('canvas-height', u32(fb_h if native else 2436)),
         ])])
 
     fbcon = node('sweet-fbcon', [
         ph(),
-        ('reg', u64(FB, FB_SIZE)),
-        ('width', u32(FB_W)),
-        ('height', u32(FB_H)),
-        ('stride', u32(FB_STRIDE)),
+        ('reg', u64(FB, fb_size)),
+        ('width', u32(fb_w)),
+        ('height', u32(fb_h)),
+        ('stride', u32(fb_stride)),
         ('depth', u32(32)),
     ])
 
@@ -186,7 +210,7 @@ def build(seed=None, qemu=False, native=False):
 
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,lavender') + cstr('xiaomi,sweet') + cstr('qcom,sdm660') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,' + cfg['name']) + cstr('xiaomi,sweet') + cstr('qcom,' + cfg['soc']) + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
@@ -197,12 +221,26 @@ def build(seed=None, qemu=False, native=False):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print("Usage: mkadt.py OUT.adt [--dump] [--qemu] [--native]", file=sys.stderr)
+    args = sys.argv[1:]
+    board = DEFAULT_BOARD
+    if '--board' in args:
+        at = args.index('--board')
+        if at + 1 >= len(args):
+            print("mkadt.py: --board needs lavender or whyred", file=sys.stderr)
+            sys.exit(2)
+        board = args[at + 1].lower()
+        del args[at:at + 2]
+    if board not in BOARDS:
+        print("mkadt.py: unknown board %r (want %s)" % (board, '/'.join(BOARDS)),
+              file=sys.stderr)
+        sys.exit(2)
+    if not args:
+        print("Usage: mkadt.py OUT.adt [--board lavender|whyred] [--dump] [--qemu] [--native]",
+              file=sys.stderr)
         sys.exit(1)
-    root = build(qemu='--qemu' in sys.argv, native='--native' in sys.argv)
+    root = build(qemu='--qemu' in args, native='--native' in args, board=board)
     blob = adt.serialize(root)
-    out_path = sys.argv[1]
+    out_path = args[0]
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     with open(out_path, 'wb') as f:
         f.write(blob)

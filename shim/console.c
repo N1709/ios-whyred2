@@ -1,6 +1,6 @@
 /*
- * Minimal text console on the ABL splash framebuffer for lavender (SDM660).
- * 1080x2340 32-bit (a8r8g8b8), stride 4320 bytes.
+ * Minimal text console on the ABL splash framebuffer for lavender/whyred.
+ * 1080x2340 (lavender) or 1080x2160 (whyred), 32-bit a8r8g8b8, stride 4320.
  * With the MMU off every access is Device memory: 32-bit word writes ensure alignment.
  */
 #include "console.h"

@@ -230,6 +230,31 @@ python3 tools/check_patch.py "$P142" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:return physio('
 echo "ok   0142 never hands a user VA to memcpy and keeps the cdev lock off uiomove"
 
+echo "== WHYRED: SDM636 machine config inherits the LAVENDER board code,    =="
+echo "==        and the built-in libpthread/HFS providers are enabled for it =="
+P148="xnu/patches/0148-whyred-board-target.patch"
+python3 tools/check_patch.py "$P148" -q \
+	--added-contains 'makedefs/MakeInc.def:SUPPORTED_ARM64_MACHINE_CONFIGS = BCM2837 T6000 T8101 T8103 VMAPPLE SWEET SANTONI LAVENDER WHYRED' \
+	--added-contains 'makedefs/MakeInc.def:MACHINE_FLAGS_ARM64_WHYRED = -DARM64_BOARD_CONFIG_WHYRED -DARM64_BOARD_CONFIG_LAVENDER -DARM64_BOARD_CONFIG_SWEET -DWHYRED=1' \
+	--added-contains 'makedefs/MakeInc.def:ifeq ($(filter SWEET SANTONI LAVENDER WHYRED,$(CURRENT_MACHINE_CONFIG)),)' \
+	--added-contains 'config/MASTER.arm64.whyred:machine' \
+	--added-contains 'config/MASTER.arm64.whyred:CONFIG_KERNEL_INTEGRITY' \
+	--added-contains 'bsd/conf/Makefile.template:ifneq ($(filter SWEET SANTONI LAVENDER WHYRED,$(CURRENT_MACHINE_CONFIG)),)' \
+	--added-contains 'libkern/conf/Makefile.template:ifneq ($(filter SWEET SANTONI LAVENDER WHYRED,$(CURRENT_MACHINE_CONFIG)),)'
+grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0019-stage-libpthread.sh
+grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0020-stage-bearssl.sh
+grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0026-stage-hfs.sh
+python3 - <<'PY'
+import sys
+sys.path.insert(0, 'tools')
+import mkadt
+w = mkadt.BOARDS['whyred']
+assert (w['panel_w'], w['panel_h']) == (1080, 2160), w
+assert w['soc'] == 'sdm636', w
+assert mkadt.BOARDS['lavender']['panel_h'] == 2340
+PY
+echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
+
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).
 if [ -n "${XNU_SRC:-}" ]; then

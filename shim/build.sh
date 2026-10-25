@@ -1,11 +1,20 @@
 #!/bin/bash
-# Build the freestanding shim and wrap it in an Android boot.img for SDM660 (lavender).
+# Build the freestanding shim and wrap it in an Android boot.img for an
+# SDM660/SDM636 board (BOARD=whyred by default, BOARD=lavender for the
+# Redmi Note 7).
 set -euo pipefail
+
+BOARD="${BOARD:-whyred}"
+case "$BOARD" in
+	whyred|WHYRED)   BOARD_LC=whyred;  BOARD_DEFINE=-DBOARD_WHYRED ;;
+	lavender|LAVENDER) BOARD_LC=lavender; BOARD_DEFINE=-DBOARD_LAVENDER ;;
+	*) echo "error: BOARD must be whyred or lavender (got '$BOARD')" >&2; exit 2 ;;
+esac
 
 PAYLOAD="${1:-}"
 if [ -z "$PAYLOAD" ]; then
-	if [ -f "$(dirname "$0")/../xnu/out/kernel.development.lavender" ]; then
-		PAYLOAD="$(dirname "$0")/../xnu/out/kernel.development.lavender"
+	if [ -f "$(dirname "$0")/../xnu/out/kernel.development.$BOARD_LC" ]; then
+		PAYLOAD="$(dirname "$0")/../xnu/out/kernel.development.$BOARD_LC"
 	elif [ -f "$(dirname "$0")/../xnu/out/kernel.development.santoni" ]; then
 		PAYLOAD="$(dirname "$0")/../xnu/out/kernel.development.santoni"
 	fi
@@ -21,7 +30,7 @@ NM="${NM:-llvm-nm}"
 LD="${LD:-ld.lld}"
 HOST_CC="${HOST_CC:-clang}"
 
-CFLAGS="-target aarch64-linux-gnu -O2 -ffreestanding -nostdlib -fno-pic -fno-jump-tables -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
+CFLAGS="-target aarch64-linux-gnu -O2 -ffreestanding -nostdlib -fno-pic -fno-jump-tables -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra $BOARD_DEFINE"
 
 mkdir -p out
 
@@ -42,12 +51,12 @@ truncate -s "$size" out/Image
 
 # Build static Mach-O PID 1 init test program
 echo "Building static Mach-O PID 1 init..."
-$CC -target arm64-apple-ios16.0 -c ../tools/santoni-init.S -o out/lavender-init.o
-python3 ../tools/mkinit.py out/lavender-init.o out/init.macho
+$CC -target arm64-apple-ios16.0 -c ../tools/santoni-init.S -o out/$BOARD_LC-init.o
+python3 ../tools/mkinit.py out/$BOARD_LC-init.o out/init.macho
 
 # Ramdisk / Payload packaging
 RAMDISK="out/ramdisk.bin"
-CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 lavender"
+CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 $BOARD_LC"
 
 # Ensure a minimal ramdisk.bin is always present
 if command -v cpio >/dev/null 2>&1; then
@@ -61,8 +70,8 @@ if [ -n "$PAYLOAD" ]; then
 	magic=$(python3 -c "import sys; f=open(sys.argv[1],'rb'); b=f.read(4); print(b.hex())" "$PAYLOAD" 2>/dev/null || true)
 	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
 		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
-		python3 ../tools/mkadt.py out/lavender.adt
-		python3 ../tools/mkpayload.py "$PAYLOAD" out/lavender.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
+		python3 ../tools/mkadt.py out/$BOARD_LC.adt --board "$BOARD_LC"
+		python3 ../tools/mkpayload.py "$PAYLOAD" out/$BOARD_LC.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
 	fi
 fi
 
@@ -76,11 +85,11 @@ fi
 
 # Package as Image.gz-dtb (standard SDM660 kernel format for Qualcomm ABL)
 gzip -9 -c out/Image > out/Image.gz
-if [ -f ../resources/lavender_dtb.bin ]; then
-	cat ../resources/lavender_dtb.bin >> out/Image.gz
+if [ -f "../resources/${BOARD_LC}_dtb.bin" ]; then
+	cat "../resources/${BOARD_LC}_dtb.bin" >> out/Image.gz
 fi
 
-# Packaging: wrap in boot.img using tools/mkbootimg.py with lavender parameters
+# Packaging: wrap in boot.img using tools/mkbootimg.py with SDM660/SDM636 parameters
 python3 ../tools/mkbootimg.py \
 	--kernel out/Image.gz \
 	--ramdisk "$RAMDISK" \
@@ -94,7 +103,7 @@ python3 ../tools/mkbootimg.py \
 	--cmdline "$CMDLINE"
 
 # Host render of the console layout
-$HOST_CC -O2 -Wall -I. -o out/host_test console.c host_test.c && ./out/host_test
+$HOST_CC -O2 -Wall -I. $BOARD_DEFINE -o out/host_test console.c host_test.c && ./out/host_test
 
 # Host unit test for Mach-O segment unroller and boot_args
 $HOST_CC -O2 -Wall -I. -o out/loader_test loader_test.c loader.c && ./out/loader_test

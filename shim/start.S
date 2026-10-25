@@ -1,5 +1,5 @@
 /*
- * lavender boot shim entry: standard arm64 Linux Image header for Qualcomm UEFI ABL.
+ * lavender/whyred boot shim entry: standard arm64 Linux Image header for Qualcomm UEFI ABL.
  * ABL enters at EL1 AArch64, MMU/D-cache off, x0 = DTB pointer.
  */
 	.section .text.head, "ax"

@@ -1,4 +1,55 @@
-# iOS 16 on lavender (Redmi Note 7, Qualcomm SDM660) - working notes
+# iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
+
+## Whyred port (2026-10-25): SDM636 target from the lavender tree
+
+- **Goal:** boot the same XNU/iOS 16 image on the Xiaomi Redmi Note 5 /
+  Note 5 Pro (`whyred`, Qualcomm SDM636). The repository branch is `whyred`.
+- **Hardware facts used (from the whyred vendor DTS, not yet measured on
+  device):**
+  - SoC SDM636, 4x Cortex-A73 Gold (`MPIDR 0x100`-`0x103`, 1.8 GHz) and
+    4x Cortex-A53 Silver (`MPIDR 0x000`-`0x003`, 1.6 GHz). Gold has the
+    16 KiB translation granule; the shim still wakes Gold `0x100` via PSCI.
+  - GICv3 distributor `0x17a00000`, redistributors `0x17b00000`, 19.2 MHz
+    timer, virtual timer INTID 19, physical timer INTID 18.
+  - eMMC 5.1 SDCC v5 at `0x0c0c4000`, GIC SPI 110, same as lavender.
+  - Continuous-splash framebuffer `0x9d400000`, 1080x2160, 32-bit
+    `a8r8g8b8`, stride 4320 bytes. The whyred and lavender reserved-memory
+    nodes both put `cont_splash_mem` at `0x9d400000`.
+  - Touch is Novatek NT36672 (not the lavender FocalTech); touch is not
+    enabled by this kernel build yet.
+- **Kernel changes:**
+  - `xnu/patches/0148-whyred-board-target.patch` adds the `WHYRED` machine
+    config and `config/MASTER.arm64.whyred`.
+  - WHYRED compiles with the LAVENDER board header (`-DARM64_BOARD_CONFIG_LAVENDER`)
+    because SDM636 and SDM660 share the GIC/timer/SDCC/framebuffer layout.
+    This also keeps the lavender SDHCI, GICv3, framebuffer and BSD-root
+    patches active without duplicating them.
+  - `libkern/conf/Makefile.template` and `bsd/conf/Makefile.template` now
+    include WHYRED, so the built-in BearSSL, libpthread and HFS providers
+    are compiled instead of being silently dropped.
+  - `0019-stage-libpthread.sh`, `0020-stage-bearssl.sh` and
+    `0026-stage-hfs.sh` stage their sources for WHYRED as well.
+  - The CI workflow defaults to `MACHINE_CONFIG=WHYRED`, accepts the
+    `whyred` branch, and fails if 0148 is skipped.
+- **Shim/ADT changes:** `shim/board.h` selects whyred (1080x2160, SDM636)
+  or lavender (1080x2340, SDM660). `tools/mkadt.py --board whyred` emits the
+  SDM636 device tree, CPU clock and framebuffer size. `shim/build.sh`
+  defaults to `BOARD=whyred`.
+- **Verification (local):** all patches 0001-0148 apply to xnu-8796.141.3
+  except the two HFS hunks that require the stage script to have copied
+  `bsd/sweet_hfs` first; `tools/check_patch.py` reports exact hunk counts;
+  `tests/run_tests.sh` and `BOARD=whyred bash shim/build.sh` pass on the
+  host. The lavender ADT output is byte-identical to the old builder with
+  the same seed.
+- **Not verified:** no GitHub Actions run and no physical whyred boot yet.
+  `resources/whyred_dtb.bin` must be extracted from the device/ROM before
+  packaging an ABL-loadable image; without it `shim/build.sh` still builds
+  but the stock bootloader may reject the Image.
+- **Next concrete action:** run `gh workflow run xnu.yml --ref whyred`,
+  download `kernel.development.whyred`, put the whyred appended DTB in
+  `resources/whyred_dtb.bin`, build `BOARD=whyred shim/build.sh`, and boot
+  it through the `recovery` partition (`fastboot flash recovery` +
+  `fastboot reboot recovery`), keeping boot/modem/persist untouched.
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 

@@ -76,8 +76,9 @@ static int magic_ok(const char *m)
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
-/* build.sh appends the payload to the Image at the first 4K boundary after _end */
-extern char _end[];
+/* build.sh appends the payload to the Image at the first 4K boundary after the
+ * shim image.  `_shim_end` is defined by shim.ld and by the host test. */
+extern char _shim_end[];
 
 /*
  * Traverse Apple Device Tree buffer at base, finding every "device_type" == "cpu"
@@ -147,7 +148,7 @@ static uintptr_t adt_walk_fix_cpus(uintptr_t base, uintptr_t off, uintptr_t tota
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start, rd_end;
-	uintptr_t emb = ((uintptr_t)_end + 0xfff) & ~0xfffUL;
+	uintptr_t emb = ((uintptr_t)_shim_end + 0xfff) & ~0xfffUL;
 
 	/*
 	 * Payload can ride either behind the shim in the kernel Image (embedded),

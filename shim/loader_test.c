@@ -1,5 +1,6 @@
 /*
- * Host unit test for Mach-O 64-bit segment unroller and boot_args builder for lavender.
+ * Host unit test for Mach-O 64-bit segment unroller and boot_args builder for
+ * lavender/whyred.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -8,7 +9,7 @@
 #include "console.h"
 #include "loader.h"
 
-char _end[4096] __attribute__((aligned(4096)));
+char _shim_end[4096] __attribute__((aligned(4096)));
 volatile uint32_t *con_fb = NULL;
 
 void con_clear(uint32_t bg) { (void)bg; }
