@@ -186,10 +186,15 @@
   that `mockfs`, `sweet_hfs` and `bus width from ABL kept` are in the payload
   and that `shim-boot.img` stays <= 6,291,456 bytes, then uploads
   `whyred-boot-img` containing `shim-boot.img`, `SHA256SUMS` and `FLASH.txt`.
-  `resources/whyred_dtb.bin` (454,567 B, msm-id `0x159` / board-id `0x30008`,
-  extracted from the TWRP image with `tools/extract_appended_dtb.py`) is now
-  tracked so CI appends the exact DTB of the tested builds. No release upload
-  yet: the user wants a bug-free kernel and will ask for it explicitly.
+  `resources/whyred_dtb.bin` is tracked so CI appends the exact DTB of the
+  tested builds; it is the vendor blob pruned with `tools/prune_dtb.py`
+  (454,567 -> 8,012 B, msm-id `0x159` / board-id `0x30008` are root
+  properties so the ABL matcher still accepts it). The full blob stays out of
+  git (`resources/whyred_dtb.full.bin`, re-extract with
+  `tools/extract_appended_dtb.py`); the first packaging run failed because
+  the 0151 kernel pushed the 454 KB DTB over the 6,291,456-byte ABL limit.
+  No release upload yet: the user wants a bug-free kernel and will ask for it
+  explicitly.
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 

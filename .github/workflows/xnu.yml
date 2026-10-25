@@ -19,6 +19,7 @@ on:
     branches: [main, santoni, lavender, whyred]
     paths:
       - "xnu/patches/**"
+      - "resources/**"
       - ".github/workflows/xnu.yml"
 
 
