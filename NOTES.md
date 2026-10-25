@@ -44,9 +44,14 @@
   8-bit/25 MHz switch. If the FIFO turns out to be empty, the matrix still
   runs and prints its seven rows.
 - **Verification.** Patch rebuilds 0142..0154 byte-for-byte, applies clean
-  (`check_patch`: 1 file, 14 hunks), host tests and the new 0155 assertions
-  pass locally. CI run pending; the image is published as the
-  `whyred-boot-img` artifact.
+  (`check_patch`: 1 file, 15 hunks), host tests and the new 0155 assertions
+  pass locally. CI run `40173451719` (commit `0ecb28a`) is green.
+  `whyred-boot-img` fetched through nightly.link: `shim-boot.img`
+  5,844,992 B, SHA-256 `2f33d2d6...`, kernel section 5,840,273 B + 8,012-byte
+  pruned DTB (matches the tracked blob), no ramdisk. The gunzipped payload
+  contains `PRESENT_STATE from now on`, `never set TC; treating the `,
+  `resetting the data path` and `is not real (REV %u ` once each, plus the
+  0154 matrix strings. Copied to `Download/shim-boot-whyred-0155-CI.img`.
 
 ## 0154 (2026-10-25): the first data phase is probed, and can fix itself
 
