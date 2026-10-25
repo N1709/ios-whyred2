@@ -1,0 +1,156 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -2067,8 +2067,8 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0161 (CMD0 resets the card to 1-bit; "
+-	    "host follows before the first data command)\n");
++	printf("SANTONI SDHCI: driver 0162 (short card timeout, host-side "
++	    "1/4/8-bit sweep on LBA0 before any CMD6)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2681,75 +2681,79 @@
+  * Read LBA 0 as a data-path self-test, in the state the card is actually in
+  * after enumeration.
+  *
+- * 0160 assumed ABL's 8-bit handoff still applied here. It does not: CMD0 was
+- * sent during this probe, and GO_IDLE_STATE resets the card's data interface
+- * to 1-bit. The host kept 8-bit, so the first data command (CMD8 SEND_EXT_CSD)
+- * had the card driving DAT0 while the controller waited for DAT[7:0]. That is
+- * the observed wedge: DAT_LINE_ACTIVE + CMD_INHIBIT latched, every DAT line
+- * high, INT_STATUS 0, and every later command returning EBUSY.
++ * 0160 kept ABL's 8-bit host width; 0161 followed CMD0 back to 1-bit. Both
++ * wedged the same way (CMD_INHIBIT latched, INT_STATUS 0, DAT lines high), so
++ * the width alone does not explain it. What both boots shared is
++ * TIMEOUT_CONTROL 0x0f: the core would wait ~11 minutes for a missing block,
++ * long after the driver gave up, so the data phase never ended and no error
++ * was ever reported.
+  *
+- * So the first attempt keeps the host and card both at 1-bit with no CMD6.
+- * Only after that read works is 8-bit requested, and a failure to switch is
+- * named instead of silently skipped.
++ * This probe therefore shortens that timeout and sweeps only the host width
++ * (1, 4, 8), with no CMD6 at all: the card never learns the host's width, so
++ * one of the three must return a full block. Whichever does is the width the
++ * card is really using, and EXT_CSD is then read at exactly that width.
+  */
+ static bool
+ sdhci_probe_lba0(const char *phase, uint32_t *lanes)
+ {
+-	uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
+-
+-	printf("SANTONI SDHCI: data self-test: phase %s, HOST_CONTROL "
+-	    "0x%02x\n", phase, ctrl);
+-	/*
+-	 * The card has been through CMD0, so its data interface is 1-bit no
+-	 * matter what ABL left behind. Match the host first, with no CMD6: a
+-	 * read in this state is the one configuration that cannot be blamed
+-	 * on a switch command.
+-	 */
+-	if ((ctrl & SDHCI_CTRL_BUS_MASK) != 0) {
+-		hc_wr8(SDHCI_HOST_CONTROL,
+-		    (uint8_t)(ctrl & ~SDHCI_CTRL_BUS_MASK));
+-		printf("SANTONI SDHCI: data self-test: CMD0 left the card at "
+-		    "1-bit; host width 0x%02x -> 0x%02x (no CMD6)\n", ctrl,
+-		    hc_rd8(SDHCI_HOST_CONTROL));
+-	}
+-	(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+-	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
+-	if (sdhci_lba0_attempt("1-bit", "SDMA", true) ||
+-	    sdhci_lba0_attempt("1-bit", "PIO", false)) {
+-		printf("SANTONI SDHCI: data self-test: the data path works at "
+-		    "1-bit after CMD0 (phase %s)\n", phase);
+-		snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
+-		    "ok-1bit");
+-		*lanes = 1;
+-		return true;
+-	}
+-
+-	/*
+-	 * Only now ask for 8-bit, with a CMD6 that carries no busy wait. If
+-	 * this hangs the inhibit, at least the 1-bit verdict above is already
+-	 * on the console.
+-	 */
+-	if (sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_8,
+-	    SDHCI_CTRL_8BITBUS, SDHCI_CTRL_BUS_MASK,
+-	    "LBA0 probe width") != 0) {
+-		printf("SANTONI SDHCI: data self-test LBA0 8-bit: width switch "
+-		    "failed, no data command sent\n");
+-		snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
+-		    "switch-failed");
+-		return false;
+-	}
+-	(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+-	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
+-	if (sdhci_lba0_attempt("8-bit", "SDMA", true) ||
+-	    sdhci_lba0_attempt("8-bit", "PIO", false)) {
+-		printf("SANTONI SDHCI: data self-test: the data path works at "
+-		    "8-bit (phase %s)\n", phase);
+-		snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
+-		    "ok-8bit");
+-		*lanes = 8;
+-		return true;
++	static const struct {
++		uint8_t ctrl;
++		const char *what;
++	} widths[] = {
++		{ 0, "1-bit" },
++		{ SDHCI_CTRL_4BITBUS, "4-bit" },
++		{ SDHCI_CTRL_8BITBUS, "8-bit" },
++	};
++	uint8_t saved_timeout = hc_rd8(SDHCI_TIMEOUT_CONTROL);
++	unsigned int i;
++
++	/*
++	 * The 0161 boot proved the width was not the whole story: the host was
++	 * already at 1-bit (HOST_CONTROL 0x00) and the first data command still
++	 * never finished. The reason nothing ever recovers is TIMEOUT_CONTROL
++	 * 0x0f: the core waits 2^28 card clocks, which at 400 kHz is about
++	 * eleven minutes, so no data-timeout ever fires, no error bit appears
++	 * and CMD_INHIBIT stays set for the rest of the boot. Drop it to 0x03
++	 * (2^16 clocks, ~164 ms at 400 kHz): a block that never arrives now
++	 * fails loudly and the core releases the path by itself.
++	 */
++	printf("SANTONI SDHCI: data self-test: phase %s, TIMEOUT_CONTROL "
++	    "0x%02x -> 0x03 (~164 ms at 400 kHz)\n", phase, saved_timeout);
++
++	/*
++	 * Sweep the host side only, with no CMD6. The card never learns the
++	 * host's width, so if it is still at ABL's 8-bit (CMD0 does not reset
++	 * every part), the 8-bit pass is the one that returns a full 512-byte
++	 * block; if it really went back to 1-bit, the first pass does. Either
++	 * way a failed pass now costs 164 ms instead of wedging the core.
++	 */
++	for (i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
++		uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++		uint8_t want = (uint8_t)((ctrl & ~SDHCI_CTRL_BUS_MASK) |
++		    widths[i].ctrl);
++
++		hc_wr8(SDHCI_TIMEOUT_CONTROL, 0x03);
++		hc_wr8(SDHCI_HOST_CONTROL, want);
++		printf("SANTONI SDHCI: data self-test: host width 0x%02x -> "
++		    "0x%02x (%s, no CMD6)\n", ctrl,
++		    hc_rd8(SDHCI_HOST_CONTROL), widths[i].what);
++		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++		    NULL);
++		if (sdhci_lba0_attempt(widths[i].what, "SDMA", true) ||
++		    sdhci_lba0_attempt(widths[i].what, "PIO", false)) {
++			printf("SANTONI SDHCI: data self-test: the data path "
++			    "works at %s (phase %s)\n", widths[i].what, phase);
++			snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
++			    "ok-%s", widths[i].what);
++			*lanes = (widths[i].ctrl == SDHCI_CTRL_8BITBUS) ? 8 :
++			    ((widths[i].ctrl == SDHCI_CTRL_4BITBUS) ? 4 : 1);
++			hc_wr8(SDHCI_TIMEOUT_CONTROL, saved_timeout);
++			return true;
++		}
+ 	}
+-	snprintf(santoni_lba0_note, sizeof(santoni_lba0_note), "no-data");
++	hc_wr8(SDHCI_TIMEOUT_CONTROL, saved_timeout);
++	snprintf(santoni_lba0_note, sizeof(santoni_lba0_note), "no-width");
+ 	return false;
+ }
+ 

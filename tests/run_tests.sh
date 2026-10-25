@@ -454,6 +454,19 @@ python3 tools/check_patch.py "$P161" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0160'
 echo "ok   0161 follows CMD0 to 1-bit and keeps the vendor reset as recovery"
 
+echo "== SDHCI: the core's own data timeout is 11 minutes at 400 kHz, so  =="
+echo "==        shorten it and sweep the host width with no CMD6           =="
+P162="xnu/patches/0162-sdhci-short-timeout-and-host-width-sweep.patch"
+python3 tools/check_patch.py "$P162" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TIMEOUT_CONTROL ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:0x%02x -> 0x03 (~164 ms at 400 kHz)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:{ SDHCI_CTRL_4BITBUS, "4-bit" },' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:host width 0x%02x -> ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:ok-%s' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0162' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0161'
+echo "ok   0162 shortens the card timeout and finds the real width without CMD6"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

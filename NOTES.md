@@ -1,5 +1,45 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0162 (2026-10-25): the core's data timeout is 11 minutes, so it never fails
+
+- **0161 ran on hardware and the width fix is visible, but it did not fix the
+  read.** The summary line says `hostctl=0x00` (the host did follow CMD0 back
+  to 1-bit) and `lba0=switch-failed`, so the first data command still never
+  completed. The width was a real defect, not the whole story.
+- **Why the wedge is permanent.** `TIMEOUT_CONTROL` is the handoff value
+  `0x0f`: the core waits `2^28` card clocks for a block. At 400 kHz that is
+  ~671 s (11 minutes). Our driver gives up after 2 s and runs
+  `sdhci_reset_paths()`, but the core is still in the middle of a data
+  transfer, `SOFTWARE_RESET` does not self-clear here, and the vendor reset is
+  the only thing that could abort it. That is why every later command is
+  `blocked ... INT_STATUS 0x00000000, PRESENT_STATE 0x01f000f1`
+  (`CMD_INHIBIT`, no DAT activity, DAT lines idle high, no error bit): the
+  core is not broken, it is still waiting.
+- **0162
+  (`xnu/patches/0162-sdhci-short-timeout-and-host-width-sweep.patch`).**
+  - `sdhci_probe_lba0()` drops `TIMEOUT_CONTROL` to `0x03` (2^16 clocks,
+    ~164 ms at 400 kHz) for the probe and restores the handoff value on the
+    way out. A missing block now raises `DATA_TIMEOUT`, ends the transfer and
+    lets the core release `CMD_INHIBIT` by itself.
+  - The probe then sweeps the **host** width only - 1, 4, 8 bit - with **no
+    CMD6**. The card never learns the host's width, so if it still sits in
+    ABL's 8-bit the 8-bit pass returns a full block; if CMD0 really reset it,
+    the 1-bit pass does. Whichever pass returns `MBR 55aa` names the card's
+    real width, and EXT_CSD is read at exactly that width.
+  - Each failed pass costs ~164 ms instead of wedging the boot.
+  - `lba0=` in the failure summary becomes `ok-1bit|ok-4bit|ok-8bit|no-width`.
+  - Banner: `driver 0162 (short card timeout, host-side 1/4/8-bit sweep on
+    LBA0 before any CMD6)`.
+- **What the next log proves, one way or the other:**
+  - `LBA0 <w>-bit SDMA: OK, bytes 55 aa, MBR 55aa` -> the card's real width
+    is known, data moved, and the rest is EXT_CSD/GPT.
+  - `LBA0 ... timeout` for all three widths with `TIMEOUT_CONTROL 0x03` ->
+    bytes really never arrive at any width; the next suspects are the SDMA
+    address/transfer-mode setup and the bounce buffer, not the card.
+  - `CMD_INHIBIT` still latched after a timeout -> the core does not release
+    the path on data timeout either, and the vendor reset becomes the only
+    recovery path worth porting fully.
+
 ## 0161 (2026-10-25): CMD0 returns the card to 1-bit, the host did not follow
 
 - **The root cause of the 0160 wedge is a state bug in this driver.** 0160
