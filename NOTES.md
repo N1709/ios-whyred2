@@ -40,8 +40,30 @@
   `0x9d400000`. The frame was presented as 1080x2160, so this is likely a
   separate IOSurface address, but record the next boot's line before
   changing anything.
-- **Status:** committed and pushed for CI; the image hash and run id are
-  recorded in the follow-up note once the workflow is green.
+- **Status / checkpoint (2026-10-25).**
+  - Commit `62f7c84` ("sdhci: correct PRESENT_STATE[11:8] and drain a stuck
+    data path (0156)") is pushed to `origin/whyred`. It touches
+    `xnu/patches/0156-...patch`, `tests/run_tests.sh`,
+    `tests/test_sdhci_mock.c`, `NOTES.md` and `README.md`.
+  - CI run **`40176596675`** (head `62f7c84`) was `in_progress` when this
+    checkpoint was written; the boot image is not fetched or verified yet.
+    A NOTES/README-only push does not rebuild, so this checkpoint cannot
+    cancel it.
+  - Local verification before the push: `tests/run_tests.sh` passes with
+    `HOST_CC=/tmp/opencode/ccwrap` and
+    `LD_LIBRARY_PATH=/home/n1709/toolroot/usr/lib/aarch64-linux-gnu`
+    (`PATH` must also include `/home/n1709/toolroot/usr/bin` for `python3`),
+    and the 0153→0156 chain reproduces the working source byte-for-byte
+    from the 0152 base.
+  - Progress stays at overall **~50%** (kernel 90%, eMMC 60%, rootfs 45%,
+    peripherals 15%). The eMMC number moves only after 0156 boots on the
+    phone and the log shows the EXT_CSD read finishing.
+  - Next: wait for the green run, fetch
+    `whyred-boot-img.zip` through nightly.link, check for `driver 0156`,
+    `CMD5 not needed`, `data machine still busy` and `PRESENT_STATE[11:8]`
+    in the kernel, record size/SHA-256, copy to
+    `Download/shim-boot-whyred-0156-CI.img`, update `BACA-DULU.txt` and
+    `SHA256SUMS.txt`, then boot it with `fastboot boot`.
 
 ## 0155 (2026-10-25): data phase reads PRESENT_STATE, not just INT_STATUS
 
