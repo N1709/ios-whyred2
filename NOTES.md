@@ -211,6 +211,14 @@
   17,931,360 B, and `mockfs`, `sweet_hfs`, `bus width from ABL kept`,
   `EXT_CSD SEC_COUNT` are all present. Flash
   `shim-boot-whyred-0151.img` to `recovery` (not `boot`).
+- **CI artifact fetched (2026-10-25 12:04):** the `whyred-boot-img` artifact
+  of run `40163571224` was downloaded through nightly.link (public proxy, no
+  token) and verified: `shim-boot.img` 5,840,896 B, SHA-256 `6109ea2f…`,
+  kernel section 5,836,776 B (zopfli stream + 8,012 B DTB), and `mockfs`,
+  `sweet_hfs`, `bus width from ABL kept`, `data-timeout` are present after
+  gunzip. Same size as the local image; only the ADT random seed differs.
+  Copied to `Download/shim-boot-whyred-0151-CI.img`; `Download/BACA-DULU.txt`
+  now lists all three images with hashes and the flash commands.
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 
