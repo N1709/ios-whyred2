@@ -37,10 +37,29 @@
   fastboot/ABL reports the GPT entry, not a write by this project. The
   Android `boot` partition is untouched; tests use `fastboot boot` or the
   `recovery` slot.
-- **Status (2026-10-25).** Patch written, `tests/run_tests.sh` passes, and
-  the 0153→0157 chain reproduces the working source byte-for-byte from the
-  0152 base. Progress stays at overall **~50%** (kernel 90%, eMMC 60%,
-  rootfs 45%, peripherals 15%) until 0157 boots and prints a real
+- **Status (2026-10-25).** Commit `4dd7e53` is pushed to `origin/whyred`.
+  CI run **`40178597042`** finished **green**. The `whyred-boot-img`
+  artifact was fetched through nightly.link and verified:
+  - `shim-boot.img` 5,849,088 B, SHA-256
+    `a66749e5b1af8c60d7dfe5d77df79e3999c5bc307c4c73944f2a04e162345ce0`
+    (kernel section 5,841,707 B + 8,012 B DTB).
+  - Appended DTB is byte-identical to `resources/whyred_dtb.bin`
+    (`fde70088…`).
+  - Kernel strings: `driver 0157` 1, `PIO returned %u zero words` 1,
+    `FIFO returned %u ` 1, `read works at %u-bit (SDMA)` 1,
+    `words %08x %08x %08x %08x` 2.
+  - Copied to `Download/shim-boot-whyred-0157-CI.img`; `BACA-DULU.txt`
+    and `SHA256SUMS.txt` updated, `sha256sum -c` passes for every image.
+  - `tests/run_tests.sh` passes and the 0153→0157 chain reproduces the
+    working source byte-for-byte from the 0152 base.
+- **The 0156 phone log (pasted after the 0157 push) is the expected false
+  positive.** It shows `data probe #1 1-bit PIO ... OK` and `EXT_CSD moved
+  ... keeping it`, immediately followed by `SEC_COUNT is 0` and
+  `enumeration failed (5)`. That is the exact path 0157 removes: the matrix
+  kept a PIO setup whose payload was 128 zero words. The log has no
+  `driver 0157` banner, so it is still the 0156 image.
+- Progress stays at overall **~50%** (kernel 90%, eMMC 60%, rootfs 45%,
+  peripherals 15%) until 0157 boots and prints a real
   `EXT_CSD SEC_COUNT`.
 
 ## 0156 (2026-10-25): correct PRESENT_STATE[11:8], drain before reset
