@@ -224,7 +224,12 @@ jobs:
           # compress that Image with zopfli and pack it in a second pass.
           bash shim/build.sh "$KERNEL"
           zopfli --i15 -c shim/out/Image > shim/out/Image.z.gz
-          IMAGE_GZ=shim/out/Image.z.gz bash shim/build.sh "$KERNEL"
+          # build.sh cd's into shim/, so IMAGE_GZ must be absolute: a relative
+          # path is re-resolved there, silently misses the file and the second
+          # pass packs a gzip -9 Image (6.54 MB) - exactly the failure this
+          # job exists to prevent.
+          test -s shim/out/Image.z.gz
+          IMAGE_GZ="$PWD/shim/out/Image.z.gz" bash shim/build.sh "$KERNEL"
 
           # The image only boots if the storage fixes and the ram-disk root are
           # in it: fail here instead of on the phone.

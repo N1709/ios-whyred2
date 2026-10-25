@@ -20,6 +20,11 @@ if [ -z "$PAYLOAD" ]; then
 	fi
 fi
 [ -n "$PAYLOAD" ] && [ -f "$PAYLOAD" ] && PAYLOAD="$(realpath "$PAYLOAD")"
+# Resolve IMAGE_GZ before the cd below: callers pass it relative to the repo
+# root ("shim/out/Image.z.gz"), and after `cd shim` that path points at
+# shim/shim/out/... - the file is silently missed and the build packs a gzip
+# Image instead of the pre-compressed one.
+[ -n "${IMAGE_GZ:-}" ] && [ -f "$IMAGE_GZ" ] && IMAGE_GZ="$(realpath "$IMAGE_GZ")"
 
 cd "$(dirname "$0")"
 
