@@ -1,0 +1,197 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -145,6 +145,13 @@
+  * clearing the mode.
+  */
+ #define SDHCI_CTRL_UHS_MASK     0x0007u
++/*
++ * HOST_CONTROL2[7:6] drive the tuning engine. ABL leaves TUNED_CLK set after
++ * its HS400 boot; a legacy 400 kHz host must clear it, or the core keeps
++ * sampling through the tuned path the powered-down DLL no longer drives.
++ */
++#define SDHCI_CTRL_EXEC_TUNING  0x0040u
++#define SDHCI_CTRL_TUNED_CLK    0x0080u
+ 
+ #define SDHCI_RESET_ALL         0x01
+ #define SDHCI_RESET_CMD         0x02
+@@ -627,6 +634,7 @@
+ 
+ static int sdhci_reset_paths(void);
+ static bool sdhci_ext_csd_sane(void);
++static void sdhci_ext_csd_clear(void);
+ 
+ /* Wait for one data interrupt (BRR for reads, BWR for writes); clear it. */
+ static int
+@@ -1256,7 +1264,7 @@
+ 			hc_wr(SDHCI_SDMA_ADDR,
+ 			    (uint32_t)(se.dma_pa + DMA_BOUNCE));
+ 		}
+-		dma_sync(SDHCI_BLOCK, TRUE);
++		sdhci_ext_csd_clear();
+ 
+ 		error = sdhci_probe_attempt(tr_mode, &tm, &ps, &r1);
+ 		printf("SANTONI SDHCI: data probe #%u %u-bit %s bc=%u pre=%u: "
+@@ -1265,24 +1273,24 @@
+ 		    (unsigned)!cfg[i].preset_off,
+ 		    error ? (error == ETIMEDOUT ? "timeout" : "error") : "OK",
+ 		    tm, ps, r1);
++		dma_sync(SDHCI_BLOCK, TRUE);
++		/*
++		 * "A byte moved" is not the same as "the block is the
++		 * EXT_CSD". The 0156 boot kept a PIO setup whose payload was
++		 * 128 zero words. Only a block that names its own revision,
++		 * structure and capacity may end the search.
++		 */
++		if (sdhci_ext_csd_sane()) {
++			*width = cfg[i].lanes;
++			printf("SANTONI SDHCI: data probe: EXT_CSD moved at "
++			    "%u-bit %s bc=%u pre=%u%s - keeping it\n",
++			    (unsigned)cfg[i].lanes, engine,
++			    (unsigned)cfg[i].blk_cnt,
++			    (unsigned)!cfg[i].preset_off,
++			    error ? " (status error ignored)" : "");
++			return 0;
++		}
+ 		if (!error) {
+-			dma_sync(SDHCI_BLOCK, TRUE);
+-			/*
+-			 * "A byte moved" is not the same as "the block is the
+-			 * EXT_CSD". The 0156 boot kept a PIO setup whose
+-			 * payload was 128 zero words. Only a block that names
+-			 * its own revision, structure and capacity may end the
+-			 * search.
+-			 */
+-			if (sdhci_ext_csd_sane()) {
+-				*width = cfg[i].lanes;
+-				printf("SANTONI SDHCI: data probe: EXT_CSD moved "
+-				    "at %u-bit %s bc=%u pre=%u - keeping it\n",
+-				    (unsigned)cfg[i].lanes, engine,
+-				    (unsigned)cfg[i].blk_cnt,
+-				    (unsigned)!cfg[i].preset_off);
+-				return 0;
+-			}
+ 			{
+ 				const uint8_t *ext =
+ 				    (const void *)(se.dma + DMA_BOUNCE);
+@@ -1639,7 +1647,8 @@
+ 	uint16_t hc2 = hc_rd16(SDHCI_HOST_CONTROL2);
+ 	uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
+ 	uint32_t dll = hc_rd(CORE_DLL_CONFIG);
+-	uint16_t new_hc2 = (uint16_t)(hc2 & ~SDHCI_CTRL_UHS_MASK);
++	uint16_t new_hc2 = (uint16_t)(hc2 & ~(SDHCI_CTRL_UHS_MASK |
++	    SDHCI_CTRL_EXEC_TUNING | SDHCI_CTRL_TUNED_CLK));
+ 	uint8_t new_ctrl = (uint8_t)(ctrl & ~(SDHCI_CTRL_DMA_MASK |
+ 	    SDHCI_CTRL_HISPD | SDHCI_CTRL_BUS_MASK));
+ 	uint32_t new_dll = (dll | CORE_DLL_RST | CORE_DLL_PDN) &
+@@ -1947,8 +1956,8 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0157 (SDMA-first EXT_CSD, payload "
+-	    "validation)\n");
++	printf("SANTONI SDHCI: driver 0158 (legacy card timing before the "
++	    "first data phase, payload kept on a status error)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2487,6 +2496,17 @@
+ }
+ 
+ /*
++ * Every attempt starts from a cleared buffer: a block left by an earlier
++ * setup must never be mistaken for the answer to this one.
++ */
++static void
++sdhci_ext_csd_clear(void)
++{
++	memset((void *)(se.dma + DMA_BOUNCE), 0, SDHCI_BLOCK);
++	dma_sync(SDHCI_BLOCK, TRUE);
++}
++
++/*
+  * Read the 512-byte EXT_CSD. The bus width is negotiated with CMD6 before
+  * every attempt because a card/host width mismatch produces exactly the same
+  * silent data timeout as a dead transfer engine. 1-bit goes first (the width
+@@ -2512,6 +2532,21 @@
+ 	unsigned int i;
+ 	int last = EIO;
+ 
++	/*
++	 * The card is still in the timing mode ABL handed it, and on this
++	 * board that is HS400: HOST_CONTROL2 reached the data probe with
++	 * TUNED_CLK set. An HS400 card delivers read data strobed by DS, not
++	 * as a plain block to a legacy 400 kHz host, which is what every
++	 * zero-word EXT_CSD read so far looks like. HS_TIMING and BUS_WIDTH
++	 * are independent EXT_CSD fields, so dropping the card back to legacy
++	 * timing does not disturb the width ladder below.
++	 */
++	if (sdhci_switch_ext_csd(EXT_CSD_HS_TIMING, 0, 0, SDHCI_CTRL_HISPD,
++	    "HS_TIMING=0 (legacy, before EXT_CSD)") != 0) {
++		printf("SANTONI SDHCI: enumeration: HS_TIMING=0 failed; the "
++		    "card may still be in a high-speed timing mode\n");
++	}
++
+ 	for (i = 0; i < sizeof(attempts) / sizeof(attempts[0]); i++) {
+ 		uint32_t lanes = (attempts[i].set == SDHCI_CTRL_8BITBUS) ?
+ 		    8 : 1;
+@@ -2531,16 +2566,24 @@
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 		    NULL);
+-		dma_sync(SDHCI_BLOCK, TRUE);
++		sdhci_ext_csd_clear();
+ 		error = sdhci_read_sdma(8, 0, 1, se.dma_pa + DMA_BOUNCE);
++		dma_sync(SDHCI_BLOCK, TRUE);
++		/*
++		 * The status path has already declared a timeout after the
++		 * engine delivered the block on this core (CMD13 and the PIO
++		 * FIFO both did it). A payload that names the card is worth
++		 * more than the status bit, so keep it even on an error.
++		 */
++		if (sdhci_ext_csd_sane()) {
++			*width = lanes;
++			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
++			    "at %u-bit (SDMA%s)\n", lanes,
++			    error ? ", status error ignored" : "");
++			return 0;
++		}
+ 		if (!error) {
+-			dma_sync(SDHCI_BLOCK, TRUE);
+-			if (sdhci_ext_csd_check(lanes, "SDMA")) {
+-				*width = lanes;
+-				printf("SANTONI SDHCI: enumeration: EXT_CSD "
+-				    "read works at %u-bit (SDMA)\n", lanes);
+-				return 0;
+-			}
++			(void)sdhci_ext_csd_check(lanes, "SDMA");
+ 			error = EIO;
+ 		} else {
+ 			printf("SANTONI SDHCI: enumeration: EXT_CSD SDMA read "
+@@ -2551,17 +2594,19 @@
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 		    NULL);
+-		dma_sync(SDHCI_BLOCK, TRUE);
++		sdhci_ext_csd_clear();
+ 		error = sdhci_read_pio_once(8, 0, 1,
+ 		    (void *)(se.dma + DMA_BOUNCE));
++		dma_sync(SDHCI_BLOCK, TRUE);
++		if (sdhci_ext_csd_sane()) {
++			*width = lanes;
++			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
++			    "at %u-bit (PIO%s)\n", lanes,
++			    error ? ", status error ignored" : "");
++			return 0;
++		}
+ 		if (!error) {
+-			dma_sync(SDHCI_BLOCK, TRUE);
+-			if (sdhci_ext_csd_check(lanes, "PIO")) {
+-				*width = lanes;
+-				printf("SANTONI SDHCI: enumeration: EXT_CSD "
+-				    "read works at %u-bit (PIO)\n", lanes);
+-				return 0;
+-			}
++			(void)sdhci_ext_csd_check(lanes, "PIO");
+ 			error = EIO;
+ 		}
+ 		printf("SANTONI SDHCI: enumeration: EXT_CSD unreadable at "

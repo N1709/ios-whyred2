@@ -395,6 +395,20 @@ python3 tools/check_patch.py "$P157" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0156'
 echo "ok   0157 tries SDMA first, rejects all-zero blocks and validates the payload"
 
+echo "== SDHCI: the card is still in ABL's HS400 timing, and only the host   =="
+echo "==        was put back to legacy; reset HS_TIMING before the data phase =="
+P158="xnu/patches/0158-sdhci-legacy-timing-before-ext-csd.patch"
+python3 tools/check_patch.py "$P158" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0158' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:static void sdhci_ext_csd_clear(void);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:HS_TIMING=0 (legacy, before EXT_CSD)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_CTRL_TUNED_CLK    0x0080u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:SDHCI_CTRL_EXEC_TUNING | SDHCI_CTRL_TUNED_CLK' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:memset((void *)(se.dma + DMA_BOUNCE), 0, SDHCI_BLOCK);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:status error ignored' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0157'
+echo "ok   0158 returns the card to legacy timing and keeps a valid EXT_CSD on a status error"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
