@@ -15,19 +15,19 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 | Boot | Stock Xiaomi ABL → `fastboot boot` of our shim (boot image v0/v1) → XNU. Boot partitions are not touched |
 | CPU | The four Cortex-A73 ("Gold", MPIDR `0x100`–`0x103`) cores, 16K pages, GICv3, timers. The Silver cores are parked |
 | Memory | DRAM physical base `0x80000000`, safe kernel budget `0xa0000000` + 1 GiB |
-| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110). Enumeration is complete; the first 512-byte data phase (`CMD8` EXT_CSD) is being finished (0156: correct `PRESENT_STATE[11:8]`, bounded data-path drain) |
+| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110). Enumeration is complete; the first 512-byte data phase (`CMD8` EXT_CSD) is being finished (0157: SDMA first, reject all-zero blocks, validate the payload) |
 | iOS userland | iPhone X 16.7.16 root filesystem; launchd and system daemons |
 | Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## Progress
 
-Last updated 2026-10-25 (commit with patch `0156`).
+Last updated 2026-10-25 (commit with patch `0157`).
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, launchd reaches PID 1 |
-| eMMC: command path and first data phase | **60%** | Full re-enumeration works; `PRESENT_STATE` shows the EXT_CSD block in the FIFO while `INT_STATUS` stays 0. The 0156 waits poll `PRESENT_STATE[11:8]` and drain a stuck data path; waiting for the on-device log |
+| eMMC: command path and first data phase | **60%** | Full re-enumeration works. 0156 completed the data phase mechanically, but the FIFO returned 128 zero words; 0157 tries SDMA first and rejects any block that is not a real EXT_CSD. Waiting for the on-device log |
 | Root filesystem from eMMC (`launchd`, real daemons) | **45%** | Block I/O path is the blocker; mockfs currently stands in for the root |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
 | **Overall port (weighted)** | **~50%** | Kernel and userspace are far ahead of storage and the peripherals |
@@ -204,6 +204,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0154 | Probe the first data phase across width/engine/preset and keep the winning setup |
 | 0155 | Poll `PRESENT_STATE` for data-ready and transfer-complete; this core does not latch those bits in `INT_STATUS` |
 | 0156 | Fix `PRESENT_STATE[11:8]` (active = 9/8), drain a stuck `DAT_INHIBIT`, keep `AUTO_CMD12` paths, skip CMD5 in TRAN |
+| 0157 | Try SDMA before PIO for EXT_CSD, reject all-zero FIFO blocks and validate REV/STRUCTURE/SEC_COUNT before keeping a setup |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

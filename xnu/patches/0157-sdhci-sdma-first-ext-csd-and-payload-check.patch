@@ -1,0 +1,265 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -626,6 +626,7 @@
+ static bool santoni_pstate_tc_logged;
+ 
+ static int sdhci_reset_paths(void);
++static bool sdhci_ext_csd_sane(void);
+ 
+ /* Wait for one data interrupt (BRR for reads, BWR for writes); clear it. */
+ static int
+@@ -836,6 +837,7 @@
+ 	uint16_t tr_mode;
+ 	uint32_t *dst = (uint32_t *)buf;
+ 	uint32_t r1 = 0;
++	uint32_t zero = 0;
+ 	int error;
+ 
+ 	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
+@@ -895,6 +897,22 @@
+ 			return error;
+ 		}
+ 		dst[w] = hc_rd(SDHCI_BUFFER);
++		if (dst[w] == 0) {
++			zero++;
++		}
++	}
++	/*
++	 * An all-zero EXT_CSD is impossible: byte 192 is the card's own
++	 * revision, 1..8. The 0156 boot read 128 zero words here and kept the
++	 * setup because "a byte moved". Treat that as a failed read so the
++	 * caller can try the DMA engine instead.
++	 */
++	if (index == 8 && zero == count * (SDHCI_BLOCK / 4)) {
++		printf("SANTONI SDHCI: %s: PIO returned %u zero words; no data "
++		    "arrived (PRESENT_STATE 0x%08x)\n", tag, zero,
++		    hc_rd(SDHCI_PRESENT_STATE));
++		sdhci_recover(false);
++		return EIO;
+ 	}
+ 	/* The word loop above moved every byte this read asked for. */
+ 	error = sdhci_wait_transfer_complete(tag, true, index == 18);
+@@ -913,7 +931,8 @@
+ static int
+ sdhci_read_sdma(uint8_t index, uint32_t arg, uint32_t count, uint64_t pa)
+ {
+-	uint16_t tr_mode = (uint16_t)(SDHCI_TRNS_DMA | SDHCI_TRNS_READ);
++	uint16_t tr_mode = (uint16_t)(SDHCI_TRNS_DMA | SDHCI_TRNS_READ |
++	    SDHCI_TRNS_BLK_CNT_EN);
+ 	int error;
+ 
+ 	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK ||
+@@ -1122,9 +1141,31 @@
+ 	 * instead of BRR, and an idle engine instead of TC.
+ 	 */
+ 	if ((st & SDHCI_INT_BRR) || (ps & SDHCI_PSTATE_BUF_RD_READY)) {
++		uint32_t zero = 0;
++
+ 		for (i = 0; i < SDHCI_BLOCK / 4; i++) {
+-			((uint32_t *)(void *)(se.dma + DMA_BOUNCE))[i] =
+-			    hc_rd(SDHCI_BUFFER);
++			uint32_t v = hc_rd(SDHCI_BUFFER);
++
++			((uint32_t *)(void *)(se.dma + DMA_BOUNCE))[i] = v;
++			if (v == 0) {
++				zero++;
++			}
++		}
++		/*
++		 * BUFFER_READ_ENABLE can be set before a single byte has
++		 * arrived: the 0156 boot read 128 zero words and then called
++		 * the transfer complete. An all-zero EXT_CSD block is never
++		 * real (REV is 1..8), so treat it as "no data" and let the
++		 * matrix try the next engine instead of keeping this setup.
++		 */
++		if (zero == SDHCI_BLOCK / 4) {
++			printf("SANTONI SDHCI: data probe: FIFO returned %u "
++			    "zero words; no data arrived (PRESENT_STATE "
++			    "0x%08x DAT 0x%x)\n", zero,
++			    hc_rd(SDHCI_PRESENT_STATE),
++			    hc_rd(SDHCI_PRESENT_STATE) & 0x00f00000u);
++			*ps_out = hc_rd(SDHCI_PRESENT_STATE);
++			return EIO;
+ 		}
+ 		santoni_data_moved = true;
+ 		*ps_out = hc_rd(SDHCI_PRESENT_STATE);
+@@ -1150,13 +1191,22 @@
+ 		uint8_t blk_cnt;
+ 		uint8_t preset_off;
+ 	} cfg[] = {
++		/*
++		 * SDMA first. The 0156 boot proved the PIO FIFO handshake is
++		 * a false positive on this core: BUFFER_READ_ENABLE was set,
++		 * 128 words were read, and every one of them was zero while
++		 * DAT_LINE_ACTIVE never cleared. ABL loaded this kernel
++		 * through the same controller, so the DMA engine is the path
++		 * the hardware is known to complete.
++		 */
++		{ 1, 0, 1, 1, 1 },
++		{ 8, SDHCI_CTRL_8BITBUS, 1, 1, 1 },
++		{ 1, 0, 1, 0, 1 },
+ 		{ 1, 0, 0, 1, 1 },
+ 		{ 1, 0, 0, 0, 1 },
+-		{ 1, 0, 1, 1, 1 },
+ 		{ 1, 0, 0, 1, 0 },
+ 		{ 4, SDHCI_CTRL_4BITBUS, 0, 1, 1 },
+ 		{ 8, SDHCI_CTRL_8BITBUS, 0, 1, 1 },
+-		{ 8, SDHCI_CTRL_8BITBUS, 1, 1, 1 },
+ 	};
+ 	uint16_t saved_hc2 = hc_rd16(SDHCI_HOST_CONTROL2);
+ 	unsigned int i;
+@@ -1217,13 +1267,40 @@
+ 		    tm, ps, r1);
+ 		if (!error) {
+ 			dma_sync(SDHCI_BLOCK, TRUE);
+-			*width = cfg[i].lanes;
+-			printf("SANTONI SDHCI: data probe: EXT_CSD moved at "
+-			    "%u-bit %s bc=%u pre=%u - keeping it\n",
+-			    (unsigned)cfg[i].lanes, engine,
+-			    (unsigned)cfg[i].blk_cnt,
+-			    (unsigned)!cfg[i].preset_off);
+-			return 0;
++			/*
++			 * "A byte moved" is not the same as "the block is the
++			 * EXT_CSD". The 0156 boot kept a PIO setup whose
++			 * payload was 128 zero words. Only a block that names
++			 * its own revision, structure and capacity may end the
++			 * search.
++			 */
++			if (sdhci_ext_csd_sane()) {
++				*width = cfg[i].lanes;
++				printf("SANTONI SDHCI: data probe: EXT_CSD moved "
++				    "at %u-bit %s bc=%u pre=%u - keeping it\n",
++				    (unsigned)cfg[i].lanes, engine,
++				    (unsigned)cfg[i].blk_cnt,
++				    (unsigned)!cfg[i].preset_off);
++				return 0;
++			}
++			{
++				const uint8_t *ext =
++				    (const void *)(se.dma + DMA_BOUNCE);
++				const uint32_t *w =
++				    (const void *)(se.dma + DMA_BOUNCE);
++				uint32_t sec = 0;
++
++				memcpy(&sec, ext + 212, sizeof(sec));
++				printf("SANTONI SDHCI: data probe #%u %u-bit "
++				    "%s bc=%u pre=%u: block is not EXT_CSD "
++				    "(REV %u STRUCTURE %u SEC_COUNT %u, words "
++				    "%08x %08x %08x %08x); trying the next "
++				    "setup\n", i + 1, (unsigned)cfg[i].lanes,
++				    engine, (unsigned)cfg[i].blk_cnt,
++				    (unsigned)!cfg[i].preset_off, ext[192],
++				    ext[193], sec, w[0], w[1], w[2], w[3]);
++			}
++			error = EIO;
+ 		}
+ 		last = error;
+ 		sdhci_recover(false);
+@@ -1870,8 +1947,8 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0156 (PRESENT_STATE[11:8], data-path "
+-	    "drain)\n");
++	printf("SANTONI SDHCI: driver 0157 (SDMA-first EXT_CSD, payload "
++	    "validation)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2387,11 +2464,38 @@
+ }
+ 
+ /*
++ * Report a block that came back but is not the EXT_CSD, including its first
++ * words: on this board "the transfer finished" has already meant "128 zero
++ * words" once, and a REV/STRUCTURE pair alone would not show that.
++ */
++static bool
++sdhci_ext_csd_check(uint32_t lanes, const char *how)
++{
++	const uint8_t *ext = (const void *)(se.dma + DMA_BOUNCE);
++	const uint32_t *w = (const void *)(se.dma + DMA_BOUNCE);
++	uint32_t sec_count;
++
++	if (sdhci_ext_csd_sane()) {
++		return true;
++	}
++	memcpy(&sec_count, (const void *)(ext + 212), 4);
++	printf("SANTONI SDHCI: enumeration: EXT_CSD at %u-bit %s is not real "
++	    "(REV %u STRUCTURE %u SEC_COUNT %u, words %08x %08x %08x %08x); "
++	    "trying the next setup\n", lanes, how, ext[192], ext[193],
++	    sec_count, w[0], w[1], w[2], w[3]);
++	return false;
++}
++
++/*
+  * Read the 512-byte EXT_CSD. The bus width is negotiated with CMD6 before
+  * every attempt because a card/host width mismatch produces exactly the same
+  * silent data timeout as a dead transfer engine. 1-bit goes first (the width
+- * an eMMC guarantees after CMD0), then 8-bit (the width the ABL used), and
+- * sdhci_read_pio() retries each of them through SDMA.
++ * an eMMC guarantees after CMD0), then 8-bit (the width the ABL used).
++ *
++ * SDMA goes first: ABL loaded this kernel through the same controller, while
++ * the 0156 boot proved the PIO FIFO handshake reports success with an empty
++ * block. A read only counts when the payload names its own revision,
++ * structure and capacity.
+  */
+ static int
+ sdhci_read_ext_csd(uint32_t *width)
+@@ -2422,25 +2526,43 @@
+ 			last = error;
+ 			continue;
+ 		}
++
++		/* The block length is fixed at 512, but CMD16 is free. */
++		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++		    NULL);
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+-		error = sdhci_read_pio(8, 0, 1,
+-		    (void *)(se.dma + DMA_BOUNCE));
++		error = sdhci_read_sdma(8, 0, 1, se.dma_pa + DMA_BOUNCE);
+ 		if (!error) {
+ 			dma_sync(SDHCI_BLOCK, TRUE);
+-			if (!sdhci_ext_csd_sane()) {
+-				const uint8_t *ext =
+-				    (const void *)(se.dma + DMA_BOUNCE);
++			if (sdhci_ext_csd_check(lanes, "SDMA")) {
++				*width = lanes;
+ 				printf("SANTONI SDHCI: enumeration: EXT_CSD "
+-				    "at %u-bit is not real (REV %u "
+-				    "STRUCTURE %u); trying the next width\n",
+-				    lanes, ext[192], ext[193]);
+-				error = EIO;
+-			} else {
++				    "read works at %u-bit (SDMA)\n", lanes);
++				return 0;
++			}
++			error = EIO;
++		} else {
++			printf("SANTONI SDHCI: enumeration: EXT_CSD SDMA read "
++			    "at %u-bit failed (%d); trying PIO\n", lanes,
++			    error);
++		}
++
++		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++		    NULL);
++		dma_sync(SDHCI_BLOCK, TRUE);
++		error = sdhci_read_pio_once(8, 0, 1,
++		    (void *)(se.dma + DMA_BOUNCE));
++		if (!error) {
++			dma_sync(SDHCI_BLOCK, TRUE);
++			if (sdhci_ext_csd_check(lanes, "PIO")) {
+ 				*width = lanes;
+ 				printf("SANTONI SDHCI: enumeration: EXT_CSD "
+-				    "read works at %u-bit\n", lanes);
++				    "read works at %u-bit (PIO)\n", lanes);
+ 				return 0;
+ 			}
++			error = EIO;
+ 		}
+ 		printf("SANTONI SDHCI: enumeration: EXT_CSD unreadable at "
+ 		    "%u-bit (%d), trying the next width\n", lanes, error);

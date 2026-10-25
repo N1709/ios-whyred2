@@ -1,5 +1,48 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0157 (2026-10-25): SDMA first, and a block only counts if it is EXT_CSD
+
+- **The 0156 boot moved the failure, it did not finish the read.** The log
+  shows the new path working mechanically: `CMD13 ... TRAN; CMD5 not needed`,
+  the PRESENT_STATE fallback, the `no tc in INT_STATUS ... treating the
+  transfer as complete` line, the `data machine still busy ... resetting the
+  data path` drain, and enumeration continuing instead of dying at
+  `Failed (60)`. But the payload is 128 zero words: `REV 0 STRUCTURE 0`,
+  `SEC_COUNT 0`, so `EXT_CSD unreadable at 1-bit (5)` and then
+  `EXT_CSD at 8-bit is not real (REV 0 STRUCTURE 0)`.
+- **The matrix's `OK` in that log is a false positive.** It only checked
+  that a byte moved, not that the block was an EXT_CSD, so it kept the first
+  PIO setup. `PRESENT_STATE 0x01f80af6` had bit 11 `BUFFER_READ_ENABLE` set
+  while the FIFO returned zeros and `DAT_LINE_ACTIVE` never cleared. Bit 11
+  is a FIFO-level hint on this core, not proof that data arrived.
+- **0157 (`xnu/patches/0157-sdhci-sdma-first-ext-csd-and-payload-check.patch`).**
+  - `sdhci_read_ext_csd()` tries SDMA before PIO. ABL loaded this kernel
+    through the same controller, so the DMA engine is the path the hardware
+    is known to complete.
+  - Every EXT_CSD attempt sends CMD16 (512-byte block) first.
+  - `sdhci_ext_csd_sane()` now gates the matrix too: REV 1..8, STRUCTURE
+    <= 3 and a non-zero plausible SEC_COUNT. A block that fails is printed
+    with its first four words and the matrix tries the next setup.
+  - `sdhci_read_pio_once()` rejects an all-zero EXT_CSD block as `EIO`
+    instead of reporting success, so `sdhci_read_pio()` falls through to
+    SDMA.
+  - `sdhci_read_sdma()` sets `BLK_CNT_EN` for single-block reads as well;
+    the matrix's SDMA rows already used it.
+  - The matrix now runs SDMA 1-bit, SDMA 8-bit, SDMA without block-count
+    enable, then the PIO/preset variants.
+  - Banner: `driver 0157 (SDMA-first EXT_CSD, payload validation)`.
+- **No phone damage.** Nothing was written to a partition by the failed
+  flash: `Requested download size is more than max allowed` is rejected
+  before the payload is accepted. `boot partition size: 0` is how this
+  fastboot/ABL reports the GPT entry, not a write by this project. The
+  Android `boot` partition is untouched; tests use `fastboot boot` or the
+  `recovery` slot.
+- **Status (2026-10-25).** Patch written, `tests/run_tests.sh` passes, and
+  the 0153→0157 chain reproduces the working source byte-for-byte from the
+  0152 base. Progress stays at overall **~50%** (kernel 90%, eMMC 60%,
+  rootfs 45%, peripherals 15%) until 0157 boots and prints a real
+  `EXT_CSD SEC_COUNT`.
+
 ## 0156 (2026-10-25): correct PRESENT_STATE[11:8], drain before reset
 
 - **The pasted boot log is pre-0155.** It has no `driver 0155` banner, no
@@ -48,10 +91,20 @@
     data path (0156)") is pushed to `origin/whyred`. It touches
     `xnu/patches/0156-...patch`, `tests/run_tests.sh`,
     `tests/test_sdhci_mock.c`, `NOTES.md` and `README.md`.
-  - CI run **`40176596675`** (head `62f7c84`) was `in_progress` when this
-    checkpoint was written; the boot image is not fetched or verified yet.
-    A NOTES/README-only push does not rebuild, so this checkpoint cannot
-    cancel it.
+  - CI run **`40176596675`** (head `62f7c84`) finished **green**. The
+    `whyred-boot-img` artifact was fetched through nightly.link and
+    verified:
+    - `shim-boot.img` 5,844,992 B, SHA-256
+      `390277be613374b85d13f848f7d489554097443b6105918aae898b0f27a80b38`
+      (same size as 0155; kernel section 5,839,684 B + 8,012 B DTB).
+    - Appended DTB is byte-identical to `resources/whyred_dtb.bin`
+      (`fde70088c1b831bfeddc9890262bfbd0b851b2eb4902bde3a65b749f20c31ce0`).
+    - Kernel strings: `driver 0156` 1, `CMD5 not needed` 1,
+      `data machine still busy` 1, `PRESENT_STATE[11:8]` 1,
+      `data probe #%u %u-bit` 2, `is not real (REV %u ` 1.
+    - Copied to `Download/shim-boot-whyred-0156-CI.img`;
+      `Download/BACA-DULU.txt` and `Download/SHA256SUMS.txt` updated and
+      `sha256sum -c` passes for every image there.
   - Local verification before the push: `tests/run_tests.sh` passes with
     `HOST_CC=/tmp/opencode/ccwrap` and
     `LD_LIBRARY_PATH=/home/n1709/toolroot/usr/lib/aarch64-linux-gnu`
@@ -61,12 +114,12 @@
   - Progress stays at overall **~50%** (kernel 90%, eMMC 60%, rootfs 45%,
     peripherals 15%). The eMMC number moves only after 0156 boots on the
     phone and the log shows the EXT_CSD read finishing.
-  - Next: wait for the green run, fetch
-    `whyred-boot-img.zip` through nightly.link, check for `driver 0156`,
-    `CMD5 not needed`, `data machine still busy` and `PRESENT_STATE[11:8]`
-    in the kernel, record size/SHA-256, copy to
-    `Download/shim-boot-whyred-0156-CI.img`, update `BACA-DULU.txt` and
-    `SHA256SUMS.txt`, then boot it with `fastboot boot`.
+  - **Next action (on the phone, not in the repo):** `fastboot boot
+    shim-boot-whyred-0156-CI.img` and read the screen. Success is the
+    `driver 0156` banner, `CMD13 ... TRAN; CMD5 not needed`, then one of the
+    drain messages and `EXT_CSD SEC_COUNT ...` followed by
+    `enumeration complete: 25 MHz, 8-bit, high-speed`. If it still fails,
+    capture the full CMD8/PRESENT_STATE line and the `data probe` lines.
 
 ## 0155 (2026-10-25): data phase reads PRESENT_STATE, not just INT_STATUS
 

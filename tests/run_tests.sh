@@ -379,6 +379,22 @@ python3 tools/check_patch.py "$P156" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0155'
 echo "ok   0156 fixes the PRESENT_STATE bits, drains the data path, skips CMD5 in TRAN"
 
+echo "== SDHCI: SDMA goes first and a block only counts when it is EXT_CSD =="
+echo "==        (an all-zero FIFO read is a false positive on this core)     =="
+P157="xnu/patches/0157-sdhci-sdma-first-ext-csd-and-payload-check.patch"
+python3 tools/check_patch.py "$P157" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0157' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:static bool sdhci_ext_csd_sane(void);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:PIO returned %u zero words; no data ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:FIFO returned %u ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_ext_csd_check(uint32_t lanes, const char *how)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:error = sdhci_read_sdma(8, 0, 1, se.dma_pa + DMA_BOUNCE);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:read works at %u-bit (SDMA)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:{ 1, 0, 1, 1, 1 },' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:words %08x %08x %08x %08x' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0156'
+echo "ok   0157 tries SDMA first, rejects all-zero blocks and validates the payload"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
