@@ -123,7 +123,7 @@ jobs:
           if [ ! -f build.log ]; then
             echo "no build.log (build never started)"; exit 0
           fi
-          if grep -E 'Skipping patch .*(014[2345689]|015[01])-' build.log; then
+          if grep -E 'Skipping patch .*(014[2345689]|015[012])-' build.log; then
             echo "::error::a critical patch was skipped by the build"
             exit 1
           fi

@@ -300,6 +300,19 @@ python3 tools/check_patch.py "$P151" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:if (!open_ended) {'
 echo "ok   0151 keeps ABL's bus width and names data-phase failures"
 
+echo "== SDHCI: EXT_CSD is read in 1-bit after CMD0, and CMD8 reports its R1 =="
+P152="xnu/patches/0152-sdhci-ext-csd-1bit-and-r1-diagnostics.patch"
+python3 tools/check_patch.py "$P152" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define EXT_CSD_BUS_WIDTH_1     0u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_R1_ILLEGAL_COMMAND 0x00400000u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:SDHCI_CMD_DATA, &r1);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_send_status(se.rca, &r1);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:EXT_CSD_BUS_WIDTH_1, 0, SDHCI_CTRL_BUS_MASK,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CMD8 failed (%d); ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:enumeration complete: 25 MHz, %u-bit, ' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:25 MHz, 8-bit, '
+echo "ok   0152 reads EXT_CSD in 1-bit, prints R1, and names the bus it settled on"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

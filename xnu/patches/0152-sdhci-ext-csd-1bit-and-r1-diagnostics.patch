@@ -1,0 +1,195 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -331,11 +331,14 @@ static const struct santoni_gcc_rate santoni_gcc_rates[] = {
+ #define SDHCI_R1_STATE_TRAN      4u
+ #define SDHCI_R1_READY_FOR_DATA  0x00000100u
+ #define SDHCI_R1_SWITCH_ERROR    0x00000080u
++#define SDHCI_R1_ILLEGAL_COMMAND 0x00400000u
++#define SDHCI_R1_ERROR           0x00080000u
+ 
+ /* CMD6 SWITCH fields (JESD84-B51): write-byte, EXT_CSD index, value, set. */
+ #define EXT_CSD_CMD_SET_NORMAL  0u
+ #define EXT_CSD_WRITE_BYTE      3u
+ #define EXT_CSD_BUS_WIDTH       183u
++#define EXT_CSD_BUS_WIDTH_1     0u
+ #define EXT_CSD_BUS_WIDTH_4     1u
+ #define EXT_CSD_BUS_WIDTH_8     2u
+ #define EXT_CSD_HS_TIMING       185u
+@@ -699,6 +702,7 @@ sdhci_read_pio(uint8_t index, uint32_t arg, uint32_t count, void *buf)
+ 	    ((index == 17) ? "CMD17 block" : "CMD8 EXT_CSD");
+ 	uint16_t tr_mode;
+ 	uint32_t *dst = (uint32_t *)buf;
++	uint32_t r1 = 0;
+ 	int error;
+ 
+ 	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
+@@ -722,11 +726,24 @@ sdhci_read_pio(uint8_t index, uint32_t arg, uint32_t count, void *buf)
+ 	}
+ 	error = sdhci_cmd(index, arg, tr_mode,
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
+-	    SDHCI_CMD_DATA, NULL);
++	    SDHCI_CMD_DATA, &r1);
+ 	if (error) {
+ 		sdhci_recover(index == 18);
+ 		return error;
+ 	}
++	/*
++	 * CMD8 carries a response even though it starts a data phase, and the
++	 * card rejects it with ILLEGAL_COMMAND/ERROR when it is not in the
++	 * state the driver assumes. Printing R1 turns a silent "no data ever
++	 * arrived" into the reason the card gave. Other reads are left quiet:
++	 * this path runs once per block below.
++	 */
++	if (index == 8) {
++		printf("SANTONI SDHCI: %s: R1 0x%08x (state %u)%s%s\n", tag,
++		    r1, (r1 & SDHCI_R1_STATE_MASK) >> 9,
++		    (r1 & SDHCI_R1_ILLEGAL_COMMAND) ? " illegal-command" : "",
++		    (r1 & SDHCI_R1_ERROR) ? " error" : "");
++	}
+ 
+ 	for (uint32_t b = 0; b < count; b++) {
+ 		error = sdhci_wait_data(SDHCI_INT_BRR, tag);
+@@ -1539,12 +1556,12 @@ sdhci_take_over(void)
+ 	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
+ 	sdhci_set_legacy_host("probe step 2 (400 kHz)");
+ 	/*
+-	 * Keep the bus width ABL used for its last data transfer. ABL loaded
+-	 * this kernel from the card moments ago, so its HOST_CONTROL width is
+-	 * also the card's EXT_CSD BUS_WIDTH: eMMC resets that field on a power
+-	 * cycle, not on CMD0/CMD1. Forcing 1-bit here makes the 512-byte
+-	 * EXT_CSD read sample one DAT line of an 8-bit burst, so the block
+-	 * never completes and CMD8 dies on a host-side timeout.
++	 * Keep the bus width ABL used for its last data transfer. Every command
++	 * up to CMD7 runs on the CMD line, so the card and host disagreeing on
++	 * DAT[7:0] is harmless until the first data phase. That phase is the
++	 * EXT_CSD read, and sdhci_enumerate_card() forces both sides back to
++	 * 1-bit before it because the CMD0 below resets the card's data
++	 * interface to one lane.
+ 	 */
+ 	hc_wr8(SDHCI_HOST_CONTROL,
+ 	    (uint8_t)(handoff_ctrl & SDHCI_CTRL_BUS_MASK));
+@@ -1858,8 +1875,9 @@ sdhci_switch_ext_csd(uint8_t index, uint8_t value, uint8_t ctrl_set,
+  * READY -> IDENT -> STBY -> TRAN and the 25 MHz / 8-bit / high-speed switch.
+  *
+  * CMD1 leaves the card in READY with no RCA: CMD3 assigns RCA 2, CMD9/CMD10
+- * are addressed R2 reads, CMD7 selects it, and CMD8 reads EXT_CSD while the
+- * card and host are still 1-bit at 400 kHz. Only after the 512-byte EXT_CSD
++ * are addressed R2 reads, CMD7 selects it, and CMD8 reads EXT_CSD with the
++ * card and host both forced to 1-bit, which is the only width an eMMC
++ * guarantees after the CMD0 of probe step 2. Only after the 512-byte EXT_CSD
+  * read succeeds do we move to 25 MHz and use CMD6 to change the card's bus
+  * width and timing; the host follows immediately after each CMD6 response.
+  * These are configuration writes to EXT_CSD, not user-data writes.
+@@ -1869,6 +1887,7 @@ sdhci_enumerate_card(void)
+ {
+ 	uint32_t cid[4] = { 0 }, csd[4] = { 0 };
+ 	uint32_t sec_count = 0, r1 = 0;
++	uint32_t bus_width = 8;
+ 	char pnm[7];
+ 	int error;
+ 
+@@ -1932,13 +1951,64 @@ sdhci_enumerate_card(void)
+ 	}
+ 	printf("SANTONI SDHCI: enumeration: card selected (TRAN)\n");
+ 
++	/*
++	 * CMD7 is the only command that may move the card to Transfer, so ask
++	 * CMD13 what state it really reached. CMD8 has no data phase from
++	 * Standby: the card answers ILLEGAL_COMMAND and the host waits out a
++	 * data timeout with INT_STATUS still 0x0, which is exactly the dead
++	 * end seen on hardware.
++	 */
++	error = sdhci_send_status(se.rca, &r1);
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: CMD13 after CMD7 failed "
++		    "(%d)\n", error);
++		return error;
++	}
++	printf("SANTONI SDHCI: enumeration: CMD13 after CMD7 -> R1 0x%08x "
++	    "(state %u), HOST_CONTROL 0x%02x\n", r1,
++	    (r1 & SDHCI_R1_STATE_MASK) >> 9, hc_rd8(SDHCI_HOST_CONTROL));
++	if ((r1 & SDHCI_R1_STATE_MASK) != (SDHCI_R1_STATE_TRAN << 9)) {
++		printf("SANTONI SDHCI: enumeration: card is not in TRAN after "
++		    "CMD7; an EXT_CSD read would have no data phase\n");
++		return EIO;
++	}
++
++	/*
++	 * Probe step 2 sent CMD0, and an eMMC only guarantees a 1-bit data
++	 * interface after reset until CMD6 says otherwise. The ABL's 8-bit
++	 * host setting therefore cannot be reused for this read: the card puts
++	 * the block out on DAT0 while the host samples eight lanes, and on
++	 * this controller that ends as a pure data timeout (INT_STATUS 0x0,
++	 * no CRC and no timeout bit). Put both sides in 1-bit first; the width
++	 * is negotiated again once EXT_CSD is known.
++	 */
++	error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
++	    EXT_CSD_BUS_WIDTH_1, 0, SDHCI_CTRL_BUS_MASK,
++	    "BUS_WIDTH=1 (EXT_CSD read)");
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: forcing 1-bit failed (%d); "
++		    "reading EXT_CSD at the inherited width\n", error);
++	}
++
+ 	printf("SANTONI SDHCI: enumeration: CMD8 SEND_EXT_CSD "
+ 	    "(512-byte read at 400 kHz)\n");
+ 	dma_sync(SDHCI_BLOCK, TRUE);
+ 	error = sdhci_read_pio(8, 0, 1, (void *)(se.dma + DMA_BOUNCE));
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD8 failed (%d)\n", error);
+-		return error;
++		/*
++		 * One clean retry: sdhci_read_pio() already reset both paths,
++		 * and a single stale data state is the other way this read is
++		 * known to fail.
++		 */
++		printf("SANTONI SDHCI: enumeration: CMD8 failed (%d); "
++		    "retrying once\n", error);
++		error = sdhci_read_pio(8, 0, 1,
++		    (void *)(se.dma + DMA_BOUNCE));
++		if (error) {
++			printf("SANTONI SDHCI: enumeration: CMD8 failed (%d) "
++			    "on the retry too\n", error);
++			return error;
++		}
+ 	}
+ 	dma_sync(SDHCI_BLOCK, TRUE);
+ 	memcpy(&sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
+@@ -1968,6 +2038,26 @@ sdhci_enumerate_card(void)
+ 	error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
+ 	    EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS, SDHCI_CTRL_BUS_MASK,
+ 	    "BUS_WIDTH=8");
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: 8-bit switch failed "
++		    "(%d); trying 4-bit\n", error);
++		error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
++		    EXT_CSD_BUS_WIDTH_4, SDHCI_CTRL_4BITBUS,
++		    SDHCI_CTRL_BUS_MASK, "BUS_WIDTH=4");
++		if (!error) {
++			bus_width = 4;
++		}
++	}
++	if (error) {
++		printf("SANTONI SDHCI: enumeration: 4-bit switch failed "
++		    "(%d); staying 1-bit\n", error);
++		error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
++		    EXT_CSD_BUS_WIDTH_1, 0, SDHCI_CTRL_BUS_MASK,
++		    "BUS_WIDTH=1");
++		if (!error) {
++			bus_width = 1;
++		}
++	}
+ 	if (error) {
+ 		return error;
+ 	}
+@@ -1979,8 +2069,8 @@ sdhci_enumerate_card(void)
+ 	}
+ 
+ 	se.enumerated = true;
+-	printf("SANTONI SDHCI: enumeration complete: 25 MHz, 8-bit, "
+-	    "high-speed\n");
++	printf("SANTONI SDHCI: enumeration complete: 25 MHz, %u-bit, "
++	    "high-speed\n", bus_width);
+ 	return 0;
+ }
+ 
