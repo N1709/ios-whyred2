@@ -30,9 +30,17 @@
   DATA_AVAILABLE clear) from "block arrived, status bit broken"
   (DATA_AVAILABLE set). A start line and a closing line dump
   `HOST_CONTROL/HOST_CONTROL2/CLOCK_CONTROL/TIMEOUT_CONTROL/VENDOR_SPEC/DLL`.
-- **Deadlines.** 250 ms per attempt (19.2 kHz->400 kHz data phases start in
-  microseconds), so the worst case adds ~2 s once during probe, on top of
-  the existing two 2 s ladder attempts.
+- **Deadlines.** 250 ms per attempt (data phases start in microseconds), so
+  the worst case adds ~2 s once during probe, on top of the existing two 2 s
+  ladder attempts.
+- **CI + image (2026-10-25 14:15).** Run `40171603241` (commit `d9b6062`) is
+  green, so 0154 applies and the driver compiles. `whyred-boot-img` fetched
+  through nightly.link: `shim-boot.img` 5,844,992 B, SHA-256 `201ff3af...`,
+  kernel section 5,839,243 B (zopfli + 8,012-byte pruned DTB), no ramdisk.
+  After gunzip the payload carries `data probe #%u %u-bit`, `data probe:
+  EXT_CSD moved at`, `data probe: no configuration moved a byte` and
+  `TMO 0x%02x` next to the old markers. Copied to
+  `Download/shim-boot-whyred-0154-CI.img`.
 
 ## Whyred port (2026-10-25): SDM636 target from the lavender tree
 
