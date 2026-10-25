@@ -55,6 +55,11 @@
 - **Not verified:** no physical whyred boot yet. The kernel from CI still has
   to be downloaded (`xnu-kernel` artifact: `kernel.development.whyred`) -
   the artifact API needs a token, so the zip is fetched from the run page.
+- **ABL download limit:** the stock bootloader rejects a single download over
+  6 MiB (`Requested download size is more than max allowed`) and does not
+  answer `getvar:max-download-size`. `gzip -9` produces a 6.31 MB boot image,
+  zopfli produces 5.78 MB, which fits: compress `shim/out/Image` with zopfli,
+  then `IMAGE_GZ=/path/Image.z.gz BOARD=whyred shim/build.sh`.
 - **Next concrete action:** put `kernel.development.whyred` in `xnu/out/`,
   build `BOARD=whyred shim/build.sh`, and boot it through the `recovery`
   partition (`fastboot flash recovery` + `fastboot reboot recovery`),

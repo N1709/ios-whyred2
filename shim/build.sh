@@ -99,7 +99,13 @@ if [ -n "$PAYLOAD" ] && [ -f "out/payload.bin" ]; then
 fi
 
 # Package as Image.gz-dtb (standard SDM660 kernel format for Qualcomm ABL)
-gzip -9 -c out/Image > out/Image.gz
+if [ -n "${IMAGE_GZ:-}" ] && [ -f "$IMAGE_GZ" ]; then
+	# Pre-compressed kernel, e.g. a zopfli stream when the ABL download limit is
+	# smaller than gzip -9 produces (whyred's rejects more than ~6 MiB).
+	cp "$IMAGE_GZ" out/Image.gz
+else
+	gzip -9 -c out/Image > out/Image.gz
+fi
 if [ -f "../resources/${BOARD_LC}_dtb.bin" ]; then
 	cat "../resources/${BOARD_LC}_dtb.bin" >> out/Image.gz
 fi
