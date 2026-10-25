@@ -1,5 +1,61 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0160 (2026-10-25): the wedge is the controller, not the card
+
+- **The 0159 image really was on the phone.** The `shim-boot.img` in
+  `~/Downloads/whyred-boot-img(1)/` hashes to `a5cd65e6…`, the 0159 build, so
+  the log is from the new driver (a paste can lose the banner; the file
+  cannot).
+- **What the log says.** After enumeration, every command reports
+  `blocked ... INT_STATUS 0x00000000, PRESENT_STATE 0x01f800f7`:
+  - bits 0,1,2 = `CMD_INHIBIT`, `DAT_INHIBIT`, `DAT_LINE_ACTIVE`;
+  - bits 20-23 = `f` = **all four DAT lines high**, bit 24 = CMD high;
+  - `INT_STATUS 0x00000000` = no error bit is pending to be cleared.
+  A busy card would hold DAT0 low. Here the card is idle and the core still
+  believes a transfer is in flight: the controller is wedged, it is not a
+  card or bus-width problem.
+- **Consequence: 0159 never read a sector.** The `CMD8 failed (16)` line is
+  `sdhci_read_ext_csd()` returning `EBUSY` from the width switches; CMD8 was
+  never issued. The eight `data probe #… width switch failed (5)` lines are
+  the same EBUSY, and `last=0 us` in the probe summary confirms no command
+  completed in that phase. The LBA0 self-test could not print anything
+  because 0159 skipped a width whose switch failed (`continue`), a blind
+  spot in that patch.
+- **Where the latch comes from.** The last known-good command is CMD7; the
+  only command between it and the wedge is `CMD6 HS_TIMING=0` (the 0148-era
+  R1b/busy form). At takeover the core already carried
+  `READ_TRANSFER_ACTIVE` from ABL (`PRESENT_STATE 0x01f800f0`) and
+  `RESET_DAT` did not clear it, so the first R1b busy wait landed on a stale
+  data state and never released. `SOFTWARE_RESET` does not clear inhibit
+  afterwards either (the 0150 boot already showed reset bits that never
+  self-clear).
+- **0160 (`xnu/patches/0160-sdhci-lba0-in-handoff-state-and-cmd6-without-busy.patch`).**
+  - `sdhci_probe_lba0()` calls `sdhci_lba0_attempt()` and now runs **before**
+    any CMD6: first in exactly ABL's handoff state (same width, same card
+    timing, no switch), SDMA then PIO. ABL read this kernel from this card
+    moments earlier, so that is the one configuration the hardware is known
+    to complete.
+  - If LBA 0 has its MBR signature, EXT_CSD is read the same way and the
+    timing switch plus the whole width ladder are skipped. A failed attempt
+    now always prints its width/engine/error/words line; no silent
+    `continue`.
+  - CMD6 is sent **without the R1b busy flag**; the card's readiness is
+    polled with CMD13 (`READY_FOR_DATA`) instead, so the controller is never
+    asked to watch DAT0 for a switch.
+  - `sdhci_reset_paths()` now verifies `CMD_INHIBIT`/`DAT_INHIBIT` after
+    `SOFTWARE_RESET`; if they stick, it stops and restarts the card clock to
+    make the core resample the lines, and prints whether that cleared them.
+    If the core is already inhibited when the data phase starts, the driver
+    says so once and returns instead of printing eight EBUSY attempts.
+  - `command N blocked` now names the inhibit bits and DAT0 level.
+  - Banner: `driver 0160 (LBA0 in the handoff state first; CMD6 without the
+    R1b busy handshake)`.
+- **Why this is the right order.** If LBA 0 reads correctly with no CMD6 at
+  all, the card, timing and data path are proven and the next work is the
+  EXT_CSD payload and 25 MHz/8-bit, not more resets. If it does not, the
+  failure line now carries the payload, so the next patch targets the
+  Qualcomm data path with evidence.
+
 ## 0159 (2026-10-25): prove the data path on LBA 0 before blaming CMD8
 
 - **The 0158 boot log stops before the line that matters.** The phone

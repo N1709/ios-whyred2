@@ -1,0 +1,400 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -538,9 +538,18 @@
+ 	error = sdhci_poll_state(SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT,
+ 	    CMD_TIMEOUT_NS);
+ 	if (error) {
+-		printf("SANTONI SDHCI: command %u blocked (arg 0x%08x, "
+-		    "INT_STATUS 0x%08x, PRESENT_STATE 0x%08x)\n", index, arg,
+-		    hc_rd(SDHCI_INT_STATUS), hc_rd(SDHCI_PRESENT_STATE));
++		{
++			uint32_t ps = hc_rd(SDHCI_PRESENT_STATE);
++
++			printf("SANTONI SDHCI: command %u blocked (arg "
++			    "0x%08x, INT_STATUS 0x%08x, PRESENT_STATE "
++			    "0x%08x:%s%s%s DAT0 %s)\n", index, arg,
++			    hc_rd(SDHCI_INT_STATUS), ps,
++			    (ps & SDHCI_CMD_INHIBIT) ? " CMD-inhibit" : "",
++			    (ps & SDHCI_DATA_INHIBIT) ? " DAT-inhibit" : "",
++			    (ps & SDHCI_PSTATE_DATA_ACTIVE) ? " data-active" : "",
++			    (ps & SDHCI_DATA_0_LVL_MASK) ? "high" : "low");
++		}
+ 		return EBUSY;
+ 	}
+ 
+@@ -633,6 +642,7 @@
+ static bool santoni_pstate_tc_logged;
+ 
+ static int sdhci_reset_paths(void);
++static int sdhci_enable_card_clock(void);
+ static bool sdhci_ext_csd_sane(void);
+ static void sdhci_ext_csd_clear(void);
+ 
+@@ -804,6 +814,36 @@
+ 		delay(1);
+ 	}
+ 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
++	/*
++	 * SOFTWARE_RESET is not enough on this core. The 0159 boot shows
++	 * CMD_INHIBIT and DAT_INHIBIT latched with every DAT line and CMD
++	 * high - the card is idle, the core is not. Ask it to resample the
++	 * lines by stopping and restarting the card clock while nothing can
++	 * be in flight.
++	 */
++	if (!(hc_rd(SDHCI_PRESENT_STATE) &
++	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT))) {
++		return 0;
++	}
++	printf("SANTONI SDHCI: path reset left PRESENT_STATE 0x%08x; "
++	    "cycling the card clock to resample the lines\n",
++	    hc_rd(SDHCI_PRESENT_STATE));
++	if (sdhci_enable_card_clock() != 0) {
++		return ETIMEDOUT;
++	}
++	if (hc_rd(SDHCI_PRESENT_STATE) &
++	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) {
++		static bool reported;
++		if (!reported) {
++			reported = true;
++			printf("SANTONI SDHCI: core still inhibited after a "
++			    "clock cycle (PRESENT_STATE 0x%08x): this core "
++			    "cannot be reset in software; later commands will "
++			    "report EBUSY\n", hc_rd(SDHCI_PRESENT_STATE));
++		}
++		return ETIMEDOUT;
++	}
++	printf("SANTONI SDHCI: stale inhibit cleared by the clock cycle\n");
+ 	return 0;
+ }
+ 
+@@ -1956,8 +1996,8 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0159 (LBA0 data-path self-test after "
+-	    "the legacy timing switch)\n");
++	printf("SANTONI SDHCI: driver 0160 (LBA0 in the handoff state first; "
++	    "CMD6 without the R1b busy handshake)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2355,36 +2395,38 @@
+ 	nanoseconds_to_absolutetime(CMD6_BUSY_TIMEOUT_NS, &deadline);
+ 	deadline += mach_absolute_time();
+ 
++	/*
++	 * CMD6 is sent without its R1b busy flag (see sdhci_switch_ext_csd),
++	 * so Command Complete arrives while the card may still be
++	 * programming. CMD13 is the defined way to ask: the card stays in
++	 * TRAN and clears READY_FOR_DATA until the switch is finished. Poll
++	 * it instead of waiting for DAT0, which is the handshake that wedged
++	 * this controller.
++	 */
+ 	delay(1000);
+ 	for (;;) {
+-		st = hc_rd(SDHCI_PRESENT_STATE);
+-		if (!(st & (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) &&
+-		    (st & SDHCI_DATA_0_LVL_MASK)) {
++		error = sdhci_cmd(13, rca << 16, 0,
++		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++		    &r1);
++		if (error) {
++			printf("SANTONI SDHCI: enumeration: %s: CMD13 status "
++			    "poll failed (%d)\n", what, error);
++			return error;
++		}
++		if ((r1 & SDHCI_R1_STATE_MASK) ==
++		    (SDHCI_R1_STATE_TRAN << 9) &&
++		    (r1 & SDHCI_R1_READY_FOR_DATA)) {
+ 			break;
+ 		}
+ 		if (mach_absolute_time() > deadline) {
+-			printf("SANTONI SDHCI: enumeration: %s: DAT0 did not "
+-			    "release within 1 s (PRESENT_STATE 0x%08x)\n",
+-			    what, st);
++			st = hc_rd(SDHCI_PRESENT_STATE);
++			printf("SANTONI SDHCI: enumeration: %s: card did not "
++			    "become ready within 1 s (R1 0x%08x, "
++			    "PRESENT_STATE 0x%08x)\n", what, r1, st);
+ 			return ETIMEDOUT;
+ 		}
+ 		delay(1000);
+ 	}
+-
+-	error = sdhci_cmd(13, rca << 16, 0,
+-	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
+-	if (error) {
+-		printf("SANTONI SDHCI: enumeration: %s: CMD13 confirmation "
+-		    "failed (%d)\n", what, error);
+-		return error;
+-	}
+-	if ((r1 & SDHCI_R1_STATE_MASK) != (SDHCI_R1_STATE_TRAN << 9) ||
+-	    !(r1 & SDHCI_R1_READY_FOR_DATA)) {
+-		printf("SANTONI SDHCI: enumeration: %s: card not ready "
+-		    "(R1 0x%08x, state %u)\n", what, r1,
+-		    (r1 & SDHCI_R1_STATE_MASK) >> 9);
+-		return EIO;
+-	}
+ 	printf("SANTONI SDHCI: enumeration: %s: card ready "
+ 	    "(R1 0x%08x, TRAN)\n", what, r1);
+ 	return 0;
+@@ -2409,8 +2451,16 @@
+ 
+ 	printf("SANTONI SDHCI: enumeration: CMD6 %s (arg 0x%08x)\n",
+ 	    what, arg);
++	/*
++	 * No R1b (busy) flag. On this core the R1b handshake is what latched
++	 * CMD_INHIBIT+DAT_INHIBIT for good in the 0159 boot: DAT0 was high,
++	 * INT_STATUS was clean, and SOFTWARE_RESET never cleared it. The card
++	 * still has to finish programming, so sdhci_wait_card_ready() polls
++	 * CMD13 for READY_FOR_DATA afterwards - the state the driver actually
++	 * needs, without asking the controller to watch DAT0 for it.
++	 */
+ 	error = sdhci_cmd(6, arg, 0,
+-	    SDHCI_CMD_RESP_SHORT_BUSY | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 	    &r1);
+ 	if (error) {
+ 		printf("SANTONI SDHCI: enumeration: CMD6 %s failed (%d)\n",
+@@ -2507,17 +2557,55 @@
+ }
+ 
+ /*
+- * Read LBA 0 as a data-path self-test, before EXT_CSD.
++ * Read one sector and report exactly what came back.
+  *
+- * Every data command this port has ever sent was CMD8, so its failure cannot
+- * say whether the transfer engine is dead or that one command is rejected.
+- * LBA 0 of the user area is MIUI's protective MBR: bytes 510/511 must be
+- * 0x55/0xaa. The read is harmless (read-only, one sector) and exercises
+- * exactly the path CMD8 needs, including 0158's HS_TIMING=0 switch. A block
+- * with the signature proves the engine and the card timing are good; another
+- * all-zero burst means the next fix belongs in the Qualcomm data path.
++ * LBA 0 of the user area is MIUI's protective MBR, so bytes 510/511 must be
++ * 0x55/0xaa. That is a real block, not "a byte moved": the 0156/0157 logs
++ * showed the FIFO handshake declaring success with 128 zero words.
+  */
+-static void
++static bool
++sdhci_lba0_attempt(const char *width, const char *engine, bool use_sdma)
++{
++	const uint8_t *blk = (const void *)(se.dma + DMA_BOUNCE);
++	const uint32_t *w = (const void *)(se.dma + DMA_BOUNCE);
++	bool mbr;
++	int error;
++
++	sdhci_ext_csd_clear();
++	if (use_sdma) {
++		error = sdhci_read_sdma(17, 0, 1, se.dma_pa + DMA_BOUNCE);
++	} else {
++		error = sdhci_read_pio_once(17, 0, 1,
++		    (void *)(se.dma + DMA_BOUNCE));
++	}
++	dma_sync(SDHCI_BLOCK, TRUE);
++	mbr = blk[510] == 0x55 && blk[511] == 0xaa;
++	printf("SANTONI SDHCI: data self-test LBA0 %s %s: %s, bytes %02x %02x, "
++	    "MBR %s, words %08x %08x %08x %08x (PRESENT_STATE 0x%08x)\n",
++	    width, engine, error ? (error == ETIMEDOUT ? "timeout" : "error") :
++	    "OK", blk[510], blk[511], mbr ? "55aa" : "absent",
++	    w[0], w[1], w[2], w[3], hc_rd(SDHCI_PRESENT_STATE));
++	return mbr;
++}
++
++/*
++ * Read LBA 0 as a data-path self-test, before anything changes the card's
++ * timing or bus width.
++ *
++ * Every data command this port has sent so far was CMD8, so its failure could
++ * never say whether the transfer engine is dead or that one command is
++ * rejected. Worse, the 0159 boot shows the first CMD6 in this path latching
++ * CMD_INHIBIT+DAT_INHIBIT for good, after which every command returns EBUSY
++ * and nothing is learned.
++ *
++ * So the first attempt uses exactly the state ABL handed over - same bus
++ * width, same card timing, no CMD6 at all. ABL read this kernel from this
++ * card moments earlier, and that is the one configuration the hardware is
++ * known to complete. A block with the MBR signature there proves the card,
++ * the timing and the data path are fine. Only if that fails are the 1-bit
++ * and 8-bit switches tried, and each failure is named.
++ */
++static bool
+ sdhci_probe_lba0(void)
+ {
+ 	static const struct {
+@@ -2528,53 +2616,41 @@
+ 		{ EXT_CSD_BUS_WIDTH_1, 0, "1-bit" },
+ 		{ EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS, "8-bit" },
+ 	};
++	uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	const char *handoff = (ctrl & SDHCI_CTRL_8BITBUS) ? "8-bit handoff" :
++	    ((ctrl & SDHCI_CTRL_4BITBUS) ? "4-bit handoff" : "1-bit handoff");
+ 	unsigned int i;
+ 
+-	for (i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+-		const uint8_t *blk = (const void *)(se.dma + DMA_BOUNCE);
+-		const uint32_t *w = (const void *)(se.dma + DMA_BOUNCE);
++	(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
++	if (sdhci_lba0_attempt(handoff, "SDMA", true) ||
++	    sdhci_lba0_attempt(handoff, "PIO", false)) {
++		printf("SANTONI SDHCI: data self-test: the data path works in "
++		    "ABL's handoff state (%s); no timing switch needed\n",
++		    handoff);
++		return true;
++	}
+ 
++	for (i = 0; i < sizeof(widths) / sizeof(widths[0]); i++) {
+ 		if (sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH, widths[i].value,
+ 		    widths[i].set, SDHCI_CTRL_BUS_MASK,
+ 		    "LBA0 probe width") != 0) {
++			printf("SANTONI SDHCI: data self-test LBA0 %s: width "
++			    "switch failed, no data command sent\n",
++			    widths[i].what);
+ 			continue;
+ 		}
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 		    NULL);
+-
+-		for (unsigned int k = 0; k < 2; k++) {
+-			const char *engine = (k == 0) ? "SDMA" : "PIO";
+-			int error;
+-
+-			sdhci_ext_csd_clear();
+-			if (k == 0) {
+-				error = sdhci_read_sdma(17, 0, 1,
+-				    se.dma_pa + DMA_BOUNCE);
+-			} else {
+-				error = sdhci_read_pio_once(17, 0, 1,
+-				    (void *)(se.dma + DMA_BOUNCE));
+-			}
+-			dma_sync(SDHCI_BLOCK, TRUE);
+-			printf("SANTONI SDHCI: data self-test LBA0 %s %s: %s, "
+-			    "bytes %02x %02x, MBR %s, words %08x %08x %08x "
+-			    "%08x\n", widths[i].what, engine,
+-			    error ? (error == ETIMEDOUT ? "timeout" : "error") :
+-			    "OK", blk[510], blk[511],
+-			    (blk[510] == 0x55 && blk[511] == 0xaa) ? "55aa" :
+-			    "absent", w[0], w[1], w[2], w[3]);
+-			if (blk[510] == 0x55 && blk[511] == 0xaa) {
+-				printf("SANTONI SDHCI: data self-test: the "
+-				    "data path works at %s; HS_TIMING=0 took "
+-				    "effect\n", widths[i].what);
+-				return;
+-			}
+-			/* A block that arrived but is not an MBR needs no PIO retry. */
+-			if (!error) {
+-				break;
+-			}
++		if (sdhci_lba0_attempt(widths[i].what, "SDMA", true) ||
++		    sdhci_lba0_attempt(widths[i].what, "PIO", false)) {
++			printf("SANTONI SDHCI: data self-test: the data path "
++			    "works at %s\n", widths[i].what);
++			return true;
+ 		}
+ 	}
++	return false;
+ }
+ 
+ /*
+@@ -2600,29 +2676,90 @@
+ 		{ EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS,
+ 		    "BUS_WIDTH=8 (EXT_CSD read)" },
+ 	};
++	uint8_t ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	uint32_t handoff_lanes = (ctrl & SDHCI_CTRL_8BITBUS) ? 8 :
++	    ((ctrl & SDHCI_CTRL_4BITBUS) ? 4 : 1);
+ 	unsigned int i;
+-	int last = EIO;
++	int error, last = EIO;
++
++	/*
++	 * If the core is already inhibited here, the wedge predates the data
++	 * phase: name it and try the one reset that also cycles the card
++	 * clock, instead of letting eight EBUSY attempts look like eight
++	 * different failures.
++	 */
++	if (hc_rd(SDHCI_PRESENT_STATE) &
++	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) {
++		printf("SANTONI SDHCI: enumeration: core inhibited before the "
++		    "data phase (PRESENT_STATE 0x%08x); resetting\n",
++		    hc_rd(SDHCI_PRESENT_STATE));
++		if (sdhci_reset_paths() != 0) {
++			printf("SANTONI SDHCI: enumeration: cannot start the "
++			    "data phase; the controller is wedged\n");
++			return EBUSY;
++		}
++	}
++
++	/*
++	 * Prove the data path first, in the state ABL left it. If LBA 0 comes
++	 * back with its MBR signature there is no reason to change anything:
++	 * EXT_CSD is then read the same way, and the timing switch and width
++	 * ladder are skipped entirely. The 0159 boot shows that the first
++	 * CMD6 in this path can latch CMD/DAT inhibit for good, so the fewer
++	 * switches the better.
++	 */
++	if (sdhci_probe_lba0()) {
++		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++		    NULL);
++		sdhci_ext_csd_clear();
++		error = sdhci_read_sdma(8, 0, 1, se.dma_pa + DMA_BOUNCE);
++		dma_sync(SDHCI_BLOCK, TRUE);
++		if (sdhci_ext_csd_sane()) {
++			*width = handoff_lanes;
++			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
++			    "at %u-bit (handoff state%s)\n", handoff_lanes,
++			    error ? ", status error ignored" : "");
++			return 0;
++		}
++		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
++		    NULL);
++		sdhci_ext_csd_clear();
++		error = sdhci_read_pio_once(8, 0, 1,
++		    (void *)(se.dma + DMA_BOUNCE));
++		dma_sync(SDHCI_BLOCK, TRUE);
++		if (sdhci_ext_csd_sane()) {
++			*width = handoff_lanes;
++			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
++			    "at %u-bit (handoff state, PIO%s)\n",
++			    handoff_lanes,
++			    error ? ", status error ignored" : "");
++			return 0;
++		}
++		printf("SANTONI SDHCI: enumeration: LBA0 reads but EXT_CSD "
++		    "does not in the handoff state (%d); trying the legacy "
++		    "timing ladder\n", error);
++	}
+ 
+ 	/*
+-	 * The card is still in the timing mode ABL handed it, and on this
+-	 * board that is HS400: HOST_CONTROL2 reached the data probe with
+-	 * TUNED_CLK set. An HS400 card delivers read data strobed by DS, not
+-	 * as a plain block to a legacy 400 kHz host, which is what every
+-	 * zero-word EXT_CSD read so far looks like. HS_TIMING and BUS_WIDTH
+-	 * are independent EXT_CSD fields, so dropping the card back to legacy
+-	 * timing does not disturb the width ladder below.
++	 * The card may still be in the timing mode ABL handed it, and on this
++	 * board that has been HS400: HOST_CONTROL2 reached the data probe
++	 * with TUNED_CLK set in the 0156 boot. An HS400 card delivers read
++	 * data strobed by DS, not as a plain block to a legacy 400 kHz host,
++	 * which is what every zero-word EXT_CSD read so far looks like.
++	 * HS_TIMING and BUS_WIDTH are independent EXT_CSD fields, so dropping
++	 * the card back to legacy timing does not disturb the width ladder.
+ 	 */
+ 	if (sdhci_switch_ext_csd(EXT_CSD_HS_TIMING, 0, 0, SDHCI_CTRL_HISPD,
+ 	    "HS_TIMING=0 (legacy, before EXT_CSD)") != 0) {
+ 		printf("SANTONI SDHCI: enumeration: HS_TIMING=0 failed; the "
+ 		    "card may still be in a high-speed timing mode\n");
+ 	}
+-	sdhci_probe_lba0();
+ 
+ 	for (i = 0; i < sizeof(attempts) / sizeof(attempts[0]); i++) {
+ 		uint32_t lanes = (attempts[i].set == SDHCI_CTRL_8BITBUS) ?
+ 		    8 : 1;
+-		int error;
+ 
+ 		error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
+ 		    attempts[i].value, attempts[i].set, SDHCI_CTRL_BUS_MASK,

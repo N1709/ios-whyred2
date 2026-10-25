@@ -422,6 +422,21 @@ python3 tools/check_patch.py "$P159" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0158'
 echo "ok   0159 reads MBR LBA 0 at 1 and 8 bit through SDMA and PIO"
 
+echo "== SDHCI: CMD6 must not use the R1b busy handshake on this core, and =="
+echo "==        LBA 0 must be read in ABL's handoff state before any CMD6 =="
+P160="xnu/patches/0160-sdhci-lba0-in-handoff-state-and-cmd6-without-busy.patch"
+python3 tools/check_patch.py "$P160" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_lba0_attempt(const char *width, const char *engine, bool use_sdma)' \
+	--added-contains "bsd/dev/santoni_sdhci.c:ABL's handoff state" \
+	--added-contains 'bsd/dev/santoni_sdhci.c:at %u-bit (handoff state%s)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:cycling the card clock to resample the lines' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:stale inhibit cleared by the clock cycle' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:cannot be reset in software' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:CMD13 status ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0160' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0159'
+echo "ok   0160 reads LBA 0 before CMD6 and drops the R1b busy wait"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
