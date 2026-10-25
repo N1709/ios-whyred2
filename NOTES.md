@@ -178,6 +178,25 @@
   guess is wrong the new data-error line says so (`data-timeout`/`data-crc`
   with the width in the log), and the next step is switching the card with
   CMD6 before the first read.
+- **Hardware result of 0151 and the 0152 fix (2026-10-25):** 0151 fixed the
+  command path. The boot log shows CMD1 ready (`OCR 0xc0ff8000`), CMD2 CID,
+  CMD3 RCA 2 (state 2), CMD9 CSD, CMD7 selected, then
+  `CMD8 EXT_CSD: INT_STATUS 0x00000000, PRESENT_STATE 0...` with *no* named
+  error bit. A zero status means the data wait hit its deadline without a
+  data phase, not a CRC or timeout error, so the "8-bit ABL width is the
+  card's width" assumption above was wrong. `CMD0` in probe step 2 returns
+  the card to idle with a **1-bit data interface**; the EXT_CSD BUS_WIDTH
+  field may still read 8, but the card does not drive DAT[7:0] again until a
+  CMD6 sets it. Commands are unaffected (they only use CMD/DAT0), which is
+  why every step up to CMD7 passed. `0152-sdhci-ext-csd-1bit-and-r1-diagnostics.patch`:
+  CMD13 after CMD7 must report TRAN, CMD6 forces `BUS_WIDTH=1` on both sides
+  before the EXT_CSD read, the read is retried once, the 8-bit switch falls
+  back to 4-bit then 1-bit, CMD8's R1 is printed (ILLEGAL_COMMAND/ERROR), and
+  the completion line prints the width actually negotiated. The probe step 2
+  `bus width from ABL kept` line is unchanged (the package job asserts it).
+  Expected new lines: `CMD13 after CMD7 -> R1 0x... (state 4)`,
+  `CMD6 BUS_WIDTH=1 (EXT_CSD read) -> R1 ...`,
+  `CMD8 EXT_CSD: R1 0x... (state 4)`, then `EXT_CSD SEC_COUNT ...`.
 
 - **CI packaging (2026-10-25): every green xnu run now ships two zips.**
   A new `package` job (ubuntu-24.04, `needs: build`) downloads the
