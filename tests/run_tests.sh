@@ -313,6 +313,23 @@ python3 tools/check_patch.py "$P152" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:25 MHz, 8-bit, '
 echo "ok   0152 reads EXT_CSD in 1-bit, prints R1, and names the bus it settled on"
 
+echo "== SDHCI: EXT_CSD tries 1/8-bit and PIO/SDMA, and dumps the transfer regs =="
+P153="xnu/patches/0153-sdhci-ext-csd-width-ladder-and-sdma.patch"
+python3 tools/check_patch.py "$P153" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_SDMA_ADDR' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_TRNS_DMA' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_sdma(uint8_t index, uint32_t arg, uint32_t count, uint64_t pa)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:hc_wr(SDHCI_SDMA_ADDR, (uint32_t)pa);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_pio_once(uint8_t index, uint32_t arg, uint32_t count, void *buf)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:retrying the same block ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_read_ext_csd(uint32_t *width)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:{ EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:((ctrl & ~ctrl_set) & ctrl_clear) != 0' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TRANSFER_MODE 0x%04x HOST_CONTROL 0x%02x CLOCK_CONTROL 0x%04x ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:rolling back bus width to 1-bit' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:forcing 1-bit failed'
+echo "ok   0153 negotiates 1/8-bit, falls back to SDMA, and dumps the transfer registers"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
