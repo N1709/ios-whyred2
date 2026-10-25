@@ -142,12 +142,42 @@
   arm64 `MH_EXECUTE` with a `Darwin Kernel Version` string and compares it with
   the archive's `SHA256SUMS`. `tests/test_zip_partial.py` covers truncated
   archives, wrong sums and stub Mach-Os.
-- **Next concrete action:** flash this image to `recovery` and read
-  `RESET_ALL did not self-clear ...` plus the CMD13/CMD5/CMD0/CMD1 lines that
-  follow. If the reset path is the only problem, CMD13 answers and the driver
-  enumerates without a reset; if CMD1 still times out, the next suspect is the
-  GCC parent/divider left by ABL (`CFG 0x0000050f` = GPLL4/16, not the driver's
-  400 kHz setting) being applied before the core is ready.
+- **Third hardware boot (2026-10-25, image `5792ec89…`, kernel `c040597e…`):
+  0150 works - the eMMC is identified.** `CMD13 RCA 2` answers in state 4
+  (TRAN), so the inherited controller is usable; CMD5 wakes nothing (it is not
+  SDIO); CMD0 + four CMD1 polls reach OCR `0xc0ff8000` (bit 31 set); CMD2,
+  CMD3 (RCA 2), CMD9 and CMD7 all answer:
+  ```
+  SANTONI SDHCI: eMMC MID 0x90 CBX 0x01 OID 0x4a PNM "HGB4e" rev 10.2
+      S/N 0x611026fa MDT 0x45 CSD 0xd0270132
+  SANTONI SDHCI: enumeration: card selected (TRAN)
+  SANTONI SDHCI: enumeration: CMD8 SEND_EXT_CSD (512-byte read at 400 kHz)
+  SANTONI SDHCI: command 12 failed (... cmd-timeout ... )
+  SANTONI SDHCI: enumeration: CMD8 failed (60)
+  ```
+- **Diagnosis 3 - CMD8 reads 8-bit data on a 1-bit host.** The `command 12`
+  line is the *recovery* CMD12, not the cause: after a single-block read the
+  card is already back in TRAN, so it does not answer CMD12 (and the old
+  recovery sent it blindly). The real problem is the bus width. ABL left
+  `HOST_CONTROL 0x20` (8-bit) because it had just loaded this kernel from the
+  card, and the eMMC's `EXT_CSD[BUS_WIDTH]` survives CMD0/CMD1 (only a power
+  cycle resets it), so the card still drives eight data lines. Step 2 forced
+  the host to 1-bit, so the 512-byte EXT_CSD read sampled one line of an
+  eight-line burst: the host waits for 4096 clocks for a block the card
+  finishes in 512, the block never completes, `PRESENT_STATE` keeps
+  `DAT line active` set, and the wait ends in `ETIMEDOUT`.
+- **Fix in `0151-sdhci-keep-abl-bus-width-and-report-data-errors.patch`:**
+  keep the bus width ABL used (`handoff_ctrl & SDHCI_CTRL_BUS_MASK`) for step
+  2 instead of forcing 1-bit, reset the command/data paths once the 400 kHz
+  card clock is live (the takeover `RESET_ALL` ran with the SD clock off and
+  never completed), name the data error bits (data timeout / CRC / end bit /
+  auto-CMD12 / ADMA) plus `PRESENT_STATE` when a PIO wait fails, and only
+  send CMD12 for an open-ended multi-block transfer.
+- **Next concrete action:** after CI builds `0151`, read `bus width from ABL
+  kept (HOST_CONTROL 0x20, 8-bit)` and `EXT_CSD SEC_COUNT ...`. If the width
+  guess is wrong the new data-error line says so (`data-timeout`/`data-crc`
+  with the width in the log), and the next step is switching the card with
+  CMD6 before the first read.
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 

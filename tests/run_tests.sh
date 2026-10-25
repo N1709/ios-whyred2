@@ -289,6 +289,17 @@ python3 tools/check_patch.py "$P150" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:(void)sdhci_pwrctl_ack("BUS_OFF", reset_done);'
 echo "ok   0150 keeps the SDCC v5 takeover alive after a stuck RESET_ALL"
 
+echo "== SDHCI: the first data transfer must run at the width ABL used  =="
+echo "==        and a failed one must say which side failed               =="
+P151="xnu/patches/0151-sdhci-keep-abl-bus-width-and-report-data-errors.patch"
+python3 tools/check_patch.py "$P151" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:(uint8_t)(handoff_ctrl & SDHCI_CTRL_BUS_MASK)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_data_failure(const char *what, uint32_t st)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:SDHCI_INT_DATA_TIMEOUT' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_recover(bool open_ended)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:if (!open_ended) {'
+echo "ok   0151 keeps ABL's bus width and names data-phase failures"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

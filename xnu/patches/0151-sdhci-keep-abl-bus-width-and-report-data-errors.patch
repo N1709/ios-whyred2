@@ -1,0 +1,294 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -144,6 +144,16 @@
+ #define SDHCI_INT_CMD_CRC       0x00020000u
+ #define SDHCI_INT_CMD_END_BIT   0x00040000u
+ #define SDHCI_INT_CMD_INDEX     0x00080000u
++/*
++ * The data-side errors. Without these the PIO waits used to return a bare
++ * ETIMEDOUT, which cannot distinguish "the card never sent a block" from
++ * "the block arrived corrupted" or "the host sampled the wrong bus width".
++ */
++#define SDHCI_INT_DATA_TIMEOUT  0x00100000u
++#define SDHCI_INT_DATA_CRC      0x00200000u
++#define SDHCI_INT_DATA_END_BIT  0x00400000u
++#define SDHCI_INT_ACMD12ERR     0x01000000u
++#define SDHCI_INT_ADMAERR       0x02000000u
+ 
+ /* ------------------------------------------ Qualcomm MSM v4 core registers */
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+@@ -550,9 +560,26 @@
+ 	}
+ }
+ 
++/* Name the error bits a data-phase wait saw, plus the state it saw them in. */
++static void
++sdhci_data_failure(const char *what, uint32_t st)
++{
++	printf("SANTONI SDHCI: %s: INT_STATUS 0x%08x%s%s%s%s%s%s%s, "
++	    "PRESENT_STATE 0x%08x\n", what, st,
++	    (st & SDHCI_INT_ERR) ? " err" : "",
++	    (st & SDHCI_INT_CMD_TIMEOUT) ? " cmd-timeout" : "",
++	    (st & SDHCI_INT_CMD_CRC) ? " cmd-crc" : "",
++	    (st & SDHCI_INT_DATA_TIMEOUT) ? " data-timeout" : "",
++	    (st & SDHCI_INT_DATA_CRC) ? " data-crc" : "",
++	    (st & SDHCI_INT_DATA_END_BIT) ? " data-end-bit" : "",
++	    (st & (SDHCI_INT_ACMD12ERR | SDHCI_INT_ADMAERR)) ?
++	    " acmd12/adma-err" : "",
++	    hc_rd(SDHCI_PRESENT_STATE));
++}
++
+ /* Wait for one data interrupt (BRR for reads, BWR for writes); clear it. */
+ static int
+-sdhci_wait_data(uint32_t bit)
++sdhci_wait_data(uint32_t bit, const char *what)
+ {
+ 	uint64_t deadline;
+ 
+@@ -562,6 +589,7 @@
+ 		uint32_t st = hc_rd(SDHCI_INT_STATUS);
+ 
+ 		if (st & SDHCI_INT_ERR) {
++			sdhci_data_failure(what, st);
+ 			hc_wr(SDHCI_INT_STATUS, st);
+ 			return EIO;
+ 		}
+@@ -570,6 +598,7 @@
+ 			return 0;
+ 		}
+ 		if (mach_absolute_time() > deadline) {
++			sdhci_data_failure(what, st);
+ 			return ETIMEDOUT;
+ 		}
+ 		delay(1);
+@@ -577,7 +606,7 @@
+ }
+ 
+ static int
+-sdhci_wait_transfer_complete(void)
++sdhci_wait_transfer_complete(const char *what)
+ {
+ 	uint64_t deadline;
+ 
+@@ -587,6 +616,7 @@
+ 		uint32_t st = hc_rd(SDHCI_INT_STATUS);
+ 
+ 		if (st & SDHCI_INT_ERR) {
++			sdhci_data_failure(what, st);
+ 			hc_wr(SDHCI_INT_STATUS, st);
+ 			return EIO;
+ 		}
+@@ -595,6 +625,7 @@
+ 			return 0;
+ 		}
+ 		if (mach_absolute_time() > deadline) {
++			sdhci_data_failure(what, st);
+ 			return ETIMEDOUT;
+ 		}
+ 		delay(1);
+@@ -633,16 +664,20 @@
+ 
+ /*
+  * Recover the controller after a failed command or data transfer: reset the
+- * command and data paths, drop every pending interrupt, then try a best-effort
+- * CMD12 so the card leaves its data state. The CMD12 can itself time out (the
+- * card is exactly what is not answering), so its status is ignored - but the
+- * paths are reset a second time afterwards, because a timed-out CMD12 leaves
+- * CMD_INHIBIT set on this core and every later command would fail with EBUSY.
++ * command and data paths and drop every pending interrupt. CMD12 is only
++ * meaningful while an open-ended (multi-block) transfer is running; after a
++ * single-block read or write the card has already returned to Transfer, so
++ * sending it there just produced a misleading "command 12 failed" line while
++ * the real failure (the 512-byte EXT_CSD read) stayed anonymous.
+  */
+ static void
+-sdhci_recover(void)
++sdhci_recover(bool open_ended)
+ {
+ 	(void)sdhci_reset_paths();
++	if (!open_ended) {
++		return;
++	}
++	printf("SANTONI SDHCI: recover: stopping an open-ended transfer\n");
+ 	(void)sdhci_stop_transmission();
+ 	(void)sdhci_reset_paths();
+ }
+@@ -660,6 +695,8 @@
+ static int
+ sdhci_read_pio(uint8_t index, uint32_t arg, uint32_t count, void *buf)
+ {
++	const char *tag = (index == 18) ? "CMD18 block" :
++	    ((index == 17) ? "CMD17 block" : "CMD8 EXT_CSD");
+ 	uint16_t tr_mode;
+ 	uint32_t *dst = (uint32_t *)buf;
+ 	int error;
+@@ -687,23 +724,23 @@
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
+ 	    SDHCI_CMD_DATA, NULL);
+ 	if (error) {
+-		sdhci_recover();
++		sdhci_recover(index == 18);
+ 		return error;
+ 	}
+ 
+ 	for (uint32_t b = 0; b < count; b++) {
+-		error = sdhci_wait_data(SDHCI_INT_BRR);
++		error = sdhci_wait_data(SDHCI_INT_BRR, tag);
+ 		if (error) {
+-			sdhci_recover();
++			sdhci_recover(index == 18);
+ 			return error;
+ 		}
+ 		for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
+ 			dst[b * (SDHCI_BLOCK / 4) + i] = hc_rd(SDHCI_BUFFER);
+ 		}
+ 	}
+-	error = sdhci_wait_transfer_complete();
++	error = sdhci_wait_transfer_complete(tag);
+ 	if (error) {
+-		sdhci_recover();
++		sdhci_recover(index == 18);
+ 		return error;
+ 	}
+ 	return 0;
+@@ -716,6 +753,7 @@
+ static int
+ sdhci_write_pio(uint32_t lba, uint32_t count, const void *buf)
+ {
++	const char *tag = (count == 1) ? "CMD24 block" : "CMD25 block";
+ 	const uint32_t *src = (const uint32_t *)buf;
+ 	uint16_t tr_mode;
+ 	uint8_t index = (count == 1) ? 24 : 25;
+@@ -738,23 +776,23 @@
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
+ 	    SDHCI_CMD_DATA, NULL);
+ 	if (error) {
+-		sdhci_recover();
++		sdhci_recover(index == 25);
+ 		return error;
+ 	}
+ 
+ 	for (uint32_t b = 0; b < count; b++) {
+-		error = sdhci_wait_data(SDHCI_INT_BWR);
++		error = sdhci_wait_data(SDHCI_INT_BWR, tag);
+ 		if (error) {
+-			sdhci_recover();
++			sdhci_recover(index == 25);
+ 			return error;
+ 		}
+ 		for (uint32_t i = 0; i < SDHCI_BLOCK / 4; i++) {
+ 			hc_wr(SDHCI_BUFFER, src[b * (SDHCI_BLOCK / 4) + i]);
+ 		}
+ 	}
+-	error = sdhci_wait_transfer_complete();
++	error = sdhci_wait_transfer_complete(tag);
+ 	if (error) {
+-		sdhci_recover();
++		sdhci_recover(index == 25);
+ 		return error;
+ 	}
+ 	return 0;
+@@ -779,7 +817,7 @@
+ 	int error = sdhci_cmd(index, arg, 0,
+ 	    SDHCI_CMD_RESP_LONG | SDHCI_CMD_CRC, NULL);
+ 	if (error) {
+-		sdhci_recover();
++		sdhci_recover(false);
+ 		return error;
+ 	}
+ 	for (int i = 0; i < 4; i++) {
+@@ -1306,7 +1344,7 @@
+ 			    "got no usable response (%d), OCR 0x%08x, "
+ 			    "%llu ns; stop\n", attempt + 1, error, *ocr,
+ 			    (unsigned long long)se.last_cmd_ns);
+-			sdhci_recover();
++			sdhci_recover(false);
+ 			return error;
+ 		}
+ 		printf("SANTONI SDHCI: probe step 2: CMD1 attempt %d OCR "
+@@ -1495,11 +1533,26 @@
+ 	 * The order matters: UHS=3 with the DLL powered down is why b6a8788
+ 	 * completed CMD0 (no response) but never sampled CMD1's response.
+ 	 */
+-	printf("SANTONI SDHCI: probe step 2: gate card clock, UHS=0/1-bit, "
++	printf("SANTONI SDHCI: probe step 2: gate card clock, UHS=0, "
+ 	    "GCC 400 kHz\n");
+ 	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
+ 	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
+ 	sdhci_set_legacy_host("probe step 2 (400 kHz)");
++	/*
++	 * Keep the bus width ABL used for its last data transfer. ABL loaded
++	 * this kernel from the card moments ago, so its HOST_CONTROL width is
++	 * also the card's EXT_CSD BUS_WIDTH: eMMC resets that field on a power
++	 * cycle, not on CMD0/CMD1. Forcing 1-bit here makes the 512-byte
++	 * EXT_CSD read sample one DAT line of an 8-bit burst, so the block
++	 * never completes and CMD8 dies on a host-side timeout.
++	 */
++	hc_wr8(SDHCI_HOST_CONTROL,
++	    (uint8_t)(handoff_ctrl & SDHCI_CTRL_BUS_MASK));
++	printf("SANTONI SDHCI: probe step 2: bus width from ABL kept "
++	    "(HOST_CONTROL 0x%02x, %u-bit)\n",
++	    hc_rd8(SDHCI_HOST_CONTROL),
++	    (handoff_ctrl & SDHCI_CTRL_8BITBUS) ? 8 :
++	    ((handoff_ctrl & SDHCI_CTRL_4BITBUS) ? 4 : 1));
+ 
+ 	error = sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_400K]);
+ 	if (error) {
+@@ -1509,7 +1562,7 @@
+ 	}
+ 	printf("SANTONI SDHCI: probe step 2: CLOCK_CONTROL 0x%04x "
+ 	    "HOST_CONTROL 0x%02x HOST_CONTROL2 0x%04x DLL_CONFIG 0x%08x "
+-	    "(SDHCI divider ignored; UHS 0; 1-bit; DLL off)\n",
++	    "(SDHCI divider ignored; UHS 0; DLL off)\n",
+ 	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
+ 	    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd(CORE_DLL_CONFIG));
+ 
+@@ -1520,7 +1573,20 @@
+ 	delay(1000);
+ 
+ 	/*
+-	 * First prove the inherited hand-off without resetting anything. If
++	 * The card clock is live now, which is what RESET_ALL needed and did
++	 * not have during takeover (CLOCK_CONTROL 0x0003 there, SD clock off).
++	 * Reset the command and data paths here, with the clock running, so
++	 * the first real data transfer does not inherit ABL's last transfer.
++	 */
++	printf("SANTONI SDHCI: probe step 2: reset paths with the clock "
++	    "live (PRESENT_STATE 0x%08x)\n", hc_rd(SDHCI_PRESENT_STATE));
++	if (sdhci_reset_paths() == 0) {
++		printf("SANTONI SDHCI: probe step 2: PRESENT_STATE 0x%08x "
++		    "after path reset\n", hc_rd(SDHCI_PRESENT_STATE));
++	}
++
++	/*
++	 * First prove the inherited hand-off without resetting the card. If
+ 	 * CMD13 answers, the feedback-clock fix is already validated; the
+ 	 * card is in Transfer. CMD5 awake is still sent because LK may have
+ 	 * deselected or slept it first.
+@@ -1561,7 +1627,7 @@
+ 	printf("SANTONI SDHCI: probe step 2: CMD0 -> error %d, %llu ns\n",
+ 	    err0, (unsigned long long)se.last_cmd_ns);
+ 	if (err0) {
+-		sdhci_recover();
++		sdhci_recover(false);
+ 	}
+ 
+ 	err_cmd1 = sdhci_cmd1_poll(&probe_ocr);
+@@ -1579,7 +1645,7 @@
+ 		    "error %d, %llu ns\n", err0,
+ 		    (unsigned long long)se.last_cmd_ns);
+ 		if (err0) {
+-			sdhci_recover();
++			sdhci_recover(false);
+ 		}
+ 		err_cmd1 = sdhci_cmd1_poll(&probe_ocr);
+ 	}
+@@ -1655,7 +1721,7 @@
+ 	error = sdhci_cmd(13, rca << 16, 0,
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, r1);
+ 	if (error) {
+-		sdhci_recover();
++		sdhci_recover(false);
+ 	}
+ 	return error;
+ }
