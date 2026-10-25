@@ -195,6 +195,22 @@
   the 0151 kernel pushed the 454 KB DTB over the 6,291,456-byte ABL limit.
   No release upload yet: the user wants a bug-free kernel and will ask for it
   explicitly.
+- **CI packaging result (2026-10-25 12:05):** run `40163571224` on `1e11c69`
+  is green. Artifacts: `xnu-kernel` (61,591,142 B), `whyred-boot-img`
+  (5,744,683 B, contains `shim-boot.img` + `SHA256SUMS` + `FLASH.txt`) and
+  `xnu-buildtree` (22,228,308 B). Commits: `aa72616` (package job),
+  `60ee169`/`04d60ef` (pruned DTB, trigger on `resources/**`), `1e11c69`
+  (absolute `IMAGE_GZ`; build.sh `cd`s into `shim/` so the relative path
+  silently missed the zopfli stream and pass 2 packed `gzip -9`).
+- **Images ready for the phone** (kernel from run `40156416731`, commit
+  `b40e3ba`, SHA-256 `e20740b4…`): `Download/shim-boot-whyred-0151.img`
+  (5,840,896 B, SHA-256 `c7efc9db…`, pruned DTB) and
+  `Download/shim-boot-whyred-0151-full-dtb.img` (6,291,456 B, SHA-256
+  `e35d9800…`, exactly at the ABL limit). Verified offline: page 4096,
+  kernel 5,836,748 B = zopfli 5,828,736 + DTB 8,012, no ramdisk, Image
+  17,931,360 B, and `mockfs`, `sweet_hfs`, `bus width from ABL kept`,
+  `EXT_CSD SEC_COUNT` are all present. Flash
+  `shim-boot-whyred-0151.img` to `recovery` (not `boot`).
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 
