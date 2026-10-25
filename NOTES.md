@@ -8,12 +8,15 @@
   transfer-register dump). The CMD8 timeout it shows is therefore the bug
   0155 targets, not a new regression.
 - **What it proves about the hardware.** `CMD8 EXT_CSD: INT_STATUS
-  0x00000000, PRESENT_STATE 0x01f80af6`: bit 11 (`BUFFER_READ_ENABLE`) is
-  set, bit 9 (`READ_TRANSFER_ACTIVE`) is clear, and bits 1/2 (`DAT_INHIBIT`,
-  `DAT_LINE_ACTIVE`) are still set. The 512-byte block is in the FIFO, the
-  engine never marks the transfer active or complete, and DAT stays
-  inhibited - so every following command sees `DAT_INHIBIT`. The 0152 log's
-  `0x01f8aaf6` differs only in reserved bits 13/15.
+  0x00000000, PRESENT_STATE 0x01f80af6` decodes as bit 1 `DAT_INHIBIT`,
+  bit 2 `DAT_LINE_ACTIVE`, bit 9 `READ_TRANSFER_ACTIVE` and bit 11
+  `BUFFER_READ_ENABLE` set; bits 8 (`WRITE_TRANSFER_ACTIVE`) and 10
+  (`BUFFER_WRITE_ENABLE`) clear. So the 512-byte block is in the FIFO, the
+  read engine still claims the transfer is active, `INT_STATUS` never gets
+  BRR or TC, and DAT stays inhibited forever - every following command sees
+  `DAT_INHIBIT`. This is why 0156 waits 50 ms for the active/inhibit pair to
+  retire and then resets the data path: this core will not retire it on its
+  own. The 0152 log's `0x01f8aaf6` differs only in reserved bits 13/15.
 - **A real bug in 0155.** It defined `SDHCI_PSTATE_RD_ACTIVE`/`WR_ACTIVE` as
   bits 13/14 (`0x2000`/`0x4000`). The SD Host Controller spec (and Linux
   `sdhci.h`) puts them at bits 9/8 (`0x200`/`0x100`); bits 10/11 are the
