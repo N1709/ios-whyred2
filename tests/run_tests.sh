@@ -330,6 +330,21 @@ python3 tools/check_patch.py "$P153" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:forcing 1-bit failed'
 echo "ok   0153 negotiates 1/8-bit, falls back to SDMA, and dumps the transfer registers"
 
+echo "== SDHCI: the first data phase is probed across width/engine/preset    =="
+echo "==        and a working combination is kept for the rest of the probe  =="
+P154="xnu/patches/0154-sdhci-first-data-phase-matrix.patch"
+python3 tools/check_patch.py "$P154" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_PROBE_TIMEOUT_NS' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define SDHCI_CTRL_PRESET_VAL_EN 0x0800u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_data_matrix(uint32_t *width)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:data probe #%u %u-bit %s bc=%u ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:data probe: EXT_CSD moved at ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:if (sdhci_data_matrix(width) == 0) {' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_cmd(16, SDHCI_BLOCK, 0,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TMO 0x%02x ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:data probe: no configuration moved a byte'
+echo "ok   0154 probes width/engine/preset on the first data phase and keeps a winner"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

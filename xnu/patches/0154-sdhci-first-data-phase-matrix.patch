@@ -1,0 +1,248 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -850,6 +850,230 @@
+ 	return error;
+ }
+ 
++/* ------------------------------------------- first data phase probe matrix */
++/*
++ * whyred's first data phase has never moved a byte: CMD6 accepts the width
++ * (R1 0x00000900), CMD8 answers with the same R1, and then INT_STATUS stays
++ * 0x00000000 for the whole timeout with DAT_LINE_ACTIVE clear and an empty
++ * FIFO. Every wrong hypothesis costs one boot and one screen, so the failed
++ * EXT_CSD ladder ends in a compact matrix over the setups that could
++ * plausibly differ: bus width (1/4/8), PIO vs SDMA, block-count enable, and
++ * HOST_CONTROL2 bit 11 - preset value enable - which the bootloader may have
++ * left set. With that bit set the core takes its clock/timing from the preset
++ * registers instead of the ones this driver writes for its own 400 kHz mode.
++ *
++ * Each attempt prints exactly one line, and that line carries the card's own
++ * R1 state and PRESENT_STATE: state 4 (TRAN) with DATA_AVAILABLE clear means
++ * the card never started the block, DATA_AVAILABLE set means the block is
++ * sitting in the FIFO and only the status path is wrong. A successful attempt
++ * is kept and the probe continues, so the matrix can be the fix, not just a
++ * report.
++ */
++#define SDHCI_PROBE_TIMEOUT_NS  (250ull * NSEC_PER_MSEC)
++#define SDHCI_CTRL_PRESET_VAL_EN 0x0800u
++
++/* One line that names every register the transfer path depends on. */
++static void
++sdhci_probe_dump(const char *what)
++{
++	printf("SANTONI SDHCI: %s: HS 0x%02x HC2 0x%04x CLK 0x%04x TMO 0x%02x "
++	    "VENDOR 0x%08x DLL 0x%08x/0x%08x\n", what,
++	    hc_rd8(SDHCI_HOST_CONTROL), hc_rd16(SDHCI_HOST_CONTROL2),
++	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_TIMEOUT_CONTROL),
++	    hc_rd(CORE_VENDOR_SPEC), hc_rd(CORE_DLL_CONFIG),
++	    hc_rd(CORE_DLL_STATUS));
++}
++
++/*
++ * CMD6 the width in, then wait for DAT0 release - without the per-command
++ * prints sdhci_switch_ext_csd() makes, because the matrix prints its own.
++ */
++static int
++sdhci_probe_set_width(uint8_t value, uint8_t ctrl_set, uint8_t ctrl_clear)
++{
++	uint32_t arg = (EXT_CSD_WRITE_BYTE << 24) |
++	    ((uint32_t)EXT_CSD_BUS_WIDTH << 16) | ((uint32_t)value << 8) |
++	    EXT_CSD_CMD_SET_NORMAL;
++	uint32_t r1 = 0;
++	uint64_t deadline;
++	uint8_t ctrl;
++	int error;
++
++	error = sdhci_cmd(6, arg, 0, SDHCI_CMD_RESP_SHORT_BUSY |
++	    SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
++	if (error || (r1 & SDHCI_R1_SWITCH_ERROR)) {
++		return EIO;
++	}
++	ctrl = hc_rd8(SDHCI_HOST_CONTROL);
++	hc_wr8(SDHCI_HOST_CONTROL, (uint8_t)((ctrl & ~ctrl_clear) | ctrl_set));
++
++	nanoseconds_to_absolutetime(CMD6_BUSY_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++	for (;;) {
++		uint32_t st = hc_rd(SDHCI_PRESENT_STATE);
++
++		if (!(st & (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) &&
++		    (st & SDHCI_DATA_0_LVL_MASK)) {
++			return 0;
++		}
++		if (mach_absolute_time() > deadline) {
++			return ETIMEDOUT;
++		}
++		delay(1000);
++	}
++}
++
++/*
++ * One CMD8 attempt with the transfer registers already programmed and read
++ * back, a short deadline, and no recovery print. On success the block lands
++ * in the bounce buffer, so the caller can use it directly.
++ */
++static int
++sdhci_probe_attempt(uint16_t tr_mode, uint32_t *tm_rb, uint32_t *ps_out,
++    uint32_t *r1_out)
++{
++	uint64_t deadline;
++	uint32_t st = 0, r1 = 0;
++	unsigned int i;
++	int error;
++
++	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
++	hc_wr16(SDHCI_BLOCK_COUNT, 1);
++	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
++	*tm_rb = hc_rd16(SDHCI_TRANSFER_MODE);
++
++	error = sdhci_cmd(8, 0, tr_mode,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
++	    SDHCI_CMD_DATA, &r1);
++	*r1_out = r1;
++	if (error) {
++		*ps_out = hc_rd(SDHCI_PRESENT_STATE);
++		return error;
++	}
++
++	nanoseconds_to_absolutetime(SDHCI_PROBE_TIMEOUT_NS, &deadline);
++	deadline += mach_absolute_time();
++	for (;;) {
++		st = hc_rd(SDHCI_INT_STATUS);
++		if (st & (SDHCI_INT_ERR | SDHCI_INT_BRR | SDHCI_INT_TC)) {
++			break;
++		}
++		if (mach_absolute_time() > deadline) {
++			break;
++		}
++		delay(1);
++	}
++	*ps_out = hc_rd(SDHCI_PRESENT_STATE);
++	hc_wr(SDHCI_INT_STATUS, st);
++
++	if (st & SDHCI_INT_ERR) {
++		return EIO;
++	}
++	if (st & SDHCI_INT_BRR) {
++		for (i = 0; i < SDHCI_BLOCK / 4; i++) {
++			((uint32_t *)(void *)(se.dma + DMA_BOUNCE))[i] =
++			    hc_rd(SDHCI_BUFFER);
++		}
++		return 0;
++	}
++	return ETIMEDOUT;
++}
++
++static int
++sdhci_data_matrix(uint32_t *width)
++{
++	static const struct {
++		uint8_t lanes;
++		uint8_t ctrl_set;
++		uint8_t engine;         /* 0 = PIO, 1 = SDMA */
++		uint8_t blk_cnt;
++		uint8_t preset_off;
++	} cfg[] = {
++		{ 1, 0, 0, 1, 1 },
++		{ 1, 0, 0, 0, 1 },
++		{ 1, 0, 1, 1, 1 },
++		{ 1, 0, 0, 1, 0 },
++		{ 4, SDHCI_CTRL_4BITBUS, 0, 1, 1 },
++		{ 8, SDHCI_CTRL_8BITBUS, 0, 1, 1 },
++		{ 8, SDHCI_CTRL_8BITBUS, 1, 1, 1 },
++	};
++	uint16_t saved_hc2 = hc_rd16(SDHCI_HOST_CONTROL2);
++	unsigned int i;
++	int last = EIO;
++
++	sdhci_probe_dump("data probe: start");
++	/*
++	 * CMD16 first: the block length for CMD8 is fixed at 512 bytes, but a
++	 * bootloader that left BLOCKLEN at another value would make the card
++	 * reject or mis-frame the read, and the command is free.
++	 */
++	(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
++	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, NULL);
++	for (i = 0; i < sizeof(cfg) / sizeof(cfg[0]); i++) {
++		const char *engine = cfg[i].engine ? "SDMA" : "PIO";
++		uint16_t hc2 = saved_hc2;
++		uint16_t tr_mode = SDHCI_TRNS_READ;
++		uint32_t tm = 0, ps = 0, r1 = 0;
++		int error;
++
++		if (cfg[i].blk_cnt) {
++			tr_mode |= SDHCI_TRNS_BLK_CNT_EN;
++		}
++		if (cfg[i].engine) {
++			tr_mode |= SDHCI_TRNS_DMA;
++		}
++		if (cfg[i].preset_off) {
++			hc2 = (uint16_t)(hc2 & ~SDHCI_CTRL_PRESET_VAL_EN);
++		}
++		hc_wr16(SDHCI_HOST_CONTROL2, hc2);
++
++		error = sdhci_probe_set_width(
++		    cfg[i].lanes == 8 ? EXT_CSD_BUS_WIDTH_8 :
++		    (cfg[i].lanes == 4 ? EXT_CSD_BUS_WIDTH_4 :
++		    EXT_CSD_BUS_WIDTH_1),
++		    cfg[i].ctrl_set, SDHCI_CTRL_BUS_MASK);
++		if (error) {
++			printf("SANTONI SDHCI: data probe #%u %u-bit %s bc=%u "
++			    "pre=%u: width switch failed (%d)\n", i + 1,
++			    (unsigned)cfg[i].lanes, engine,
++			    (unsigned)cfg[i].blk_cnt,
++			    (unsigned)!cfg[i].preset_off, error);
++			last = error;
++			continue;
++		}
++		if (cfg[i].engine) {
++			hc_wr(SDHCI_SDMA_ADDR,
++			    (uint32_t)(se.dma_pa + DMA_BOUNCE));
++		}
++		dma_sync(SDHCI_BLOCK, TRUE);
++
++		error = sdhci_probe_attempt(tr_mode, &tm, &ps, &r1);
++		printf("SANTONI SDHCI: data probe #%u %u-bit %s bc=%u pre=%u: "
++		    "%s (tm 0x%04x ps 0x%08x r1 0x%08x)\n", i + 1,
++		    (unsigned)cfg[i].lanes, engine, (unsigned)cfg[i].blk_cnt,
++		    (unsigned)!cfg[i].preset_off,
++		    error ? (error == ETIMEDOUT ? "timeout" : "error") : "OK",
++		    tm, ps, r1);
++		if (!error) {
++			dma_sync(SDHCI_BLOCK, TRUE);
++			*width = cfg[i].lanes;
++			printf("SANTONI SDHCI: data probe: EXT_CSD moved at "
++			    "%u-bit %s bc=%u pre=%u - keeping it\n",
++			    (unsigned)cfg[i].lanes, engine,
++			    (unsigned)cfg[i].blk_cnt,
++			    (unsigned)!cfg[i].preset_off);
++			return 0;
++		}
++		last = error;
++		sdhci_recover(false);
++	}
++	hc_wr16(SDHCI_HOST_CONTROL2, saved_hc2);
++	(void)sdhci_probe_set_width(EXT_CSD_BUS_WIDTH_1, 0,
++	    SDHCI_CTRL_BUS_MASK);
++	sdhci_probe_dump("data probe: no configuration moved a byte");
++	return last;
++}
++
+ /*
+  * Polled PIO write of count 512-byte blocks. For count == 1, CMD24 is used.
+  * For count > 1, CMD25 is used with AUTO_CMD12.
+@@ -2016,6 +2240,14 @@
+ 		    "%u-bit (%d), trying the next width\n", lanes, error);
+ 		last = error;
+ 	}
++	/*
++	 * Neither width moved a byte through PIO or SDMA. Run the matrix: it
++	 * covers the remaining setup differences, and if one of them works the
++	 * caller never notices the detour.
++	 */
++	if (sdhci_data_matrix(width) == 0) {
++		return 0;
++	}
+ 	return last;
+ }
+ 

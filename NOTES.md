@@ -1,5 +1,39 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0154 (2026-10-25): the first data phase is probed, and can fix itself
+
+- **What the 0152 hardware log actually proved.** The card is fully
+  enumerated twice (boot take-over and the userspace re-probe) and every
+  command answers: CMD2/CMD3/CMD9/CMD7/CMD13, and `CMD6 BUS_WIDTH=1` returns
+  `R1 0x00000900` (TRAN + READY_FOR_DATA). The 512-byte CMD8 then ends with
+  `INT_STATUS 0x00000000`, `PRESENT_STATE 0x01F000f0` and the probe summary
+  `hostctl=0x00` - so the host is already at 1-bit, `DAT_LINE_ACTIVE` is 0,
+  DAT0-3 are idle high and no data/CRC/timeout bit is ever raised. A bus
+  width mismatch cannot explain that, and neither can a missing error path:
+  the card simply never starts the block, or the block never reaches the
+  FIFO.
+- **0154 (`xnu/patches/0154-sdhci-first-data-phase-matrix.patch`).** The
+  failed 1-bit/8-bit ladder now ends in a 7-attempt matrix over the setups
+  that could still differ: 1/4/8-bit, PIO vs SDMA, block-count enable, and
+  `HOST_CONTROL2` bit 11 (preset value enable, `0x0800`) which the
+  bootloader may have left set - with it set the core takes clock/timing
+  from the preset registers instead of the ones this driver writes for its
+  own 400 kHz mode. `CMD16 SET_BLOCKLEN(512)` runs first because CMD8's
+  block length is fixed but a bootloader-left BLOCKLEN would mis-frame the
+  read.
+- **It is a fix, not only a report.** A successful attempt keeps that
+  configuration, sets `*width` and the probe continues, so a boot that needs
+  one of those combinations never notices the detour. Each attempt prints one
+  line (`data probe #n 1-bit PIO bc=1 pre=1: timeout (tm 0x0012 ps
+  0x01f000f0 r1 0x00000900)`) so the whole matrix fits on the 27-row
+  console, and the line separates "card never started" (state 4,
+  DATA_AVAILABLE clear) from "block arrived, status bit broken"
+  (DATA_AVAILABLE set). A start line and a closing line dump
+  `HOST_CONTROL/HOST_CONTROL2/CLOCK_CONTROL/TIMEOUT_CONTROL/VENDOR_SPEC/DLL`.
+- **Deadlines.** 250 ms per attempt (19.2 kHz->400 kHz data phases start in
+  microseconds), so the worst case adds ~2 s once during probe, on top of
+  the existing two 2 s ladder attempts.
+
 ## Whyred port (2026-10-25): SDM636 target from the lavender tree
 
 - **Goal:** boot the same XNU/iOS 16 image on the Xiaomi Redmi Note 5 /
