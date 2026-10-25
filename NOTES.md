@@ -39,6 +39,15 @@
   - `CMD_INHIBIT` still latched after a timeout -> the core does not release
     the path on data timeout either, and the vendor reset becomes the only
     recovery path worth porting fully.
+- **CI run `40206769137`** (commit `02cc562`) finished **green**. Artifact
+  fetched and verified:
+  - `shim-boot.img` 5,849,088 B, SHA-256
+    `dbb048eec15e341c6ba8724b2486c918da2281c5fe3dc8024153582eb63f3e94`
+    (kernel section 5,842,470 B).
+  - Strings: `driver 0162` 1, `TIMEOUT_CONTROL ` 4, `host width 0x%02x -> `
+    2, `ok-%s` 1, `driver 0161`/`driver 0160` 0.
+  - DTB byte-identical to `resources/whyred_dtb.bin`.
+  - Local copy: `shim/out/shim-boot-whyred-0162-CI.img`.
 
 ## 0161 (2026-10-25): CMD0 returns the card to 1-bit, the host did not follow
 
