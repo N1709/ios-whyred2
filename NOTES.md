@@ -33,8 +33,22 @@
   works at 1-bit (SDMA)` / `SEC_COUNT ...` or the matrix with its `words ...`
   dump. If it still returns zeros, the DS-strobe hypothesis is wrong and the
   next patch must look at the Qualcomm data path, not the card.
-- **CI run `40182078200`** (commit `da199af`): workflow started 09:47 UTC;
-  result and artifact hash are appended when the build finishes.
+- **CI run `40182078200`** (commit `da199af`) finished **green** in about
+  9 minutes. The `whyred-boot-img` artifact was fetched through nightly.link
+  and verified:
+  - `shim-boot.img` 5,849,088 B, SHA-256
+    `1f489cab8cd224ccf2bc7eca1b4f27adc179cc503de706c38d58a61782e6fb03`
+    (kernel section 5,841,432 B + 8,012 B DTB).
+  - Kernel strings: `driver 0158` 1, `HS_TIMING=0 (legacy, before
+    EXT_CSD)` 1, `status error ignored` 2, `driver 0157` 0.
+  - Appended DTB is byte-identical to `resources/whyred_dtb.bin`
+    (`fde70088…`).
+  - Copied to `Download/shim-boot-whyred-0158-CI.img`; `BACA-DULU.txt`
+    and `SHA256SUMS.txt` updated, `sha256sum -c` passes for every image.
+- **Next action: boot `Download/shim-boot-whyred-0158-CI.img` with
+  `fastboot boot`** and send the log from `driver 0158` through the first
+  `CMD6 HS_TIMING=0`, the following `EXT_CSD read works ...` or the matrix,
+  and `enumeration failed`. 0157 remains available for comparison.
 - **0157 is still a valid image to test.** 0158 is additive: if 0157's SDMA
   read already returns a real EXT_CSD, 0158 changes nothing about that path.
 - Progress stays at overall **~50%** (kernel 90%, eMMC 60%, rootfs 45%,
