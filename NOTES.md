@@ -79,6 +79,17 @@
   cannot mount root, errno = 19
   mount(39) failed
   ```
+- **Second hardware boot (2026-10-25, commit `04ba3bd`, kernel `212b83cd…`,
+  image 6,287,360 B): the ram-disk milestone is reached.** `mockfs` mounted
+  `md0` and PID 1 runs:
+  ```
+  load_init_program: attempting to load /sbin/launchd
+  * SANTONI userspace: init running as PID 1 *
+  SANTONI init: still alive (tick)   (repeating)
+  ```
+  No `errno = 19` and no `mount(N) failed` anywhere. Skywalk self-tests pass,
+  `lo0`/`gif0`/`stf0` attach, `md0/rmd0` is published at 0x1000000. The kernel,
+  the filesystem vfsops and the userspace hand-off are proven on whyred.
 - **Diagnosis 1 - `errno 19` (`ENODEV`): no root filesystem was compiled in,
   not a bad ram disk.** `vfs_mountroot()` returns `ENODEV` only when no
   `vfsops` are registered for the root name. `0145` and `0148` copied
@@ -87,24 +98,42 @@
   `strings xnu/out/kernel.development.whyred` contained zero `mockfs` and
   zero `sweet_hfs` occurrences. Fix: `mockfs sweet_hfs` added to
   `FILESYS_BASE` in both patches; `tests/run_tests.sh` now asserts it.
-- **Diagnosis 2 - `probe failed (60)` is a CMD1 timeout, not a mount bug.**
-  The probe is cached (`attempted`/`init_error`), so the driver's
-  `probe step ...` lines printed once, scrolled off the 90x27 console, and
-  every later mount retry printed only the errno. `sdhci_take_over()` also
-  returns success when CMD1 never answers, so the reported error comes from
-  `sdhci_verify_highspeed_bus()` (its CMD8 fails with `ETIMEDOUT`, 60).
-  `0149-santoni-sdhci-probe-failure-summary.patch` keeps a compact snapshot
-  (stage, CMD1 error/OCR, SEC_COUNT, RCA, CLOCK/HOST control, INT_STATUS,
-  last command time) and `IOKitBSDInit` repeats it on every retry, so the
-  next screen photo says exactly which step failed.
-- **Build for that fix:** commit `57304ef`, CI run `40151544308` finished
-  green (`xnu-kernel` artifact is 61,577,486 bytes).
-- **Next concrete action:** let CI build `0145`/`0148`+`0149`, flash the new
-  `shim-boot.img`, and photograph the console. If `md0` mounts and PID 1
-  starts, the ram-disk milestone is done; the remaining failure should show
-  as `step=take-over ... cmd1=60 ocr=0x...`, which is the eMMC clock/power
-  bring-up (SDCC v5 `0x0c0c4000`, GCC `sdcc1_apps_clk_src`) and is the next
-  thing to fix for `rd=emmcroot0`.
+- **Diagnosis 2 - the real eMMC blocker is a stuck `RESET_ALL`, not CMD1.**
+  With 0149 the second boot prints (image `04ba3bd`):
+  ```
+  SANTONI SDHCI: SDCC v5 core present (HOST_VERSION 0x6b02)
+  SANTONI SDHCI: probe step 0: VENDOR_SPEC 0x00240a0e (MCLK sel 2, SELECT_IN 0x4),
+      DLL_CONFIG 0x0705642c DLL_STATUS 0x000001a4
+  SANTONI SDHCI: probe step 0: GCC sdcc1_apps CMD 0x00900000 CFG 0x0000050f
+      M 0x01 N 0xfe D 0xfd CBCR 0x00001221
+  ... PRESENT_STATE 0x01f800f0, INT_STATUS 0x0b000000, SOFTWARE_RESET 0x00,
+      HOST_VERSION 0x6b02
+  SANTONI SDHCI: RESET_ALL timed out (0x01)
+  SANTONI SDHCI: probe failed: step=take-over err=60 cmd1=0 ocr=0x00000000
+      sec=0 rca=0 enum=0 clkctl=0x0003 ... last=0 us
+  ```
+  So `sdhci_take_over()` dies at step 3 (`SDHCI_SOFTWARE_RESET` bit 0 never
+  self-clears within 100 ms) and CMD1 is never reached - `cmd1=0`. The card
+  clock gate is still closed (`clkctl=0x0003`: INT_EN|INT_STABLE, CARD_EN off),
+  which is exactly the state a reset needs an MCLK to clock through. ABL had
+  already put the card in TRAN and loaded the image from it, so aborting the
+  probe there throws away a working controller.
+- **Fix in `0150-sdhci-v5-reset-timeout-nonfatal.patch`:** raise the reset
+  timeout to 1 s, report SOFTWARE_RESET/PRESENT_STATE/CLOCK_CONTROL/
+  VENDOR_SPEC on failure, and on LAVENDER (SDCC v5) continue instead of
+  returning `ETIMEDOUT`; `BUS_OFF` is only acknowledged when the reset really
+  completed. Step 2 then starts with the addressed CMD13 to RCA 2, which
+  proves whether the inherited TRAN state is usable.
+- **Also added:** `tools/prune_dtb.py` (+ `tests/test_prune_dtb.py`) shrinks an
+  appended DTB to the root properties plus `--keep` nodes; the whyred vendor
+  blob drops 454,567 -> 8,012 bytes and still validates as msm-id `0x159` /
+  board-id `0x30008`. Not used yet (the 6,287,360-byte image flashed fine).
+- **Next concrete action:** CI builds `0150`, flash the new image, and read
+  `RESET_ALL did not self-clear ...` plus the CMD13/CMD5/CMD0/CMD1 lines that
+  follow. If the reset path is the only problem, CMD13 answers and the driver
+  enumerates without a reset; if CMD1 still times out, the next suspect is the
+  GCC parent/divider left by ABL (`CFG 0x0000050f` = GPLL4/16, not the driver's
+  400 kHz setting) being applied before the core is ready.
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 

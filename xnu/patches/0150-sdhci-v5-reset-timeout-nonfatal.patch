@@ -1,0 +1,61 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -190,7 +190,9 @@
+ #define SDHCI_POWER_CONTROL_VAL (SDHCI_POWER_180 | SDHCI_POWER_ON) /* 0x0b */
+ 
+ #define PWRCTL_TIMEOUT_NS       (100ull * NSEC_PER_MSEC)
+-#define RESET_TIMEOUT_NS        (100ull * NSEC_PER_MSEC)
++/* 1 s: SDCC v5 needs the MCLK running, and the flag can stay set
++ * while the core is still settling after ABL handed it over. */
++#define RESET_TIMEOUT_NS        (1000ull * NSEC_PER_MSEC)
+ #define CLOCK_STABLE_TIMEOUT_NS (150ull * NSEC_PER_MSEC)
+ /*
+  * Qualcomm vendor-specific registers CORE_DLL_CONFIG (0x100), CORE_DLL_STATUS
+@@ -1335,6 +1337,7 @@
+ 	uint32_t mci_clk = 0, mci_power = 0, vendor, probe_r1 = 0, probe_ocr = 0;
+ 	uint64_t deadline;
+ 	int error, err0, err_cmd1;
++	bool reset_done;
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -1399,16 +1402,35 @@
+ 	hc_wr8(SDHCI_SOFTWARE_RESET, SDHCI_RESET_ALL);
+ 	nanoseconds_to_absolutetime(RESET_TIMEOUT_NS, &deadline);
+ 	deadline += mach_absolute_time();
++	reset_done = false;
+ 	while (hc_rd8(SDHCI_SOFTWARE_RESET) & SDHCI_RESET_ALL) {
+ 		if (mach_absolute_time() > deadline) {
+-			printf("SANTONI SDHCI: RESET_ALL timed out (0x%02x)\n",
+-			    hc_rd8(SDHCI_SOFTWARE_RESET));
+-			return ETIMEDOUT;
++			break;
+ 		}
+ 		delay(1);
+ 	}
++	reset_done = (hc_rd8(SDHCI_SOFTWARE_RESET) & SDHCI_RESET_ALL) == 0;
++	if (!reset_done) {
++		printf("SANTONI SDHCI: RESET_ALL did not self-clear "
++		    "(SOFTWARE_RESET 0x%02x, PRESENT_STATE 0x%08x, "
++		    "CLOCK_CONTROL 0x%04x, VENDOR_SPEC 0x%08x)\n",
++		    hc_rd8(SDHCI_SOFTWARE_RESET), hc_rd(SDHCI_PRESENT_STATE),
++		    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd(CORE_VENDOR_SPEC));
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++		/*
++		 * SDCC v5 leaves RESET_ALL asserted when the HC has no MCLK to
++		 * clock the reset through. Panicking the probe here throws away
++		 * a controller that ABL left working: the card is in TRAN, and
++		 * step 2 starts with an addressed CMD13 that proves the
++		 * inherited state. Continue and let that command decide.
++		 */
++		printf("SANTONI SDHCI: continuing without a completed reset\n");
++#else
++		return ETIMEDOUT;
++#endif
++	}
+ 	/* RESET_ALL turns off bus power; acknowledge the BUS_OFF request */
+-	(void)sdhci_pwrctl_ack("BUS_OFF", true);
++	(void)sdhci_pwrctl_ack("BUS_OFF", reset_done);
+ 
+ 	/* Re-assert vendor clock selection in case core reset affected it */
+ 	sdhci_select_hc_clock();

@@ -280,9 +280,20 @@ python3 tools/check_patch.py "$P149" -q \
 	--added-contains 'iokit/bsddev/IOKitBSDInit.cpp:santoni_sdhci_failure_text());'
 echo "ok   0149 reports the failing probe step, CMD1 result and SDHCI state"
 
+echo "== SDHCI v5: a stuck RESET_ALL must not discard ABL's working card  =="
+P150="xnu/patches/0150-sdhci-v5-reset-timeout-nonfatal.patch"
+python3 tools/check_patch.py "$P150" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define RESET_TIMEOUT_NS        (1000ull * NSEC_PER_MSEC)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:bool reset_done;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:continuing without a completed reset' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:(void)sdhci_pwrctl_ack("BUS_OFF", reset_done);'
+echo "ok   0150 keeps the SDCC v5 takeover alive after a stuck RESET_ALL"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
+python3 tests/test_prune_dtb.py >/dev/null
+echo "ok   prune_dtb keeps the board ids and drops the nodes nobody reads"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).
