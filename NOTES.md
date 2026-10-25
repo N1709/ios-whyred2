@@ -1,5 +1,45 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0158 (2026-10-25): the card never left ABL's HS400 timing
+
+- **The unexplained register in the 0156 log names the bug.**
+  `HOST_CONTROL2` was `0x0080` - bit 7 `TUNED_CLK` - at
+  `data probe: start`. That value is ABL's: it ran the eMMC in HS400. The
+  driver had already returned the *host* to legacy (`sdhci_set_legacy_host()`
+  forces UHS=0, 400 kHz, DLL bypass), but nothing ever put the *card* back:
+  `EXT_CSD[185] HS_TIMING` still selected HS200/HS400. An HS400 card returns
+  read data strobed by DS, not as a plain block to a legacy host, which is
+  exactly the observed signature: read transfer active + data available,
+  FIFO returns 128 zero words, no CRC, no TC, DAT inhibited forever.
+- **0158 (`xnu/patches/0158-sdhci-legacy-timing-before-ext-csd.patch`,
+  commit `da199af`).**
+  - `sdhci_read_ext_csd()` sends `CMD6 HS_TIMING=0` once, before the width
+    ladder. HS_TIMING and BUS_WIDTH are independent EXT_CSD fields, so the
+    1/8-bit switches that follow are unaffected.
+  - `sdhci_set_legacy_host()` also clears `HOST_CONTROL2` `TUNED_CLK` and
+    `EXEC_TUNING`, not just the UHS field.
+  - `sdhci_ext_csd_clear()` zeroes the bounce buffer (and flushes it) before
+    every SDMA, PIO and matrix attempt, so a block left by an earlier setup
+    cannot pass `sdhci_ext_csd_sane()`.
+  - A payload with a real REV/STRUCTURE/SEC_COUNT is kept even when the
+    status path reported an error (`status error ignored`), in both the
+    ladder and the matrix.
+  - Banner: `driver 0158 (legacy card timing before the first data phase,
+    payload kept on a status error)`.
+- **Untested on hardware.** The next display shows whether `HS_TIMING=0`
+  itself completes and whether the following `CMD8` returns a real block.
+  Expected lines: `CMD6 HS_TIMING=0 (legacy, before EXT_CSD) -> R1
+  0x00000900`, `HOST_CONTROL 0x00 after ...`, then either `EXT_CSD read
+  works at 1-bit (SDMA)` / `SEC_COUNT ...` or the matrix with its `words ...`
+  dump. If it still returns zeros, the DS-strobe hypothesis is wrong and the
+  next patch must look at the Qualcomm data path, not the card.
+- **CI run `40182078200`** (commit `da199af`): workflow started 09:47 UTC;
+  result and artifact hash are appended when the build finishes.
+- **0157 is still a valid image to test.** 0158 is additive: if 0157's SDMA
+  read already returns a real EXT_CSD, 0158 changes nothing about that path.
+- Progress stays at overall **~50%** (kernel 90%, eMMC 60%, rootfs 45%,
+  peripherals 15%) until a real `EXT_CSD SEC_COUNT` appears on the phone.
+
 ## 0157 (2026-10-25): SDMA first, and a block only counts if it is EXT_CSD
 
 - **The 0156 boot moved the failure, it did not finish the read.** The log
