@@ -55,6 +55,23 @@
 - **Cost:** in the worst case the self-test adds four 2 s timeouts (~8 s)
   to boot before the existing ladder runs. It returns as soon as an MBR is
   seen, so a working path costs one read.
+- **CI run `40198179153`** (commit `b919f3e`) finished **green**. The
+  `whyred-boot-img` artifact was fetched through nightly.link and verified:
+  - `shim-boot.img` 5,849,088 B, SHA-256
+    `a5cd65e6d3eeae5380f17066935def3f8477a447bc42c9c34596759f25f540d5`
+    (image header 4,096 B + `Image.gz` 5,834,094 B + 8,012 B DTB, padded
+    to a 4 KiB page).
+  - Kernel strings: `driver 0159` 1, `data self-test LBA0` 1,
+    `MBR %s` 1, `driver 0158` 0, `HS_TIMING=0 (legacy, before EXT_CSD)` 1.
+  - The DTB found in the kernel section is byte-identical to
+    `resources/whyred_dtb.bin` (msm-id `0x159`, board-id `0x30008`).
+  - Local copy: `shim/out/shim-boot-whyred-0159-CI.img`; check with
+    `sha256sum -c SHA256SUMS` inside the unzipped artifact.
+- **Next action: `fastboot boot shim-boot-whyred-0159-CI.img`** and send
+  the screen from `driver 0159` to the `data self-test LBA0 ...` lines. If
+  the phone stops again between `CMD1 attempt 2` and `CMD1 ready`, note
+  whether the Skywalk lines stop too - that separates a truncated photo
+  from a hung CMD1 poll.
 
 ## 0158 (2026-10-25): the card never left ABL's HS400 timing
 
