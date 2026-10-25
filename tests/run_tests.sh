@@ -239,6 +239,7 @@ python3 tools/check_patch.py "$P148" -q \
 	--added-contains 'makedefs/MakeInc.def:ifeq ($(filter SWEET SANTONI LAVENDER WHYRED,$(CURRENT_MACHINE_CONFIG)),)' \
 	--added-contains 'config/MASTER.arm64.whyred:machine' \
 	--added-contains 'config/MASTER.arm64.whyred:CONFIG_KERNEL_INTEGRITY' \
+	--added-contains 'config/MASTER.arm64.whyred:FILESYS_BASE =   [ devfs fdesc fifo mockfs sweet_hfs fs_compression' \
 	--added-contains 'bsd/conf/Makefile.template:ifneq ($(filter SWEET SANTONI LAVENDER WHYRED,$(CURRENT_MACHINE_CONFIG)),)' \
 	--added-contains 'libkern/conf/Makefile.template:ifneq ($(filter SWEET SANTONI LAVENDER WHYRED,$(CURRENT_MACHINE_CONFIG)),)'
 grep -q 'MACHINE_CONFIG:-.*WHYRED' xnu/patches/0019-stage-libpthread.sh
@@ -254,6 +255,30 @@ assert w['soc'] == 'sdm636', w
 assert mkadt.BOARDS['lavender']['panel_h'] == 2340
 PY
 echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
+
+# mockfs is the only filesystem that can mount the executable ram disk, and
+# sweet_hfs the only one for the iOS root. Missing them from FILESYS_BASE made
+# vfs_mountroot() return ENODEV (19) on every mount attempt: santoni shipped
+# that bug, and 0145/0148 copied the same list into lavender and whyred.
+python3 - <<'PY'
+for p in ('xnu/patches/0145-lavender-board-target.patch',
+          'xnu/patches/0148-whyred-board-target.patch'):
+    lines = [l for l in open(p, encoding='utf-8')
+             if l.startswith('+#  FILESYS_BASE')]
+    assert lines, p
+    assert 'devfs fdesc fifo mockfs sweet_hfs ' in lines[0], (p, lines[0])
+PY
+echo "ok   0145/0148 list mockfs and sweet_hfs, so md0 and the iOS root can mount"
+
+echo "== SDHCI: a cached probe must still say where it stopped            =="
+P149="xnu/patches/0149-santoni-sdhci-probe-failure-summary.patch"
+python3 tools/check_patch.py "$P149" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:stage = "take-over";' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:stage = "EXT_CSD 8-bit verify";' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_sdhci_failure_text(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:se.cmd1_error = err_cmd1;' \
+	--added-contains 'iokit/bsddev/IOKitBSDInit.cpp:santoni_sdhci_failure_text());'
+echo "ok   0149 reports the failing probe step, CMD1 result and SDHCI state"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py

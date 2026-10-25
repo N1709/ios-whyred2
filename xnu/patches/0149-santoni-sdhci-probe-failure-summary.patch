@@ -1,0 +1,108 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -354,6 +354,8 @@
+ 	uint64_t sys_first_block, sys_nblocks;  /* "system" partition, 512-byte sectors */
+ 	uint32_t sec_count;                     /* EXT_CSD SEC_COUNT, 512-byte units */
+ 	uint32_t rca;                           /* RCA the card answered with */
++	int cmd1_error;                         /* last CMD1 result (probe) */
++	uint32_t cmd1_ocr;                      /* OCR of the last CMD1 poll */
+ 	uint32_t secsize;                       /* logical sector size for BSD */
+ 	uint8_t saved_ctrl;                     /* HOST_CONTROL at hand-off */
+ 	uint16_t saved_hc2;                     /* HOST_CONTROL2 at hand-off */
+@@ -1561,6 +1563,8 @@
+ 	}
+ 	printf("SANTONI SDHCI: probe step 2: CMD1 final -> error %d, "
+ 	    "OCR 0x%08x\n", err_cmd1, probe_ocr);
++	se.cmd1_error = err_cmd1;
++	se.cmd1_ocr = probe_ocr;
+ 
+ 	if (err_cmd1 == 0) {
+ 		error = sdhci_enumerate_card();
+@@ -2729,6 +2733,8 @@
+ 	.d_type       = D_DISK,
+ };
+ 
++static char santoni_fail_text[192];
++
+ static int
+ santoni_sdhci_init(void)
+ {
+@@ -2736,6 +2742,7 @@
+ 	uintptr_t const *reg = NULL;
+ 	unsigned int size = 0;
+ 	int error, rw = 0;
++	const char *stage = "init";
+ 
+ 	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+@@ -2779,15 +2786,35 @@
+ 	se.dma_pa = ptoa_64(pn);
+ 
+ 	lck_mtx_lock(&santoni_sdhci_lock);
++	stage = "take-over";
+ 	error = sdhci_take_over();
+ 	if (!error) {
++		stage = "EXT_CSD 8-bit verify";
+ 		error = sdhci_verify_highspeed_bus(se.sec_count);
+ 	}
+ 	if (!error) {
++		stage = "GPT partition";
+ 		error = santoni_sdhci_find_partition(se.part);
+ 	}
+ 	lck_mtx_unlock(&santoni_sdhci_lock);
+ 	if (error) {
++		/*
++		 * The per-step printf() burst above scrolls off the 90x27
++		 * console within one probe, and the probe is cached, so the
++		 * only line IOKitBSDInit can repeat is the error code. Keep a
++		 * compact snapshot of exactly where it stopped and the state
++		 * that matters for the next boot.
++		 */
++		snprintf(santoni_fail_text, sizeof(santoni_fail_text),
++		    "step=%s err=%d cmd1=%d ocr=0x%08x sec=%u rca=%u enum=%d\n"
++		    "clkctl=0x%04x hostctl=0x%02x hostctl2=0x%04x "
++		    "int=0x%08x last=%llu us",
++		    stage, error, se.cmd1_error, se.cmd1_ocr, se.sec_count,
++		    se.rca, se.enumerated ? 1 : 0,
++		    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
++		    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd(SDHCI_INT_STATUS),
++		    (unsigned long long)(se.last_cmd_ns / 1000));
++		printf("SANTONI SDHCI: probe failed: %s\n", santoni_fail_text);
+ 		return error;
+ 	}
+ 
+@@ -2824,6 +2851,16 @@
+ }
+ 
+ /*
++ * Text IOKitBSDInit repeats after "eMMC probe failed": the probe itself is
++ * cached, so without this the console only ever shows the errno.
++ */
++const char *
++santoni_sdhci_failure_text(void)
++{
++	return santoni_fail_text[0] ? santoni_fail_text : "(no stage recorded)";
++}
++
++/*
+  * Persistent console log ("santonilog").
+  * Filming the phone screen is impractical for non-visual and early daemon
+  * panics. Every character that reaches the console (_cnputs) is appended to a
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -793,12 +793,13 @@
+ //
+ 	{
+ 		extern int santoni_sdhci_probe(void);
++		extern const char *santoni_sdhci_failure_text(void);
+ 		int emmc_error = santoni_sdhci_probe();
+ 
+ 		/* Non-fatal: a RAM-disk (rd=md0) boot must still work. */
+ 		if (emmc_error) {
+-			IOLog("SANTONI: eMMC probe failed (%d), continuing\n",
+-			    emmc_error);
++			IOLog("SANTONI: eMMC probe failed (%d): %s\n",
++			    emmc_error, santoni_sdhci_failure_text());
+ 		}
+ 	}
+ 	if (strcmp(rdBootVar, "emmcroot0") == 0) {

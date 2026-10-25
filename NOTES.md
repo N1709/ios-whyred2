@@ -60,10 +60,41 @@
   answer `getvar:max-download-size`. `gzip -9` produces a 6.31 MB boot image,
   zopfli produces 5.78 MB, which fits: compress `shim/out/Image` with zopfli,
   then `IMAGE_GZ=/path/Image.z.gz BOARD=whyred shim/build.sh`.
-- **Next concrete action:** put `kernel.development.whyred` in `xnu/out/`,
-  build `BOARD=whyred shim/build.sh`, and boot it through the `recovery`
-  partition (`fastboot flash recovery` + `fastboot reboot recovery`),
-  keeping boot/modem/persist untouched.
+- **First hardware boot (2026-10-25, image from `74eec59`, 6,062,080 bytes,
+  flashed to `recovery`):** the shim started the kernel on Gold `0x100` and
+  the XNU console came up. After the ram-disk root was registered the screen
+  looped on the block below; `60` is `ETIMEDOUT`.
+  ```
+  SANTONI: eMMC probe failed (60), continuing
+  BSD root: md0, major 1, minor 0
+  ... alias vnode ... is in state of change ...
+  cannot mount root, errno = 19
+  mount(39) failed
+  ```
+- **Diagnosis 1 - `errno 19` (`ENODEV`): no root filesystem was compiled in,
+  not a bad ram disk.** `vfs_mountroot()` returns `ENODEV` only when no
+  `vfsops` are registered for the root name. `0145` and `0148` copied
+  santoni's `FILESYS_BASE` line, which omitted `mockfs` (the only fs that can
+  mount an executable ram disk) and `sweet_hfs` (the iOS root).
+  `strings xnu/out/kernel.development.whyred` contained zero `mockfs` and
+  zero `sweet_hfs` occurrences. Fix: `mockfs sweet_hfs` added to
+  `FILESYS_BASE` in both patches; `tests/run_tests.sh` now asserts it.
+- **Diagnosis 2 - `probe failed (60)` is a CMD1 timeout, not a mount bug.**
+  The probe is cached (`attempted`/`init_error`), so the driver's
+  `probe step ...` lines printed once, scrolled off the 90x27 console, and
+  every later mount retry printed only the errno. `sdhci_take_over()` also
+  returns success when CMD1 never answers, so the reported error comes from
+  `sdhci_verify_highspeed_bus()` (its CMD8 fails with `ETIMEDOUT`, 60).
+  `0149-santoni-sdhci-probe-failure-summary.patch` keeps a compact snapshot
+  (stage, CMD1 error/OCR, SEC_COUNT, RCA, CLOCK/HOST control, INT_STATUS,
+  last command time) and `IOKitBSDInit` repeats it on every retry, so the
+  next screen photo says exactly which step failed.
+- **Next concrete action:** let CI build `0145`/`0148`+`0149`, flash the new
+  `shim-boot.img`, and photograph the console. If `md0` mounts and PID 1
+  starts, the ram-disk milestone is done; the remaining failure should show
+  as `step=take-over ... cmd1=60 ocr=0x...`, which is the eMMC clock/power
+  bring-up (SDCC v5 `0x0c0c4000`, GCC `sdcc1_apps_clk_src`) and is the next
+  thing to fix for `rd=emmcroot0`.
 
 ## Lavender Bring-up (2026-10-24): initial port and boot configuration
 
