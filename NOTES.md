@@ -27,6 +27,10 @@
     For SDMA, "moved" means the SDMA system address advanced past the value
     the driver programmed. If `DAT_INHIBIT` outlives the last byte, the data
     path is reset **after** the bytes are already in the buffer.
+  - PIO callers pass `all_bytes = true` once their own word loop moved every
+    byte of the request, so a lagging `READ/WRITE_TRANSFER_ACTIVE` cannot
+    throw away a block that is already in the buffer. SDMA keeps the stricter
+    engine-idle test because only the engine knows when the burst landed.
   - `sdhci_probe_attempt()` (the 0154 matrix) uses the same signals, so a
     matrix row can now succeed for the same reason the main path does.
   - `sdhci_ext_csd_sane()` checks EXT_CSD byte 192 (REV 1..8), byte 193
