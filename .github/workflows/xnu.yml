@@ -236,7 +236,10 @@ jobs:
           # this kernel only implements the AMFI MAC policy, not the service.
           # The iOS 16 binary has launchd_unsecure_cache= for exactly this
           # bring-up case: it skips the signature push and the AMFI lookup.
-          EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1
+          # 0173 needs cs_debug=2: the CD dump and the per-blob "proc ..." line
+          # are gated on cs_debug > 1. The CSBLOB/CSPAGE/SHARED CACHE prints
+          # are unconditional so the failing page data can be matched offline.
+          EXTRA_CMDLINE: emmcrw=1 cs_debug=2 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1
         run: |
           set -euo pipefail
           KERNEL=xnu/out/kernel.development.whyred

@@ -1,5 +1,51 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0173 handoff (2026-10-26): diagnostics for CS 85 and the shared-cache slide
+
+**Hardware result of 0172 (image `43eea83c...c543`, commit `83d404e`).**
+`launchd_unsecure_cache=1` removed the AMFI lookup abort: the LaunchDaemons
+start (`watchdogd`, `lockdownd`, `thermalmonitord`, `nfcd`, `ptpd`, `imagent`,
+`locationd`, `identityservicesd`, `amfid`, `backboardd`). Two new failures:
+
+1. `cs_blob_init_validated` returns `85` (EBADEXEC) for `thermalmonitord`,
+   `lockdownd`, `DumpPanic` and `backboardd`; the exec then clears the platform
+   binary and panics with `unexpected exec of non-platform binary:
+   /usr/libexec/backboardd`. This is the CS blob path, not
+   `ubc_cs_blob_revalidate`.
+2. Shared-cache slide faults: `vm_shared_region_slide_page() offset overflow:
+   pageIndex=20208/20212/20220, start_offset=0/8, slide_amount=0x19028000`,
+   then SIGBUS (`sig 10 code 0x1000000a`) in `lockdownd`, `thermalmonitord`,
+   `imagent`, `locationd` and `identityservicesd`.
+
+**Why the next boot is diagnostics, not a fix.** For `nfcd`/`ptpd` the
+expected page hash matches the local file page and the CD slot, but the actual
+hash matches no 4 KiB window. So the suspect is the data the kernel hashed
+(kernel page contents, blob read, or index base), not the signature on disk.
+Guessing another workaround would spend a flash without narrowing that.
+
+**0173** (`xnu/patches/0173-sdhci-diagnose-cs-and-slide-data.patch`, banner
+`driver 0173`) is a print-only change compiled for `ARM64_BOARD_CONFIG_WHYRED`:
+
+- `CODE SIGNING: CD len ... version/flags/hashType/hashSize/hashOffset/nCode/
+  nSpecial/pageSize/codeLimit/scatter/ident/team` when `cs_debug > 1` - names
+  the exact field that makes `cs_validate_codedirectory` return 85.
+- `CODE SIGNING: CSBLOB <vnode> size ... head <12 bytes> invalid <err>` - shows
+  whether the kernel read the real `CSMAGIC_CODEDIRECTORY` bytes at all.
+- `CODE SIGNING: CSPAGE <vnode> ... slot/shift/base/start/vaoff/fileoff
+  16k [8 words]` - the 16 KiB kernel page (four 4 KiB chunks) that was hashed,
+  so it can be searched in `ios16-root.raw`.
+- `SHARED CACHE: slide v... page/start/end/slid/slide/backing/req/len` once per
+  pager, and `SHARED CACHE: slide fail v... idx/pageoff/chunk/file/w[...]` with
+  the chain start bytes on `KERN_RETURN_ERROR`.
+
+`EXTRA_CMDLINE` now uses `cs_debug=2` (the CD and per-blob lines need >1).
+
+**Next:** boot the 0173 image, `grep -E "driver 0173|CODE SIGNING: (CD|CSBLOB|
+CSPAGE)|SHARED CACHE"` the log, then match the printed words against the root
+image with the offsets in `/tmp/opencode` scripts (root
+`/home/n1709/iosroot-extract/ios16-root.raw`). One boot, one decisive answer:
+the UBC read path, the vnode/page offset, or a wrong slide index base.
+
 ## 0171 boot (2026-10-26): bindfs fixed mount; launchd_cache_loader wants AMFI
 
 **Confirmed on hardware** (image `d1f65604...da4e`): with `bindfs` in the

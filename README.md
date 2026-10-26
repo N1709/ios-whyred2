@@ -22,17 +22,20 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-26 (build `0171` fixed `mount-phase-1` with `bindfs` and
-the boot now reaches `launchd_cache_loader`, which stops because the kernel has
-no `AppleMobileFileIntegrity` service; build `0172` passes
-`launchd_unsecure_cache=1`, awaiting a boot).
+Last updated 2026-10-26 (build `0172` confirmed on hardware: the cache loader
+starts the daemon set, and the remaining blocker moved to code signing -
+`csblob invalid: 85` on `thermalmonitord`/`lockdownd`/`backboardd` plus
+`vm_shared_region_slide_page()` failures and SIGBUS in the shared cache.
+Build `0173` is a diagnostics-only boot that prints the exact CD, CS blob and
+slide-chain bytes the kernel validates, so the fault can be matched against
+the root image offline).
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s |
 | eMMC command, data and mount path | **95%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, PIO single- and multi-block, journal replay, HFSX mounted read-write. Only repeated boots and heavy I/O are unproven |
-| Root filesystem from eMMC (`launchd`, real daemons) | **91%** | `launchd` runs as PID 1; with `bindfs` in `0171` the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exits successfully up to `launchd_cache_loader` |
-| Code signing / AMFI (trust cache, entitlements) | **60%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec. There is still no `AppleMobileFileIntegrity` IOKit service, so `launchd_cache_loader` aborts until `launchd_unsecure_cache=1` skips it in `0172`; trust cache and page hashes remain |
+| Root filesystem from eMMC (`launchd`, real daemons) | **91%** | `launchd` runs as PID 1; with `bindfs` in `0171` the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exits successfully, and `0172` starts the LaunchDaemons (`watchdogd`, `lockdownd`, `backboardd`, `amfid`, `imagent`, ...) |
+| Code signing / AMFI (trust cache, entitlements) | **60%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec and `launchd_unsecure_cache=1` skips the missing AMFI service. Two failures remain: `cs_blob_init_validated` returns 85 for `thermalmonitord`/`lockdownd`/`backboardd`, and the shared cache slide path faults (`vm_shared_region_slide_page()`/SIGBUS). `0173` dumps the CD fields, CS blob head, 16 KiB page words and slide chain words for offline matching |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
 | **Kernel readiness for an eMMC boot** | **~87%** | Mount, bind mounts, platform-binary exec and the full boot-task chain are proven; the launchd cache/AMFI path, stable re-boots and the peripherals remain |
 | **Overall port (weighted)** | **~75%** | iOS userspace now gets through the mount phase; the launchd cache/AMFI path and the peripherals are the gap |

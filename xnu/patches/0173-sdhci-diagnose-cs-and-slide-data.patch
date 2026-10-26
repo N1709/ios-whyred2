@@ -1,0 +1,199 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -2116,7 +2116,7 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("WHYRED SDHCI: driver 0172 (root \"%s\", writes %s; boot "
++	printf("WHYRED SDHCI: driver 0173 (root \"%s\", writes %s; boot "
+ 	    "args decide whether the HFS+ root comes from eMMC)\n",
+ 	    se.part, se.writable ? "enabled" : "read-only");
+ 
+--- a/bsd/kern/ubc_subr.c
++++ b/bsd/kern/ubc_subr.c
+@@ -371,6 +371,25 @@
+ 	if (ntohl(cd->magic) != CSMAGIC_CODEDIRECTORY) {
+ 		return EBADEXEC;
+ 	}
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++	if (cs_debug > 1) {
++		/*
++		 * 0173: EBADEXEC from this function is reported only as a
++		 * number. Print the fields every length/count check uses so a
++		 * failing blob can be compared with the file offline.
++		 */
++		printf("CODE SIGNING: CD len %lu version 0x%x flags 0x%x "
++		    "hashType %u hashSize %u hashOffset %u nCode %u nSpecial %u "
++		    "pageSize %u codeLimit 0x%x scatter 0x%x ident 0x%x "
++		    "team 0x%x\n",
++		    (unsigned long)length, ntohl(cd->version),
++		    ntohl(cd->flags), cd->hashType, cd->hashSize,
++		    ntohl(cd->hashOffset), ntohl(cd->nCodeSlots),
++		    ntohl(cd->nSpecialSlots), cd->pageSize,
++		    ntohl(cd->codeLimit), ntohl(cd->scatterOffset),
++		    ntohl(cd->identOffset), ntohl(cd->teamOffset));
++	}
++#endif
+ #if defined(ARM64_BOARD_CONFIG_SANTONI)
+ 	/*
+ 	 * iOS 16's dyld shared cache is signed with 16 KiB hash units
+@@ -4605,11 +4624,40 @@
+ 	 * We initialize a temporary blob whose contents are then copied into an RO
+ 	 * blob which we allocate from the read-only allocator.
+ 	 */
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++	{
++		uint32_t h0 = 0, h1 = 0, h2 = 0;
++
++		if (addr != NULL && *addr != 0 && size >= 12) {
++			memcpy(&h0, (const void *)(*addr + 0), 4);
++			memcpy(&h1, (const void *)(*addr + 4), 4);
++			memcpy(&h2, (const void *)(*addr + 8), 4);
++		}
++		error = cs_blob_init_validated(addr, size, &tmp_blob, &cd);
++		if (error != 0) {
++			/*
++			 * 0173: show which bytes the kernel actually read for
++			 * the signature. A wrong blob (not CSMAGIC...) means
++			 * the read path; the right blob means a field check.
++			 */
++			const char *bname = vnode_getname_printable(vp);
++
++			printf("CODE SIGNING: CSBLOB %s size %lu head %08x %08x "
++			    "%08x invalid %d\n", bname, (unsigned long)size,
++			    h0, h1, h2, error);
++			vnode_putname_printable(bname);
++			printf("unable to create a validated cs_blob object: %d\n",
++			    error);
++			return error;
++		}
++	}
++#else
+ 	error = cs_blob_init_validated(addr, size, &tmp_blob, &cd);
+ 	if (error != 0) {
+ 		printf("unable to create a validated cs_blob object: %d\n", error);
+ 		return error;
+ 	}
++#endif
+ 
+ #if defined(ARM64_BOARD_CONFIG_SANTONI)
+ 	/*
+@@ -5794,6 +5842,49 @@
+ 				    asha1[3], asha1[4],
+ 				    esha1[0], esha1[1], esha1[2],
+ 				    esha1[3], esha1[4]);
++#if defined(ARM64_BOARD_CONFIG_WHYRED) && (PAGE_SHIFT == 14)
++				{
++					/*
++					 * 0173: the expected hash already matches
++					 * the file on disk for these binaries, so
++					 * print the mapped page the kernel really
++					 * hashed. The four 4 KiB chunks of the
++					 * 16 KiB kernel page are enough to find
++					 * those bytes in the root image offline.
++					 */
++					const uint8_t *pb = (const uint8_t *)
++					    ((uintptr_t)data &
++					    ~((uintptr_t)PAGE_SIZE - 1));
++					vnode_t dvp =
++					    vnode_pager_lookup_vnode(pager);
++					const char *dname =
++					    vnode_getname_printable(dvp);
++
++					printf("CODE SIGNING: CSPAGE %s off 0x%llx "
++					    "size 0x%lx slot 0x%llx shift %u "
++					    "base 0x%llx start 0x%llx "
++					    "vaoff 0x%lx fileoff 0x%lx "
++					    "16k [%08x %08x %08x %08x "
++					    "%08x %08x %08x %08x]\n",
++					    dname, (uint64_t)page_offset, size,
++					    (uint64_t)(offset >>
++					    blob->csb_hash_pageshift),
++					    blob->csb_hash_pageshift,
++					    (uint64_t)blob->csb_base_offset,
++					    (uint64_t)blob->csb_start_offset,
++					    (unsigned long)((uintptr_t)data - (uintptr_t)pb),
++					    (unsigned long)((size_t)page_offset & (PAGE_SIZE - 1)),
++					    *(const uint32_t *)(pb + 0x0000),
++					    *(const uint32_t *)(pb + 0x0004),
++					    *(const uint32_t *)(pb + 0x1000),
++					    *(const uint32_t *)(pb + 0x1004),
++					    *(const uint32_t *)(pb + 0x2000),
++					    *(const uint32_t *)(pb + 0x2004),
++					    *(const uint32_t *)(pb + 0x3000),
++					    *(const uint32_t *)(pb + 0x3004));
++					vnode_putname_printable(dname);
++				}
++#endif
+ 			}
+ 			cs_validate_page_bad_hash++;
+ 			*tainted |= CS_VALIDATE_TAINTED;
+--- a/osfmk/vm/vm_shared_region_pager.c
++++ b/osfmk/vm/vm_shared_region_pager.c
+@@ -512,6 +512,33 @@
+ 
+ 	PAGER_DEBUG(PAGER_PAGEIN, ("shared_region_pager_data_request: %p, %llx, %x, %x, pager %p\n", mem_obj, offset, length, protection_required, pager));
+ 
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++	{
++		/*
++		 * 0173: name the slide information the kernel was handed.
++		 * The page size and page_starts_count decide the pageIndex
++		 * passed to vm_shared_region_slide_page(); without them a
++		 * "wrong chain" report cannot be interpreted.
++		 */
++		static boolean_t srp_diag_printed = FALSE;
++
++		if (!srp_diag_printed) {
++			vm_shared_region_slide_info_t si = pager->srp_slide_info;
++
++			srp_diag_printed = TRUE;
++			printf("SHARED CACHE: slide v%u page 0x%x start 0x%llx "
++			    "end 0x%llx slid 0x%llx slide 0x%x backing 0x%llx "
++			    "req 0x%llx len 0x%x\n",
++			    si->si_slide_info_entry->v2.version,
++			    si->si_slide_info_entry->v2.page_size,
++			    (uint64_t)si->si_start, (uint64_t)si->si_end,
++			    (uint64_t)si->si_slid_address, si->si_slide,
++			    (uint64_t)pager->srp_backing_offset,
++			    (uint64_t)offset, length);
++		}
++	}
++#endif
++
+ 	/*
+ 	 * Gather in a UPL all the VM pages requested by VM.
+ 	 */
+@@ -750,6 +777,32 @@
+ 				    kr);
+ 			}
+ 			if (kr != KERN_SUCCESS) {
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++				{
++					/*
++					 * 0173: the chain data is the cache
++					 * file itself. Print the first 16 bytes
++					 * at the chain start and the exact file
++					 * offset, so it can be checked against
++					 * the root image offline.
++					 */
++					const uint32_t *w = (const uint32_t *)
++					    (dst_vaddr + offset_in_page);
++
++					printf("SHARED CACHE: slide fail v%u "
++					    "idx %u pageoff 0x%llx "
++					    "chunk 0x%llx file 0x%llx "
++					    "w [%08x %08x %08x %08x]\n",
++					    pager->srp_slide_info->
++					    si_slide_info_entry->v2.version,
++					    (uint32_t)(offset_in_sliding_range /
++					    PAGE_SIZE_FOR_SR_SLIDE),
++					    (uint64_t)offset_in_sliding_range,
++					    (uint64_t)chunk_offset,
++					    (uint64_t)offset_in_backing_object,
++					    w[0], w[1], w[2], w[3]);
++				}
++#endif
+ 				ktriage_record(thread_tid(current_thread()), KDBG_TRIAGE_EVENTID(KDBG_TRIAGE_SUBSYS_SHARED_REGION, KDBG_TRIAGE_RESERVED, KDBG_TRIAGE_SHARED_REGION_SLIDE_ERROR), 0 /* arg */);
+ 				shared_region_pager_slid_error++;
+ 				retval = KERN_MEMORY_ERROR;

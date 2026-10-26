@@ -553,7 +553,8 @@ P169="xnu/patches/0169-sdhci-name-the-code-signing-build.patch"
 python3 tools/check_patch.py "$P169" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0169' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0168'
-grep -q 'EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
+grep -q 'EXTRA_CMDLINE: emmcrw=1 cs_debug=' .github/workflows/xnu.yml
+grep -q 'cs_enforcement_disable=1 unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
 echo "ok   0169 enables cs_debug and cs_enforcement_disable for the root boot"
 
 echo "== EXEC: 0170 names the platform-exec build and lets iOS launchd exec =="
@@ -592,6 +593,21 @@ python3 tools/check_patch.py "$P172" -q \
 # and skips both the signature push and the AMFI connection.
 grep -q 'launchd_unsecure_cache=1' .github/workflows/xnu.yml
 echo "ok   0172 passes launchd_unsecure_cache=1 for the cache loader"
+
+echo "== CACHE: 0173 prints the bytes the kernel validates =="
+P173="xnu/patches/0173-sdhci-diagnose-cs-and-slide-data.patch"
+python3 tools/check_patch.py "$P173" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0173' \
+	--added-contains 'bsd/kern/ubc_subr.c:CODE SIGNING: CSPAGE' \
+	--added-contains 'bsd/kern/ubc_subr.c:CODE SIGNING: CSBLOB' \
+	--added-contains 'bsd/kern/ubc_subr.c:CODE SIGNING: CD len' \
+	--added-contains 'osfmk/vm/vm_shared_region_pager.c:SHARED CACHE: slide fail' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0172'
+# The prints are only useful when the debug level they are gated on is set,
+# and they must stay inside the whyred config so other boards are unaffected.
+grep -q 'cs_debug=2' .github/workflows/xnu.yml
+grep -q 'ARM64_BOARD_CONFIG_WHYRED' "$P173"
+echo "ok   0173 dumps CD/CSBLOB/CSPAGE/slide bytes under cs_debug=2"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
