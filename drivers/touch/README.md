@@ -14,3 +14,7 @@
      controller with a kernel print.
   3. Only then publish an `IOHIDDevice`; iOS needs the multitouch report
      descriptor to match what SpringBoard expects.
+
+Mirror: `sweet_touch.c`. This is the FT5452/Goodix GENI driver used by the
+sweet/topaz boards, **not** an NT36672 driver - it is here as a reference for
+the attach/IRQ/report structure.

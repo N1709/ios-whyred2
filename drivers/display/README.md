@@ -14,3 +14,6 @@
   that far yet), hardware composition, backlight control.
 - **Next:** nothing until the code-signing/shared-cache faults are cleared;
   then check which `IOMobileFramebuffer` properties `backboardd` needs.
+
+Mirrors: `SweetFramebuffer.cpp` and `SweetSurface.cpp` (the code this kernel
+actually runs, regenerated from the patches).

@@ -12,3 +12,6 @@
 - **Next:** leave alone unless a boot log shows a data-path error.
 
 The host-side mock lives in `tests/test_sdhci_mock.c` and `tests/test_gpt_parser.c`.
+
+Mirror: `santoni_sdhci.c` in this folder (regenerated from the patch series by
+`tools/extract_drivers.py`; do not edit it here).

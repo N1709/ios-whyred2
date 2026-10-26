@@ -8,3 +8,7 @@
   reporting to `IOPMrootDomain`.
 - **Next:** not on the critical path for the lock screen; pick this up after
   SpringBoard, when the device must stay alive on battery.
+
+Mirrors: `SweetBattery.cpp` and `sweet_i2c1.c` from the sweet/topaz power path;
+the PM660 register programming still has to come from the whyred Android
+sources.

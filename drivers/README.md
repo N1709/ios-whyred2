@@ -1,34 +1,35 @@
 # drivers/
 
-One folder per subsystem, so the port's driver work is still findable after the
-patch list grows past 0173.
+One folder per subsystem: the mirrored driver source plus the hardware notes
+that are not compiled into XNU.
 
-## Rule
+## Why there are two copies
 
-The kernel is built from a patched XNU tree, so driver *code* must live at a
-path XNU already builds (for example `bsd/dev/santoni_sdhci.c`) and reach the
-tree through a numbered patch in `xnu/patches/`. The folder here is the index
-and the place for anything that is not compiled into XNU (register tables,
-firmware notes, host-side test vectors).
+XNU only builds files at paths it knows, and this port changes XNU through
+`xnu/patches/*.patch`. The patch is therefore the canonical source. Editing a
+copy under `drivers/` would be lost on the next build.
 
-Each domain folder records:
+`tools/extract_drivers.py` reconstructs every driver file from the patch series
+and writes the mirror here, so the code can be read without checking out XNU:
 
-- the exact hardware block and its address/IRQ from the whyred DTS,
-- the patch and in-tree file that implement it,
-- what is proven on the phone and what is not,
-- the next experiment, if the domain is still untouched.
+```
+python3 tools/extract_drivers.py          # refresh the mirrors
+python3 tools/extract_drivers.py --check  # verify they match the patches
+```
+
+`tests/run_tests.sh` runs `--check`, so a patch and its mirror cannot drift.
 
 ## Domains
 
-| Folder | Hardware | State |
-| --- | --- | --- |
-| `storage/` | SDCC v5 eMMC at `0x0c0c4000` | working (`0142`+) |
-| `display/` | `AppleCLCD` + ABL framebuffer at `0x9d400000` | working, console only |
-| `gpu/` | Adreno 509 (`0x05000900`) | not started |
-| `wifi/` | WCN3990 (SNOC) + Bluetooth over SLIMbus | not started |
-| `touch/` | Novatek NT36672 (I2C) | not started |
-| `audio/` | Qualcomm WCD codec on SLIMbus + ADSP | not started |
-| `power/` | PM660/PM660L charger and fuel gauge | not started |
+| Folder | Hardware | Mirrored source | State |
+| --- | --- | --- | --- |
+| `storage/` | SDCC v5 eMMC `0x0c0c4000` | `santoni_sdhci.c` | working (`0142`+) |
+| `display/` | `AppleCLCD` + ABL framebuffer `0x9d400000` | `SweetFramebuffer.cpp`, `SweetSurface.cpp` | working, console only |
+| `touch/` | Novatek NT36672 (I2C) | `sweet_touch.c` (FT5452/Goodix reference) | NT36672 not started |
+| `wifi/` | WCN3990 (SNOC) + BT SLIMbus | `TopazModem.cpp` (topaz WLAN reference) | WCN3990 not started |
+| `power/` | PM660/PM660L charger and gauge | `SweetBattery.cpp`, `sweet_i2c1.c` (sweet/topaz path) | not started |
+| `gpu/` | Adreno 509 (`0x05000900`) | none in tree | not started, `hw.md` has the facts |
+| `audio/` | WCD codec + ADSP | none in tree | not started, `hw.md` has the facts |
 
-Add a new folder with a `README.md` before writing the first line of a new
-driver; keep the folder name lowercase and the hardware name in the file.
+The touch, wifi and power mirrors are the code this tree already has for other
+boards; they are references for structure, not a whyred implementation.

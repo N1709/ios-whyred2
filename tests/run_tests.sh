@@ -609,6 +609,11 @@ grep -q 'cs_debug=2' .github/workflows/xnu.yml
 grep -q 'ARM64_BOARD_CONFIG_WHYRED' "$P173"
 echo "ok   0173 dumps CD/CSBLOB/CSPAGE/slide bytes under cs_debug=2"
 
+echo "== DRIVERS: the mirrors under drivers/ match the patch series =="
+# mkdrv: the patch is canonical; a mirror can only be refreshed by the tool.
+python3 tools/extract_drivers.py --check
+echo "ok   driver mirrors are generated from the patches, not edited by hand"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

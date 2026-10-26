@@ -13,3 +13,7 @@
     not needed for the iOS boot.
   - Check the regulator and clock list in the DTS before writing attach code:
     the WCN3990 needs its `vdd*` rails up before the first QMI handshake.
+
+Mirror: `TopazModem.cpp`. The topaz stack (scan, HTT, station, join) is not a
+WCN3990 driver, but it is the only WLAN implementation in this tree and shows
+how the modem/WLAN IOUserClient is wired.
