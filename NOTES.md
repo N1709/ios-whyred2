@@ -33,6 +33,14 @@
     action, one verdict.
   - Banner: `driver 0165 (EXT_CSD read once, with the engine that moved LBA0,
     then one verdict; no width ladder after a data failure)`.
+- **0165 is built and verified.** CI run `40289072544` (commit `7432afe`)
+  finished **green**. Artifact: `shim-boot.img` 5,849,088 B, SHA-256
+  `eff931ece5135d370ec9ceb525a0503213b89f87e7003f5e224b7128726d581e`
+  (kernel image 17,931,984 B after gunzip). Strings: `driver 0165` 1,
+  `reading EXT_CSD the same way` 1, `EXT_CSD verdict: %s at` 1, no
+  `driver 0164`. DTB at offset 0x591867, 8,012 B, byte-identical to
+  `resources/whyred_dtb.bin`. Local copy
+  `shim/out/shim-boot-whyred-0165-CI.img`. **Not yet booted on hardware.**
 - **What the next log decides:**
   - `EXT_CSD read works at 1-bit (PIO)` -> enumeration can continue to the
     CMD6 width/timing switch and GPT; the eMMC wall is behind us.
