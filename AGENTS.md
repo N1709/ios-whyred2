@@ -16,3 +16,26 @@
   recovery, modem, persist and the backups intact, and confirm each
   destructive step with the user before running it.
 - Keep device dumps, serial numbers and downloaded Apple artifacts out of git.
+
+## Reference sources (user instruction, 2026-10-26)
+
+When something on the whyred port cannot be worked out from XNU alone, check
+the Android / Linux sources for this exact phone before guessing:
+
+- `../refs/whyred-android/` (durable local copy, outside git):
+  - `sdhci-msm.c`, `sdhci.c`, `sdhci.h` - Qualcomm's SDCC v5 driver from the
+    MIUI/whyred kernel. Source of the confirmed vendor behaviour:
+    `qcom,bus-width=<8>`, 25 MHz in `qcom,clk-rates`,
+    `SDHCI_QUIRK2_USE_RESERVED_MAX_TIMEOUT` (TMO `0x0F` legal),
+    `SDHCI_QUIRK2_RDWR_TX_ACTIVE_EOT`, and `CORE_PWRSAVE_DLL` (vendor spec 3
+    bit 3) cleared outside HS400.
+  - `dts_sdm660_whyred.dtsi`, `dts_sdm636_whyred.dtsi`,
+    `dts_sdm660-mtp_whyred.dtsi` - the phone's SDCC, GCC, pinctrl and
+    regulator nodes.
+- `/home/n1709/linux/` - mainline Linux (7.2.10) with
+  `drivers/mmc/host/sdhci-msm.c` and `drivers/mmc/host/sdhci.c`; useful for
+  the standard SDHCI state machine and quirks.
+- The MIUI files came from the Xiaomi whyred kernel source (`whyred-o-oss` /
+  `whyred-q-oss` branches on Xiaomi_Kernel_OpenSource). If the local copy is
+  lost, re-fetch those files rather than reconstructing register behaviour
+  from memory.
