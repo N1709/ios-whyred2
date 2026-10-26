@@ -1,5 +1,51 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0166 (2026-10-26): the eMMC wall is down - 8-bit HS and the GPT are real
+
+- **0165 ran on hardware and finished enumeration.** The pasted log:
+  - `EXT_CSD read works at 1-bit (PIO)` - one CMD8 with the engine that had
+    just moved LBA0; the 0164 ADMAERR/timeout chain is gone.
+  - `CMD8 EXT_CSD: R1 0x00000900 (state 4)` after the switch - the card
+    accepted EXT_CSD and is in TRAN.
+  - `SEC_COUNT 12214720` = 59,640 MiB (58.2 GiB), exactly what TWRP reports.
+  - `CMD6 BUS_WIDTH=8 -> R1 0x00000900`, `HOST_CONTROL 0x20`, then
+    `CMD6 HS_TIMING=1 -> R1 0x00000900`, `HOST_CONTROL 0x24`,
+    `DAT[7:0] 8-bit HS verified (SEC_COUNT 12214720, HS_TIMING 1)`.
+  - GPT parsed: `"system" first block 0x220000, 5952 MiB`,
+    `"userdata" first block 0x1368000, 49719 MiB`.
+  - `MID 0x90 ... PNM "HCG8a4" ... S/N 0x611026fa` - the same card as the
+    TWRP dmesg. `card selected (TRAN)`.
+  - So **the SDHCI data path is no longer the blocker**: 8-bit high-speed
+    reads work end to end (EXT_CSD, GPT, card registers).
+- **Two real defects found by that log:**
+  1. `enumeration complete: 25 MHz, 1-bit, high-speed` while the host was
+     `HOST_CONTROL 0x24` (8-bit + HS). `bus_width` still held the 1-bit that
+     read EXT_CSD; the 8-bit success path never wrote it. Cosmetic today,
+     wrong state for any later re-init.
+  2. The userspace probe printed `read eMMC LBA 0: [00 00 00 00 00 00 00 00]`.
+     That is **not** a read failure: the first 8 bytes of an MBR/HFS+ boot
+     block are zero, and the 55 aa signature is at 510/511. But the print
+     could not tell a real zero block from a stuck engine, so it proved
+     nothing.
+- **0166
+  (`xnu/patches/0166-sdhci-record-8bit-width-and-probe-the-volume-header.patch`).**
+  - `bus_width = 8;` on a successful 8-bit switch; the completion line now
+    also prints `HOST_CONTROL 0x..`, so the reported width is checkable.
+  - `tools/santoni-init.S` seeks to offset 1024 of `/dev/remmcroot0` (the
+    HFS+ volume header) and prints two bytes plus a verdict:
+    `H+ HFS+ volume`, `BD HFSX volume`, or `no HFS+/HFSX volume header`.
+  - Banner: `driver 0166 (enumeration records the width it actually switched
+    to; the 8-bit summary is no longer a stale 1-bit)`.
+- **What the next boot decides:**
+  - `(H+ HFS+ volume)` -> a real iOS root is already staged in userdata;
+    next step is `rd=emmcroot0` instead of `rd=md0` (sweet_hfs mount).
+  - `(no HFS+/HFSX volume header)` -> userdata still holds Android data;
+    the iOS root image from `tools/mkiosroot.sh` must be written there
+    (destructive: MIUI userdata is lost - ask first).
+  - The log pasted for 0165 ends right after `card selected (TRAN)`; no
+    `SANTONI init: still alive (tick)` line was included, so it is not known
+    yet whether the 5 s tick prints (the read itself did return).
+
 ## 0165 (2026-10-26): the first block ever read, and why the next one died
 
 - **0164 ran on hardware and the data path moved a block for the first time.**

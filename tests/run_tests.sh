@@ -510,6 +510,18 @@ python3 tools/check_patch.py "$P165" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0164'
 echo "ok   0165 reads EXT_CSD once with the engine that moved LBA0, then stops"
 
+echo "== SDHCI: the 0165 boot reached 8-bit HS but reported 1-bit; the     =="
+echo "==        width must be recorded, and LBA0 alone proves nothing      =="
+P166="xnu/patches/0166-sdhci-record-8bit-width-and-probe-the-volume-header.patch"
+python3 tools/check_patch.py "$P166" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:bus_width = 8;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:high-speed (HOST_CONTROL 0x%02x)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0166' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0165' \
+	--added-contains 'tools/santoni-init.S:volume header at 1024' \
+	--added-contains 'tools/santoni-init.S:#define SYS_lseek'
+echo "ok   0166 records the real 8-bit width and probes the HFS+ volume header"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

@@ -1,0 +1,156 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -2116,9 +2116,9 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0165 (EXT_CSD read once, with the "
+-	    "engine that moved LBA0, then one verdict; no width ladder after "
+-	    "a data failure)\n");
++	printf("SANTONI SDHCI: driver 0166 (enumeration records the width "
++	    "it actually switched to; the 8-bit summary is no longer a "
++	    "stale 1-bit)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -3197,6 +3197,17 @@
+ 	error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
+ 	    EXT_CSD_BUS_WIDTH_8, SDHCI_CTRL_8BITBUS, SDHCI_CTRL_BUS_MASK,
+ 	    "BUS_WIDTH=8");
++	if (!error) {
++		/*
++		 * The 0165 boot switched the card and the host to 8-bit and
++		 * then reported "1-bit", because bus_width still held the
++		 * width that had just read EXT_CSD. The card was fine
++		 * (HOST_CONTROL 0x24, DAT[7:0] 8-bit HS verified, GPT read),
++		 * but the driver's own state was wrong, and any later re-init
++		 * would have used it. Record the width that is now active.
++		 */
++		bus_width = 8;
++	}
+ 	if (error) {
+ 		printf("SANTONI SDHCI: enumeration: 8-bit switch failed "
+ 		    "(%d); trying 4-bit\n", error);
+@@ -3229,7 +3240,8 @@
+ 
+ 	se.enumerated = true;
+ 	printf("SANTONI SDHCI: enumeration complete: 25 MHz, %u-bit, "
+-	    "high-speed\n", bus_width);
++	    "high-speed (HOST_CONTROL 0x%02x)\n", bus_width,
++	    hc_rd8(SDHCI_HOST_CONTROL));
+ 	return 0;
+ }
+ 
+--- a/tools/santoni-init.S
++++ b/tools/santoni-init.S
+@@ -16,6 +16,7 @@
+ #define SYS_close	6
+ #define SYS_getpid	20
+ #define SYS_select	93
++#define SYS_lseek	199
+ #define O_RDONLY	0
+ #define O_RDWR		2
+ 
+@@ -124,6 +125,86 @@
+ 	sub	x2, x2, x1
+ 	bl	write_console
+ 
++	/*
++	 * The first 8 bytes of an MBR (or of an HFS+ volume's boot blocks) are
++	 * zero, so that print cannot tell a real block from a zero-filled
++	 * failure. The HFS+ volume header is at offset 1024 and starts with
++	 * "H+" (or "BD" for HFSX); print those two bytes and the verdict.
++	 */
++	mov	x0, x20
++	mov	x1, #1024
++	mov	x2, #0			/* SEEK_SET */
++	mov	x16, #SYS_lseek
++	svc	#0x80
++	b.cs	emmc_close
++
++	mov	x0, x20
++	mov	x1, sp
++	mov	x2, #2
++	mov	x16, #SYS_read
++	svc	#0x80
++	b.cs	emmc_close
++
++	ldrb	w21, [sp]
++	ldrb	w22, [sp, #1]
++
++	adr	x1, vh_msg
++	adr	x2, vh_msg_end
++	sub	x2, x2, x1
++	bl	write_console
++
++	add	x5, sp, #512
++	mov	x6, x5
++	mov	x4, sp
++	mov	x3, #2
++vh_hex:
++	ldrb	w7, [x4], #1
++	lsr	w9, w7, #4
++	and	w9, w9, #0xf
++	cmp	w9, #9
++	b.ls	11f
++	add	w9, w9, #39
++11:	add	w9, w9, #'0'
++	strb	w9, [x6], #1
++	and	w9, w7, #0xf
++	cmp	w9, #9
++	b.ls	12f
++	add	w9, w9, #39
++12:	add	w9, w9, #'0'
++	strb	w9, [x6], #1
++	mov	w9, #' '
++	strb	w9, [x6], #1
++	subs	x3, x3, #1
++	b.ne	vh_hex
++	strb	wzr, [x6, #-1]
++
++	mov	x1, x5
++	mov	x2, #5
++	bl	write_console
++
++	cmp	w21, #0x48
++	b.ne	13f
++	cmp	w22, #0x2b
++	b.eq	vh_plus
++13:	cmp	w21, #0x42
++	b.ne	vh_none
++	cmp	w22, #0x44
++	b.eq	vh_hfsx
++
++vh_none:
++	adr	x1, vh_none_msg
++	adr	x2, vh_none_end
++	b	14f
++vh_plus:
++	adr	x1, vh_hfs
++	adr	x2, vh_hfs_end
++	b	14f
++vh_hfsx:
++	adr	x1, vh_hfsx_msg
++	adr	x2, vh_hfsx_end
++14:	sub	x2, x2, x1
++	bl	write_console
++
+ emmc_close:
+ 	add	sp, sp, #544
+ 	mov	x0, x20
+@@ -180,3 +261,15 @@
+ emmc_tail:
+ 	.ascii	"]\n"
+ emmc_tail_end:
++vh_msg:
++	.ascii	"SANTONI userspace: volume header at 1024: 0x"
++vh_msg_end:
++vh_hfs:
++	.ascii	" (H+ HFS+ volume)\n"
++vh_hfs_end:
++vh_hfsx_msg:
++	.ascii	" (BD HFSX volume)\n"
++vh_hfsx_end:
++vh_none_msg:
++	.ascii	" (no HFS+/HFSX volume header)\n"
++vh_none_end:
