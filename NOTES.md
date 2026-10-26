@@ -13,9 +13,10 @@ and no `bindfs`. `vfs_conf.c` registers the `"bindfs"` name only under
 `ENODEV` - exactly the `Operation not supported by device(19)` in the 0170 log.
 This is a mount failure, not a code-signing kill (exit 74, signal 0).
 
-**Fix.** Patch **0171** adds `bindfs` to `FILESYS_BASE` in
-`config/MASTER.arm64.lavender` (the same change 0037 made for sweet) and bumps
-the banner to `driver 0171`. The lavender reference hit the identical ENODEV
+**Fix.** Patch **0171** adds `bindfs` to `FILESYS_BASE` in both
+`config/MASTER.arm64.whyred` (the config this build uses - WHYRED carries its
+own copy of the list) and `config/MASTER.arm64.lavender` (the same change 0037
+made for sweet), and bumps the banner to `driver 0171`. The lavender reference hit the identical ENODEV
 and its bindfs boot passed `mount-phase-1` and `mount-phase-2`; `mount -P 1`
 passes env 0, so a missing bind source is tolerated with ENOENT once the
 filesystem type exists.

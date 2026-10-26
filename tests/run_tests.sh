@@ -569,8 +569,9 @@ grep -q 'unentitled_ios_sim_launch' xnu/patches/0042-sweet-short-exec-log.patch
 echo "ok   0170 passes unentitled_ios_sim_launch=1 for the iOS launchd exec"
 
 echo "== MOUNT: 0171 gives the lavender/whyred kernel bindfs =="
-P171="xnu/patches/0171-lavender-config-bindfs.patch"
+P171="xnu/patches/0171-board-configs-bindfs.patch"
 python3 tools/check_patch.py "$P171" -q \
+	--added-contains 'config/MASTER.arm64.whyred:nullfs bindfs' \
 	--added-contains 'config/MASTER.arm64.lavender:nullfs bindfs' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0171' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0170'
