@@ -12,3 +12,9 @@
 Mirrors: `SweetBattery.cpp` and `sweet_i2c1.c` from the sweet/topaz power path;
 the PM660 register programming still has to come from the whyred Android
 sources.
+
+Borrowed reference: `hakios/` from HakiOS (read `../THIRD_PARTY.md` first).
+`hakios.battery.cpp` is a working `IOPMPowerSource` that powerd accepts, so it
+is the shape our PM660 source should feed; `hakios.battery.c` itself talks to
+a PM7325B through the ADSP and does not apply. `hakios.cpufreq.c` is SM7325 /
+RPMh, not SDM636 / RPM.

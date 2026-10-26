@@ -613,6 +613,10 @@ echo "== DRIVERS: the mirrors under drivers/ match the patch series =="
 # mkdrv: the patch is canonical; a mirror can only be refreshed by the tool.
 python3 tools/extract_drivers.py --check
 echo "ok   driver mirrors are generated from the patches, not edited by hand"
+# The HakiOS references are byte-for-byte upstream; if one is edited it stops
+# being evidence of what the other port actually did.
+sha256sum -c drivers/hakios-SHA256SUMS --quiet
+echo "ok   borrowed HakiOS driver references are unmodified"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py

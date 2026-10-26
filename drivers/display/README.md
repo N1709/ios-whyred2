@@ -17,3 +17,8 @@
 
 Mirrors: `SweetFramebuffer.cpp` and `SweetSurface.cpp` (the code this kernel
 actually runs, regenerated from the patches).
+
+Borrowed reference: `hakios/MiniIOMobileFramebuffer.cpp` from HakiOS. It solves
+the same problem (present `IOSurface` layers into the bootloader's framebuffer,
+fake vsync with a timer) with a different implementation; compare the property
+sets `backboardd` asks for before changing our `AppleCLCD` path.

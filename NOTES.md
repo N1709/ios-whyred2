@@ -1,5 +1,45 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## HakiOS driver references (2026-10-27)
+
+Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
+`88513176b1e96ecf0b764cd62c6f4e6ac71345e3` (2026-10-26). It is the closest
+working precedent: XNU 8796 + iOS 16.5 userland on a Qualcomm phone, with
+lock screen, touch, GPU (Mesa/freedreno), Wi-Fi, audio and battery.
+
+The phone is a POCO X5 Pro (`redwood`, SM7325): **Adreno 642L (a660)**,
+**WCN6750**, Goodix GT9916 / FocalTech FT3680 on SPI, WCD938x codec. Whyred is
+**Adreno 509 (a5xx)**, **WCN3990 (ath10k)**, NT36672 on I2C and WCD9335, so no
+chip driver is a drop-in. The reusable parts are the hardware-independent
+layers: the DRM/msm user-client bridge, the LinuxKPI host layer for Wi-Fi,
+the touch input queue, `IOPMPowerSource`, and the ADSP/`IOAudioFamily` path.
+
+Imported as read-only references (not compiled, byte-for-byte, hashes in
+`drivers/hakios-SHA256SUMS`):
+
+- `drivers/gpu/hakios/` - `hakios.adreno.c` (a660), `hakios.gpu.cpp`,
+  `MiniIOSurface.*`
+- `drivers/display/hakios/MiniIOMobileFramebuffer.cpp`
+- `drivers/touch/hakios/` - `hakios.goodix.c`, `hakios.input.c/.h`
+- `drivers/wifi/hakios/` - `hakios.wifi.c` (WCN6750), `hakios.lx.c`,
+  `hakios.apple80211.c`, `hakios.wlan.cpp`, and the MIT `lx/` layer
+- `drivers/power/hakios/` - `hakios.battery.c/.cpp`, `hakios.cpufreq.c`
+- `drivers/audio/hakios/` - `hakios.adsp.c`, `hakios.sound.c`, `hakios.audio.c`,
+  `hakios.mic.c`, `hakios.speaker.c`
+
+Licences: `xnu/files` is APSL 2.0 (`drivers/hakios-LICENSE.APSL`), `wifi/lx`
+is MIT, and the Linux/FreeBSD compatibility headers keep their own notices
+(`drivers/hakios-THIRD_PARTY_LICENSES.md`). The FocalTech firmware blob was
+left out (upstream marks its licence "to verify").
+
+The port matrix and "do not copy this" notes are in `drivers/THIRD_PARTY.md`.
+HakiOS also confirms that iOS 16 keeps the dyld shared cache as a set of
+subcache files under `System/Library/Caches/com.apple.dyld`, extracted
+unchanged from the OS cryptex. Our root has the same split (43 subcaches plus
+`.symbols`), so the slide fault is not a missing subcache; the remaining
+difference is that our cache is 16.7.16 and theirs is 16.5, so the slide
+format may still differ.
+
 ## 0173 handoff (2026-10-26): diagnostics for CS 85 and the shared-cache slide
 
 **Hardware result of 0172 (image `43eea83c...c543`, commit `83d404e`).**
