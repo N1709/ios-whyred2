@@ -1,0 +1,107 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -447,6 +447,9 @@
+  * scrolled console can say what the card actually answered. */
+ static uint32_t santoni_data_r1;
+ static int santoni_data_error;
++/* Engine that actually moved LBA 0 (true = PIO). The 0164 boot proved the
++ * data path works, then lost it again on the very next SDMA command. */
++static bool santoni_lba0_pio = true;
+ 
+ static LCK_GRP_DECLARE(santoni_sdhci_grp, "santoni_sdhci");
+ static LCK_MTX_DECLARE(santoni_sdhci_lock, &santoni_sdhci_grp);
+@@ -2113,8 +2116,9 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0164 (v5 data path: standard FIFO, "
+-	    "32-bit block and command writes, PIO before SDMA)\n");
++	printf("SANTONI SDHCI: driver 0165 (EXT_CSD read once, with the "
++	    "engine that moved LBA0, then one verdict; no width ladder after "
++	    "a data failure)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2734,6 +2738,9 @@
+ 	santoni_data_error = error;
+ 	dma_sync(SDHCI_BLOCK, TRUE);
+ 	mbr = blk[510] == 0x55 && blk[511] == 0xaa;
++	if (mbr) {
++		santoni_lba0_pio = !use_sdma;
++	}
+ 	printf("SANTONI SDHCI: data self-test LBA0 %s %s: %s (%d), bytes %02x "
+ 	    "%02x, MBR %s, R1 0x%08x, words %08x %08x %08x %08x "
+ 	    "(PRESENT_STATE 0x%08x)\n",
+@@ -2883,37 +2890,53 @@
+ 	 * switches the better.
+ 	 */
+ 	if (sdhci_probe_lba0("after CMD0", &lba0_lanes)) {
++		bool use_sdma = !santoni_lba0_pio;
++
++		/*
++		 * The 0164 boot moved the first block this driver ever read:
++		 * LBA0 came back 55 aa at 1-bit. The very next data command
++		 * (CMD8, EXT_CSD) was issued through SDMA anyway and failed at
++		 * once with ADMAERR (INT_STATUS 0x02080000, 15 us), aborting
++		 * the data phase; the PIO retry that followed then timed out
++		 * because the card was still mid-block, and the width ladder
++		 * that came after was pure noise.
++		 *
++		 * So do not try both engines. EXT_CSD is the same single-block
++		 * read as LBA0, one command later, at the same width: issue it
++		 * once with the engine that just moved a block and let the
++		 * verdict say whether a second data command is possible at all.
++		 */
++		printf("SANTONI SDHCI: enumeration: LBA0 moved a block with "
++		    "%s at %u-bit; reading EXT_CSD the same way\n",
++		    santoni_lba0_pio ? "PIO" : "SDMA", lba0_lanes);
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 		    NULL);
+ 		sdhci_ext_csd_clear();
+-		error = sdhci_read_sdma(8, 0, 1, se.dma_pa + DMA_BOUNCE);
+-		dma_sync(SDHCI_BLOCK, TRUE);
+-		if (sdhci_ext_csd_sane()) {
+-			*width = lba0_lanes;
+-			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
+-			    "at %u-bit (LBA0 state%s)\n", lba0_lanes,
+-			    error ? ", status error ignored" : "");
+-			return 0;
++		if (use_sdma) {
++			error = sdhci_read_sdma(8, 0, 1,
++			    se.dma_pa + DMA_BOUNCE);
++		} else {
++			error = sdhci_read_pio_once(8, 0, 1,
++			    (void *)(se.dma + DMA_BOUNCE));
+ 		}
+-		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+-		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+-		    NULL);
+-		sdhci_ext_csd_clear();
+-		error = sdhci_read_pio_once(8, 0, 1,
+-		    (void *)(se.dma + DMA_BOUNCE));
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		if (sdhci_ext_csd_sane()) {
+ 			*width = lba0_lanes;
+ 			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
+-			    "at %u-bit (LBA0 state, PIO%s)\n",
+-			    lba0_lanes,
++			    "at %u-bit (%s%s)\n", lba0_lanes,
++			    use_sdma ? "SDMA" : "PIO",
+ 			    error ? ", status error ignored" : "");
+ 			return 0;
+ 		}
+-		printf("SANTONI SDHCI: enumeration: LBA0 reads but EXT_CSD "
+-		    "does not at %u-bit (%d); trying the width ladder\n",
+-		    lba0_lanes, error);
++		printf("SANTONI SDHCI: EXT_CSD verdict: %s at %u-bit failed "
++		    "(%d), R1 0x%08x, PRESENT_STATE 0x%08x, INT_STATUS 0x%08x, "
++		    "BS 0x%04x BC 0x%04x TM 0x%04x\n",
++		    use_sdma ? "SDMA" : "PIO", lba0_lanes, error,
++		    santoni_data_r1, hc_rd(SDHCI_PRESENT_STATE),
++		    hc_rd(SDHCI_INT_STATUS), hc_rd16(SDHCI_BLOCK_SIZE),
++		    hc_rd16(SDHCI_BLOCK_COUNT), hc_rd16(SDHCI_TRANSFER_MODE));
++		return EIO;
+ 	}
+ 
+ 	/*

@@ -496,6 +496,19 @@ python3 tools/check_patch.py "$P164" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0164' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0163'
 echo "ok   0164 selects the standard FIFO and uses the v5 32-bit register pairs"
+echo "== SDHCI: the first block ever read came back on one engine, so   =="
+echo "==        EXT_CSD must use that engine before the other one        =="
+P165="xnu/patches/0165-sdhci-ext-csd-uses-the-engine-that-moved-lba0.patch"
+python3 tools/check_patch.py "$P165" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:static bool santoni_lba0_pio = true;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_lba0_pio = !use_sdma;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:LBA0 moved a block with ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:reading EXT_CSD the same way' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:EXT_CSD verdict: %s at %u-bit failed ' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:pass < 2; pass++' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0165' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0164'
+echo "ok   0165 reads EXT_CSD once with the engine that moved LBA0, then stops"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py

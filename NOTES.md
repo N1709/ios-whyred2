@@ -1,5 +1,52 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0165 (2026-10-26): the first block ever read, and why the next one died
+
+- **0164 ran on hardware and the data path moved a block for the first time.**
+  The failure summary says `lba0=ok-1bit` and `hostctl=0x00`, so
+  `sdhci_probe_lba0()` returned `MBR 55aa` from LBA 0 at 1-bit. Everything
+  before this boot had `lba0=no-width` or `switch-failed`. The v5 data-path
+  change (standard FIFO / 32-bit register pairs) is therefore the right
+  direction.
+- **But the very next data command killed the controller.** The LBA0 branch
+  then reads EXT_CSD through **SDMA first**, and that attempt failed almost
+  instantly:
+  - `command 8 failed (arg 0x00000000, INT_STATUS 0x02080000,
+    PRESENT_STATE 0x01f800f1, 15156 ns)` -> `ADMAERR` (bit 25) plus
+    `CMD_INDEX` (bit 19), 15 us after issue.
+  - the PIO retry that followed got `cmd-timeout` (606 us), because the card
+    was still in the middle of the block the DMA engine abandoned.
+  - the width ladder then found CMD6 blocked (`PRESENT_STATE 0x01f800f1`) and
+    `data probe #6..#8 ... width switch failed (5)` followed, exactly the
+    old wall.
+  - So SDMA is not usable on this hand-off, while PIO moved a full block.
+- **0165
+  (`xnu/patches/0165-sdhci-ext-csd-uses-the-engine-that-moved-lba0.patch`).**
+  - `sdhci_lba0_attempt()` records the winning engine in
+    `santoni_lba0_pio`.
+  - The LBA0-success branch prints `LBA0 moved a block with PIO at 1-bit;
+    reading EXT_CSD the same way`, issues **one** CMD8 with that engine, and
+    stops: no second engine, no width ladder, no matrix.
+  - On failure it prints one `EXT_CSD verdict:` line (engine, width, errno,
+    R1, PRESENT_STATE, INT_STATUS, BS/BC/TM) and returns EIO.
+  - This removes the last "try everything" step from the data path: one
+    action, one verdict.
+  - Banner: `driver 0165 (EXT_CSD read once, with the engine that moved LBA0,
+    then one verdict; no width ladder after a data failure)`.
+- **What the next log decides:**
+  - `EXT_CSD read works at 1-bit (PIO)` -> enumeration can continue to the
+    CMD6 width/timing switch and GPT; the eMMC wall is behind us.
+  - `EXT_CSD PIO at 1-bit failed (...)`, core not inhibited -> the read is
+    wrong for CMD8 specifically even though CMD17 worked; then compare `R1`
+    (0x900 = accepted) and the 16 EXT_CSD bytes.
+  - core inhibited right after the first EXT_CSD attempt -> a *second* data
+    command cannot follow the first without a full reset; next patch must
+    reset and re-select (CMD0/CMD1/CMD2/CMD3/CMD7) between reads.
+- **Still open from the 0164 log:** the pasted section starts at
+  `data probe #6`, so the `alt FIFO VENDOR_SPEC3 ...` line was cut. It would
+  tell which of the two v5 fixes actually mattered (bit 10 was set vs already
+  clear), but the read result already proves the path.
+
 ## 0164 (2026-10-26): the lavender tree names the missing register
 
 - **0163 is built and verified.** CI run `40207977225` (commit `8ebe843`)
