@@ -16,6 +16,19 @@
   `cs_debug` only observes; `cs_enforcement_disable` is the single behaviour
   change, so the boot still has one variable that can flip the result.
 - **Banner:** `driver 0169`, so the log names this build.
+- **0169 is built and verified.** CI run `40323581970` (commit `9f811a2`)
+  finished **green**. Artifact `shim-boot.img` 5,849,088 B, SHA-256
+  `34eb6940358ff62234e2ea177ea034185655110bbe9b7345edfd5999db18fae6`,
+  kernel image 17,931,984 B after gunzip. Strings: `driver 0169`,
+  `cs_debug`, `cs_enforcement_disable`. Embedded command line:
+  `... rd=emmcroot0 -v keepsyms=1 whyred emmcrw=1 cs_debug=1
+  cs_enforcement_disable=1`. DTB 8,012 B, byte-identical to
+  `resources/whyred_dtb.bin`. Local copy
+  `shim/out/shim-boot-whyred-0169-CI.img`. **Not yet booted on hardware.**
+- **CI note:** trimming the packaging toolchain to
+  `binutils-aarch64-linux-gnu` made the packaging step fail with exit 127;
+  the package set of the last green build is restored while keeping apt
+  retries and the 10-minute step timeout.
 - **Verdicts to expect:**
   - `CODE SIGNING: cs_invalid_page(...)` names a file/page -> the kernel is
     rejecting page hashes; the data path or that file's signature is wrong.
