@@ -36,6 +36,21 @@
     the CI workflow now passes `ROOTDEV=emmcroot0` and
     `EXTRA_CMDLINE=emmcrw=1`.
   - The userspace probe recognises `HX` as HFSX.
+- **0168 is built and verified.** CI run `40303797761` (commit `b98e264`)
+  finished **green**. Artifact `shim-boot.img` 5,849,088 B, SHA-256
+  `af8726f8a66589091a28cbe30f23bd7878e9f1d534a765022c7878df7e1a0021`,
+  kernel image 17,931,984 B after gunzip. Strings: `driver 0168` 1 with the
+  full banner (`root "%s", writes %s`), `WHYRED SDHCI:` 159,
+  `HX HFSX volume` 1. Embedded command line:
+  `... rd=emmcroot0 -v keepsyms=1 whyred emmcrw=1`. DTB at 0x591ae2,
+  8,012 B, byte-identical to `resources/whyred_dtb.bin`. Local copy
+  `shim/out/shim-boot-whyred-0168-CI.img`. **Not yet booted on hardware.**
+- **The userspace LBA0 probe is unreliable.** Every boot so far, including
+  the pre-0164 builds, prints
+  `WHYRED userspace: read eMMC LBA 0: [00 00 00 00 00 00 00 00]` while the
+  kernel self-test reads the same sector as `55 aa`. The probe therefore
+  cannot prove "no HFS+"; it returns a zero buffer. Only the kernel mount of
+  `emmcroot0` is decisive.
 - **What the next boot decides:**
   - `BSD root: emmcroot0` and `launchd` reaching PID 1 from HFSX -> the
     storage port is done; next is write path and repeat boots.
