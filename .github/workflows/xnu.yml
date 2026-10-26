@@ -253,7 +253,9 @@ jobs:
 
           # The image only boots if the storage fixes and the ram-disk root are
           # in it: fail here instead of on the phone.
-          for s in "mockfs" "sweet_hfs" "bus width from ABL kept"; do
+          # bindfs must be in the payload: without it mount-phase-1 gets
+          # ENODEV(19) on the preboot bind mounts and launchd panics.
+          for s in "mockfs" "sweet_hfs" "bindfs" "bus width from ABL kept"; do
             grep -aq "$s" shim/out/Image || { echo "::error::payload lacks '$s'"; exit 1; }
           done
           size=$(stat -c%s shim/out/shim-boot.img)

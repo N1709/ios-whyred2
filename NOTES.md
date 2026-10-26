@@ -28,6 +28,16 @@ silently when the bind is not required, while ENODEV takes the fatal path.
 --init` (system keybag / AppleKeyStore stand-in) and the missing dyld shared
 cache.
 
+**Build.** CI run `40334953825` built the kernel green (`bindfs` 45 hits in
+`kernel.development.whyred`, banner `driver 0171`, sha256
+`39249962f722...6b41`), but the packaging job failed in
+`apt-get install zopfli` (runner mirror), so no `whyred-boot-img` artifact was
+uploaded. The image was reproduced locally with the workflow's exact steps
+(same kernel, `zopfli --i15`, `NO_DUMMY_RAMDISK=1`, `ROOTDEV=emmcroot0`):
+5,853,184 B, sha256 `d1f65604d027...da4e`, `bindfs` and `driver 0171` in the
+payload, whyred DTB embedded. The workflow now also greps `bindfs` in the
+payload so a config regression fails in CI instead of on the phone.
+
 ## 0170 boot (2026-10-26): launchd runs; mount-phase-1 wants a Preboot volume
 
 **Confirmed on hardware** (`driver 0170`, image `c4624030...d3cb`):
