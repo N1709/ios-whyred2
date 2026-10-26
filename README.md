@@ -22,7 +22,7 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-26 (HFSX root mounted from eMMC; `launchd` killed by `CS_KILLED`).
+Last updated 2026-10-26 (HFSX root mounted from eMMC; build `0169` measures the `CS_KILLED`).
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |

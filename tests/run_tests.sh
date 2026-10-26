@@ -548,6 +548,13 @@ grep -q 'EXTRA_CMDLINE: emmcrw=1' .github/workflows/xnu.yml
 # HFSX (case-sensitive HFS+) signs its volume header with HX, not BD.
 grep -q '0x58' tools/santoni-init.S
 echo "ok   0168 boots the HFSX root from userdata (rd=emmcroot0 emmcrw=1)"
+echo "== CS: 0169 names the build and turns on the code-signing measurement ==="
+P169="xnu/patches/0169-sdhci-name-the-code-signing-build.patch"
+python3 tools/check_patch.py "$P169" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0169' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0168'
+grep -q 'EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1' .github/workflows/xnu.yml
+echo "ok   0169 enables cs_debug and cs_enforcement_disable for the root boot"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py

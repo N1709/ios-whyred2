@@ -1,5 +1,30 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0169 (2026-10-26): measure the code-signing kill instead of guessing
+
+- **Both boot arguments are real XNU code, verified in `bsd/kern/kern_cs.c`
+  (`cs_init()`, `STARTUP(CODESIGNING, STARTUP_RANK_FIRST)`):**
+  - `PE_parse_boot_argn("cs_debug", &cs_debug, ...)` - `cs_debug` is also the
+    `vm.cs_debug` sysctl. `cs_invalid_page()` prints its `CODE SIGNING:` line
+    only when it is non-zero, so `cs_debug=1` turns the silent `CS_KILLED`
+    into a named vnode/page.
+  - `PE_parse_boot_argn("cs_enforcement_disable", ...)` clears
+    `cs_system_enforcement_enable` and `cs_process_enforcement_enable`, but
+    only when `PE_i_can_has_debugger()` is true. The command line already
+    carries `debug=0x14e`, so the condition holds.
+- **CI command line:** `emmcrw=1 cs_debug=1 cs_enforcement_disable=1`.
+  `cs_debug` only observes; `cs_enforcement_disable` is the single behaviour
+  change, so the boot still has one variable that can flip the result.
+- **Banner:** `driver 0169`, so the log names this build.
+- **Verdicts to expect:**
+  - `CODE SIGNING: cs_invalid_page(...)` names a file/page -> the kernel is
+    rejecting page hashes; the data path or that file's signature is wrong.
+  - no such line and `launchd` keeps running -> the kill was enforcement, not
+    data; the next work is trust cache / platform-binary policy.
+  - no such line and `launchd` still dies -> the kill comes from a different
+    code path; the early-panic hook must print `p_csflags` and the exit
+    reason next.
+
 ## 2026-10-26 (boot log): HFSX root mounted from eMMC, launchd killed by code signing
 
 A whyred boot reported (build labelled `driver 0160`):

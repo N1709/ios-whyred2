@@ -215,7 +215,11 @@ jobs:
           # Root from the HFS+ (HFSX) volume staged in userdata, with writes
           # enabled so HFS+ can replay its journal and mount read-write.
           ROOTDEV: emmcroot0
-          EXTRA_CMDLINE: emmcrw=1
+          # cs_debug=1 makes cs_invalid_page() name the vnode/page it rejects;
+          # cs_enforcement_disable=1 is XNU's own switch (kern_cs.c cs_init) that
+          # stops the kernel from killing tasks for an unsealed root. debug= is
+          # already in the command line, so PE_i_can_has_debugger() is true.
+          EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1
         run: |
           set -euo pipefail
           KERNEL=xnu/out/kernel.development.whyred
