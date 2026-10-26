@@ -19,7 +19,10 @@ own copy of the list) and `config/MASTER.arm64.lavender` (the same change 0037
 made for sweet), and bumps the banner to `driver 0171`. The lavender reference hit the identical ENODEV
 and its bindfs boot passed `mount-phase-1` and `mount-phase-2`; `mount -P 1`
 passes env 0, so a missing bind source is tolerated with ENOENT once the
-filesystem type exists.
+filesystem type exists. Disassembly of the iOS 16 `/sbin/mount` confirms the
+helper: `mount("bindfs", target, 0x100019, source)`, then
+`cmp errno, #2; b.ne -> errx`, `cbnz required -> errx` - i.e. ENOENT returns
+silently when the bind is not required, while ENODEV takes the fatal path.
 
 **Next after this boot:** `mount-phase-2`, `cc_fips_test`, then `keybagd
 --init` (system keybag / AppleKeyStore stand-in) and the missing dyld shared
