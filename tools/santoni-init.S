@@ -186,9 +186,9 @@ vh_hex:
 	b.ne	13f
 	cmp	w22, #0x2b
 	b.eq	vh_plus
-13:	cmp	w21, #0x42
+13:	cmp	w21, #0x48
 	b.ne	vh_none
-	cmp	w22, #0x44
+	cmp	w22, #0x58
 	b.eq	vh_hfsx
 
 vh_none:
@@ -268,7 +268,7 @@ vh_hfs:
 	.ascii	" (H+ HFS+ volume)\n"
 vh_hfs_end:
 vh_hfsx_msg:
-	.ascii	" (BD HFSX volume)\n"
+	.ascii	" (HX HFSX volume)\n"
 vh_hfsx_end:
 vh_none_msg:
 	.ascii	" (no HFS+/HFSX volume header)\n"

@@ -212,6 +212,10 @@ jobs:
           NM: aarch64-linux-gnu-nm
           HOST_CC: clang
           NO_DUMMY_RAMDISK: "1"
+          # Root from the HFS+ (HFSX) volume staged in userdata, with writes
+          # enabled so HFS+ can replay its journal and mount read-write.
+          ROOTDEV: emmcroot0
+          EXTRA_CMDLINE: emmcrw=1
         run: |
           set -euo pipefail
           KERNEL=xnu/out/kernel.development.whyred

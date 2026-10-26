@@ -535,6 +535,20 @@ grep -q '"WHYRED userspace: ' tools/santoni-init.S
 grep -q '"WHYRED init: ' tools/santoni-init.S
 echo "ok   0167 prints WHYRED instead of SANTONI (identifiers unchanged)"
 
+echo "== ROOT: the HFSX volume staged in userdata is the root device      =="
+P168="xnu/patches/0168-sdhci-name-the-root-device-in-the-banner.patch"
+python3 tools/check_patch.py "$P168" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0168' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:root \"%s\", writes %s' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0167'
+grep -q 'ROOTDEV="${ROOTDEV:-md0}"' shim/build.sh
+grep -q 'rd=$ROOTDEV' shim/build.sh
+grep -q 'ROOTDEV: emmcroot0' .github/workflows/xnu.yml
+grep -q 'EXTRA_CMDLINE: emmcrw=1' .github/workflows/xnu.yml
+# HFSX (case-sensitive HFS+) signs its volume header with HX, not BD.
+grep -q '0x58' tools/santoni-init.S
+echo "ok   0168 boots the HFSX root from userdata (rd=emmcroot0 emmcrw=1)"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

@@ -15,22 +15,23 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 | Boot | Stock Xiaomi ABL → `fastboot boot` of our shim (boot image v0/v1) → XNU. Boot partitions are not touched |
 | CPU | The four Cortex-A73 ("Gold", MPIDR `0x100`–`0x103`) cores, 16K pages, GICv3, timers. The Silver cores are parked |
 | Memory | DRAM physical base `0x80000000`, safe kernel budget `0xa0000000` + 1 GiB |
-| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110). Enumeration is complete; the first 512-byte data phase (`CMD8` EXT_CSD) is being finished (0157: SDMA first, reject all-zero blocks, validate the payload) |
-| iOS userland | iPhone X 16.7.16 root filesystem; launchd and system daemons |
+| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110). Enumeration is complete at **8-bit high-speed** (CMD6 BUS_WIDTH=8 + HS_TIMING=1), EXT_CSD is valid (122,142,720 sectors = 58.2 GiB), the GPT is parsed, and userspace can read `/dev/remmcroot0`. The write path exists but is untested (`emmcrw=1`) |
+| iOS userland | iPhone X 16.7.16 root filesystem; the ramdisk `init` runs as PID 1, and the HFSX root (16.0 GiB, `HX`/`HFSJ`) is now staged in userdata. Booting `launchd` from eMMC is the next test |
 | Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## Progress
 
-Last updated 2026-10-25 (commit with patch `0157`).
+Last updated 2026-10-26 (patch `0168`, image 0167 verified in CI).
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
-| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, launchd reaches PID 1 |
-| eMMC: command path and first data phase | **60%** | Full re-enumeration works. 0156 completed the data phase mechanically, but the FIFO returned 128 zero words; 0157 tries SDMA first and rejects any block that is not a real EXT_CSD. Waiting for the on-device log |
-| Root filesystem from eMMC (`launchd`, real daemons) | **45%** | Block I/O path is the blocker; mockfs currently stands in for the root |
+| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s |
+| eMMC command and data path | **90%** | 0165-0167: EXT_CSD at 1-bit PIO, CMD6 8-bit + HS, GPT, 58.2 GiB, userspace block reads. Write path implemented but never used on hardware |
+| Root filesystem from eMMC (`launchd`, real daemons) | **55%** | HFSX root (16.0 GiB, `HX`/`HFSJ`) is staged in userdata; `rd=emmcroot0` mount and `launchd` from eMMC are not yet verified |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
-| **Overall port (weighted)** | **~50%** | Kernel and userspace are far ahead of storage and the peripherals |
+| **Kernel readiness for an eMMC boot** | **~70%** | Storage reads are proven; mount, writes and repeated boots are not |
+| **Overall port (weighted)** | **~65%** | Kernel and userspace are far ahead of the periphery |
 
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.

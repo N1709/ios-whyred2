@@ -1,5 +1,48 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0168 (2026-10-26): root staged in userdata, boot from eMMC
+
+- **0167 ran on hardware and the two fixes are confirmed.**
+  - `enumeration complete: 25 MHz, 8-bit, high-speed (HOST_CONTROL 0x24)` -
+    the width is recorded and reported correctly (0166).
+  - `DAT[7:0] 8-bit HS verified (SEC_COUNT 122142720)` - 122,142,720 x 512 =
+    58.2 GiB, matching TWRP. The 0165 paste had one digit missing
+    (`12214720`); the driver's own MiB print was right.
+  - Every message is `WHYRED ...`; `SANTONI SDHCI:` is gone.
+  - The userspace tick keeps running (`still alive (tick)`), so the block
+    read returns and PID 1 stays healthy.
+- **userdata has no HFS+ volume.** `volume header at 1024: 0x00 a0 (no
+  HFS+/HFSX volume header)` - the partition is Android (ext4 superblock
+  area), so the iOS root had to be staged.
+- **The staged root image, inspected byte by byte**
+  (`~/Downloads/ios16-rootfs/ios16-root.simg`, sparse, SHA-256
+  `d606116a52d37101953eb3bd85c96b208cea7a1969404534d2cba78f1aaf29b8`):
+  - signature `HX` = **HFSX** (case-sensitive HFS+), version 5,
+    `lastMountedVersion HFSJ` (journaled).
+  - 4096-byte allocation blocks, 4,194,304 blocks = **16.0 GiB**,
+    4.8 GiB free, 189,153 files / 137,205 folders.
+  - The signature is `HX` (0x48 0x58); the init probe checked `BD`, which is
+    wrong. Fixed in `tools/santoni-init.S`. `H+` (0x48 0x2b) remains the
+    non-case-sensitive HFS+ signature.
+- **The user flashed the image into userdata** (reported on 2026-10-26,
+  `fastboot flash userdata ios16-root.simg`). Android data in userdata is
+  gone; boot, recovery/TWRP, modem, persist and the GPT are untouched.
+- **0168
+  (`xnu/patches/0168-sdhci-name-the-root-device-in-the-banner.patch`).**
+  - Banner: `driver 0168 (root "<part>", writes enabled|read-only; boot args
+    decide whether the HFS+ root comes from eMMC)`, so a log names the build
+    and the root device.
+  - `shim/build.sh` takes `ROOTDEV` (default `md0`) and `EXTRA_CMDLINE`;
+    the CI workflow now passes `ROOTDEV=emmcroot0` and
+    `EXTRA_CMDLINE=emmcrw=1`.
+  - The userspace probe recognises `HX` as HFSX.
+- **What the next boot decides:**
+  - `BSD root: emmcroot0` and `launchd` reaching PID 1 from HFSX -> the
+    storage port is done; next is write path and repeat boots.
+  - mount error (`EINVAL`/`ENOTSUP`/`EIO`) or a CMD18 (multi-block) failure ->
+    read the driver's verdict; multi-block PIO/CMD12 has never run on
+    hardware, and that is now the most likely storage-side failure.
+
 ## 0167 (2026-10-26): the log says WHYRED; the userspace read returned
 
 - **The 0165 boot is confirmed stable, not hung.** On hardware the 5 s tick

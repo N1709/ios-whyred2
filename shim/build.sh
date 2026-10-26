@@ -76,7 +76,11 @@ python3 ../tools/mkinit.py out/$BOARD_LC-init.o out/init.macho
 
 # Ramdisk / Payload packaging
 RAMDISK="out/ramdisk.bin"
-CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=md0 -v keepsyms=1 $BOARD_LC"
+# Root device: the ram disk by default (safe fallback), or emmcroot0 once an
+# iOS root is staged in userdata. EXTRA_CMDLINE carries e.g. emmcrw=1.
+ROOTDEV="${ROOTDEV:-md0}"
+EXTRA_CMDLINE="${EXTRA_CMDLINE:-}"
+CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
 
 # Ensure a minimal ramdisk.bin is always present
 if command -v cpio >/dev/null 2>&1; then
