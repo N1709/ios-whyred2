@@ -19,6 +19,16 @@
   log is full of.
 - **Banner:** `driver 0167 (log prefix is WHYRED; the eMMC path is unchanged
   from 0166)`.
+- **CI run `40292548638` failed, and the cause was mine:** patch 0166 and 0167
+  carried a `tools/santoni-init.S` hunk. dxb applies the series **inside the
+  XNU tree**, where that file does not exist, so both patches were skipped
+  (step *Fail if a storage or board patch was skipped*), and the built kernel
+  still had the old init and the old prefix. The userspace init is a repo
+  file built by `shim/build.sh`, not an XNU source file: the hunks were
+  removed from both patches (the repo file already has the probe and the
+  rename) and `tests/run_tests.sh` now greps `tools/santoni-init.S` directly
+  instead of looking for it inside a patch. Rule for the future: a patch under
+  `xnu/patches/` may only touch paths that exist in the XNU tree.
 
 ## 0166 (2026-10-26): the eMMC wall is down - 8-bit HS and the GPT are real
 

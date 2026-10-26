@@ -517,9 +517,12 @@ python3 tools/check_patch.py "$P166" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:bus_width = 8;' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:high-speed (HOST_CONTROL 0x%02x)' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0166' \
-	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0165' \
-	--added-contains 'tools/santoni-init.S:volume header at 1024' \
-	--added-contains 'tools/santoni-init.S:#define SYS_lseek'
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0165'
+# The userspace init is a repo file, not an XNU source file: keep it out of
+# the patch series (dxb applies patches inside the XNU tree, where tools/ does
+# not exist, and a patch that touches it is skipped - which failed CI 40292548638).
+grep -q 'SYS_lseek\s*199' tools/santoni-init.S
+grep -q 'volume header at 1024' tools/santoni-init.S
 echo "ok   0166 records the real 8-bit width and probes the HFS+ volume header"
 
 echo "== LOGS: the on-screen name is the phone, not the donor board       =="
@@ -527,9 +530,9 @@ P167="xnu/patches/0167-sdhci-log-prefix-is-whyred.patch"
 python3 tools/check_patch.py "$P167" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:"WHYRED SDHCI: ' \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0167' \
-	--added-lacks 'bsd/dev/santoni_sdhci.c:"SANTONI SDHCI: ' \
-	--added-contains 'tools/santoni-init.S:"WHYRED userspace: ' \
-	--added-contains 'tools/santoni-init.S:"WHYRED init: '
+	--added-lacks 'bsd/dev/santoni_sdhci.c:"SANTONI SDHCI: '
+grep -q '"WHYRED userspace: ' tools/santoni-init.S
+grep -q '"WHYRED init: ' tools/santoni-init.S
 echo "ok   0167 prints WHYRED instead of SANTONI (identifiers unchanged)"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
