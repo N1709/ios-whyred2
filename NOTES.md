@@ -34,11 +34,29 @@ Guessing another workaround would spend a flash without narrowing that.
 - `CODE SIGNING: CSPAGE <vnode> ... slot/shift/base/start/vaoff/fileoff
   16k [8 words]` - the 16 KiB kernel page (four 4 KiB chunks) that was hashed,
   so it can be searched in `ios16-root.raw`.
-- `SHARED CACHE: slide v... page/start/end/slid/slide/backing/req/len` once per
-  pager, and `SHARED CACHE: slide fail v... idx/pageoff/chunk/file/w[...]` with
-  the chain start bytes on `KERN_RETURN_ERROR`.
+- `SHARED CACHE: slide v... page/start/end/slid/slide/backing/req/len off/count/
+  delta/add/size` once per pager - names the slide blob the kernel was handed,
+  including `page_starts_count`, `delta_mask` and `value_add`.
+- `SHARED CACHE: slide fail v... idx/entry/count/si/pageoff/chunk/file/w[...]` -
+  the in-memory `page_starts[idx]` entry, the pager's `si_start`, the exact
+  backing-object offsets and the first 16 bytes at the chain start. Offline the
+  same index on the file's own slide blob and pages terminates cleanly for
+  every one of `20208/20212/20220`, so this line separates "the page bytes are
+  wrong" (`w[]` differs) from "the in-memory slide table is wrong"
+  (`entry`/`count` differ) from "the index base is wrong" (`file` differs from
+  `si + idx*4096`).
 
 `EXTRA_CMDLINE` now uses `cs_debug=2` (the CD and per-blob lines need >1).
+
+**Offline check of the same indices (root image).** The cache at image offset
+`11071410176` has 4 mappings; mapping 1 is file `0x5c000`, size `0x53b0000`
+(21424 pages) with slide info v2, `page_size=0x1000`, 21424 page starts,
+`delta_mask=0xffff0000000000`. For `pageIndex 20208/20212/20220` the file's own
+page (`0x4f4c000`, `0x4f50000`, `0x4f58000`) and `page_starts` entry
+(`0x0/0x2/0x2`) terminate without overflow (`0xdb0/0xdb0/0xff8`). So the file
+data is self-consistent and the kernel is reading a different page, a
+different slide entry, or a different index base - exactly what the `entry`,
+`file` and `w[]` fields in the 0173 line distinguish.
 
 **Next:** boot the 0173 image, `grep -E "driver 0173|CODE SIGNING: (CD|CSBLOB|
 CSPAGE)|SHARED CACHE"` the log, then match the printed words against the root

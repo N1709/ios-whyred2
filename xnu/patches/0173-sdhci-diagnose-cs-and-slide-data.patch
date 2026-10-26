@@ -37,7 +37,7 @@
  #if defined(ARM64_BOARD_CONFIG_SANTONI)
  	/*
  	 * iOS 16's dyld shared cache is signed with 16 KiB hash units
-@@ -4605,11 +4624,40 @@
+@@ -4621,11 +4640,40 @@
  	 * We initialize a temporary blob whose contents are then copied into an RO
  	 * blob which we allocate from the read-only allocator.
  	 */
@@ -78,7 +78,7 @@
  
  #if defined(ARM64_BOARD_CONFIG_SANTONI)
  	/*
-@@ -5794,6 +5842,49 @@
+@@ -5821,6 +5869,49 @@
  				    asha1[3], asha1[4],
  				    esha1[0], esha1[1], esha1[2],
  				    esha1[3], esha1[4]);
@@ -130,7 +130,7 @@
  			*tainted |= CS_VALIDATE_TAINTED;
 --- a/osfmk/vm/vm_shared_region_pager.c
 +++ b/osfmk/vm/vm_shared_region_pager.c
-@@ -512,6 +512,33 @@
+@@ -512,6 +512,39 @@
  
  	PAGER_DEBUG(PAGER_PAGEIN, ("shared_region_pager_data_request: %p, %llx, %x, %x, pager %p\n", mem_obj, offset, length, protection_required, pager));
  
@@ -150,13 +150,19 @@
 +			srp_diag_printed = TRUE;
 +			printf("SHARED CACHE: slide v%u page 0x%x start 0x%llx "
 +			    "end 0x%llx slid 0x%llx slide 0x%x backing 0x%llx "
-+			    "req 0x%llx len 0x%x\n",
++			    "req 0x%llx len 0x%x off 0x%x count %u "
++			    "delta 0x%llx add 0x%llx size %u\n",
 +			    si->si_slide_info_entry->v2.version,
 +			    si->si_slide_info_entry->v2.page_size,
 +			    (uint64_t)si->si_start, (uint64_t)si->si_end,
 +			    (uint64_t)si->si_slid_address, si->si_slide,
 +			    (uint64_t)pager->srp_backing_offset,
-+			    (uint64_t)offset, length);
++			    (uint64_t)offset, length,
++			    si->si_slide_info_entry->v2.page_starts_offset,
++			    si->si_slide_info_entry->v2.page_starts_count,
++			    (uint64_t)si->si_slide_info_entry->v2.delta_mask,
++			    (uint64_t)si->si_slide_info_entry->v2.value_add,
++			    (uint32_t)si->si_slide_info_size);
 +		}
 +	}
 +#endif
@@ -164,7 +170,7 @@
  	/*
  	 * Gather in a UPL all the VM pages requested by VM.
  	 */
-@@ -750,6 +777,32 @@
+@@ -750,6 +783,47 @@
  				    kr);
  			}
  			if (kr != KERN_SUCCESS) {
@@ -180,14 +186,29 @@
 +					const uint32_t *w = (const uint32_t *)
 +					    (dst_vaddr + offset_in_page);
 +
++					const struct
++					    vm_shared_region_slide_info_entry_v2
++					    *v2 = &pager->srp_slide_info->
++					    si_slide_info_entry->v2;
++					uint32_t sidx = (uint32_t)
++					    (offset_in_sliding_range /
++					    PAGE_SIZE_FOR_SR_SLIDE);
++					const uint16_t *sps =
++					    (const uint16_t *)((const char *)v2 +
++					    v2->page_starts_offset);
++					uint32_t entry = sidx <
++					    v2->page_starts_count ?
++					    sps[sidx] : 0xffff;
++
 +					printf("SHARED CACHE: slide fail v%u "
-+					    "idx %u pageoff 0x%llx "
++					    "idx %u entry 0x%x count %u "
++					    "si 0x%llx pageoff 0x%llx "
 +					    "chunk 0x%llx file 0x%llx "
 +					    "w [%08x %08x %08x %08x]\n",
-+					    pager->srp_slide_info->
-+					    si_slide_info_entry->v2.version,
-+					    (uint32_t)(offset_in_sliding_range /
-+					    PAGE_SIZE_FOR_SR_SLIDE),
++					    v2->version, sidx, entry,
++					    v2->page_starts_count,
++					    (uint64_t)pager->srp_slide_info->
++					    si_start,
 +					    (uint64_t)offset_in_sliding_range,
 +					    (uint64_t)chunk_offset,
 +					    (uint64_t)offset_in_backing_object,

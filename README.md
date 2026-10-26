@@ -43,6 +43,34 @@ the root image offline).
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.
 
+## Boot stage checklist (whyred)
+
+Confirmed on the phone unless marked otherwise. `[x]` done, `[~]` reached and
+blocked there now, `[ ]` not reached yet.
+
+- [x] Bootloader shim: GICv3, MMU, eMMC SDHCI, framebuffer, DTB handoff
+- [x] XNU kernel init: 4 Kryo cores, timers, VM, IOKit
+- [x] Root filesystem: HFSX in `userdata`, mounted read-write, journal replayed
+- [x] PID 1 `launchd` with the full boot-task chain (`mount-phase-1`,
+      `mount-phase-2`, `fips`, ...)
+- [x] iOS platform-binary exec (`unentitled_ios_sim_launch=1`)
+- [x] `launchd_cache_loader` without an AMFI service
+      (`launchd_unsecure_cache=1`); the LaunchDaemons start
+- [x] AppleKeyStore / MKB present for the daemons (kernel AKS service)
+- [~] **Code-signing validation of the daemons** - `cs_blob_init_validated`
+      returns 85 for `thermalmonitord`, `lockdownd`, `DumpPanic` and
+      `backboardd`
+- [~] **dyld shared cache slide** - `vm_shared_region_slide_page()` fails and
+      the daemons take SIGBUS
+- [ ] `backboardd` survives startup and opens the display
+- [ ] `usermanagerd` session table save (the stage lavender stopped at)
+- [ ] `UserEventAgent` runs and `SpringBoard` renders the lock screen
+- [ ] Daily-driver peripherals: touch, Wi-Fi, audio, battery
+
+**You are here:** the two `[~]` rows. Everything before them is proven on the
+phone; both remaining faults are in the data the kernel validates, which is
+what build `0173` measures.
+
 ## Hardware architecture & differences
 
 | Component | Redmi Note 5 / Note 5 Pro (whyred / SDM636) |
