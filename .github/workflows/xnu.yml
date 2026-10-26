@@ -225,7 +225,13 @@ jobs:
           # cs_enforcement_disable=1 is XNU's own switch (kern_cs.c cs_init) that
           # stops the kernel from killing tasks for an unsealed root. debug= is
           # already in the command line, so PE_i_can_has_debugger() is true.
-          EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1
+          #
+          # unentitled_ios_sim_launch=1 is required because this is a
+          # XNU_TARGET_OS_OSX kernel running an iOS userland: process_signature()
+          # refuses PLATFORM_IOS binaries unless the spawn carries the platform
+          # or this DEVELOPMENT tunable is set (EXEC_EXIT_REASON_WRONG_PLATFORM,
+          # namespace 9 code 0xe - the exact reason launchd died with).
+          EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1
         run: |
           set -euo pipefail
           KERNEL=xnu/out/kernel.development.whyred

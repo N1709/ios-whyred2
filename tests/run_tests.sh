@@ -553,8 +553,20 @@ P169="xnu/patches/0169-sdhci-name-the-code-signing-build.patch"
 python3 tools/check_patch.py "$P169" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0169' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0168'
-grep -q 'EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1' .github/workflows/xnu.yml
+grep -q 'EXTRA_CMDLINE: emmcrw=1 cs_debug=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
 echo "ok   0169 enables cs_debug and cs_enforcement_disable for the root boot"
+
+echo "== EXEC: 0170 names the platform-exec build and lets iOS launchd exec =="
+P170="xnu/patches/0170-sdhci-name-the-platform-exec-build.patch"
+python3 tools/check_patch.py "$P170" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0170' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0169'
+# launchd died with OS_REASON_EXEC / EXEC_EXIT_REASON_WRONG_PLATFORM
+# (namespace 9, code 0xe). process_signature() only lets a PLATFORM_IOS
+# binary through when this DEVELOPMENT tunable is set.
+grep -q 'unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
+grep -q 'unentitled_ios_sim_launch' xnu/patches/0042-sweet-short-exec-log.patch
+echo "ok   0170 passes unentitled_ios_sim_launch=1 for the iOS launchd exec"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py

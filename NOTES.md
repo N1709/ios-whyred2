@@ -1,5 +1,44 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0170 (2026-10-26): the kill is EXEC/WRONG_PLATFORM, not a page hash
+
+- **The 0169 boot log is ours.** `setting platform binary on task: pid = 1` is
+  printed only when `cs_debug` is non-zero (`bsd/kern/kern_exec.c`), and the
+  boot showed `"system" first block 0x220000` (the 0169 offset) plus
+  `emmcrw=1`. The `driver 0169` banner was simply above the photographed
+  region. **The earlier "this log is from another build" verdict was wrong.**
+- **The panic reason names the failure exactly:**
+  - `namespace 9` = `OS_REASON_EXEC`, `code 0xe` = 14 =
+    `EXEC_EXIT_REASON_WRONG_PLATFORM` (`bsd/sys/reason.h`).
+  - `(CS_KILLED)` is not evidence of a bad page: on an exec failure
+    `process_signature()` sets `CS_KILLED` itself right before
+    `psignal_with_reason(SIGKILL, reason)` (`bsd/kern/kern_exec.c`). This is
+    why `cs_debug` printed no `CODE SIGNING: cs_invalid_page(...)` line -
+    `cs_invalid_page()` was never called.
+  - `NOTES.md` line 3071 (the older tree) had already decoded the same
+    namespace/code pair on 2026-10-15.
+- **Why it fires.** This is a `XNU_TARGET_OS_OSX` (macOS-config) kernel running
+  an iOS userland. `process_signature()` sees `proc_platform(p) ==
+  PLATFORM_IOS` and, when the spawn carries no platform (`psa == NULL` or
+  `psa_platform == 0`), refuses the binary unless it has the
+  `com.apple.private.security.no-sandbox` entitlement or the DEVELOPMENT
+  tunable `unentitled_ios_sim_launch` is set. `debug=0x14e` is in the command
+  line, so the tunable exists; it was just not passed.
+- **Fix:** add `unentitled_ios_sim_launch=1` to `EXTRA_CMDLINE`. No kernel
+  patch is needed - this is XNU's own supported switch (`TUNABLE(...,
+  "unentitled_ios_sim_launch", ...)`), and patch 0042 already expects SWEET to
+  take that branch ("SWEET runs every iOS binary this way").
+- **Expected decisive line:** `Allowing spawn of iOS binary launchd since it
+  has com.apple.private.security.no-sandbox entitlement or
+  unentitled_ios_sim_launch boot-arg set to true` (the WHYRED build prints the
+  long form; `ARM64_BOARD_CONFIG_SWEET` prints `exec launchd`), then launchd
+  keeps running instead of the early panic.
+- **Banner:** `driver 0170`.
+- **"WHYRED init: still alive (tick)" will not appear on this boot** and its
+  absence is expected: that tick comes from our ramdisk init
+  (`tools/santoni-init.S`), which is PID 1 only when `rd=md0`. With
+  `rd=emmcroot0` the kernel execs `/sbin/launchd` directly.
+
 ## 0169 (2026-10-26): measure the code-signing kill instead of guessing
 
 - **Both boot arguments are real XNU code, verified in `bsd/kern/kern_cs.c`
@@ -58,14 +97,11 @@ exec. That means 8-bit high-speed reads, the multi-block path (`CMD18` +
 eMMC mount is no longer the blocker.
 
 **New blocker: code signing.** `CS_KILLED` is the flag the kernel sets when it
-kills a task for code-signing invalidity; namespace 9 is codesigning. Two
-candidates, and the log does not distinguish them:
-
-1. page-hash validation (`cs_invalid_page()`) failed - bad data read from the
-   volume, or the pages do not match the signature's code directory;
-2. the AMFI/trust-cache policy rejected the binary (no Image4; `TrustCache`
-   stays at version 0; `sweet_amfi_vnode_check_signature` marks only root-fs
-   binaries as platform binaries).
+kills a task for code-signing invalidity. At the time this section was written
+namespace 9 was guessed to be codesigning and two candidates were listed
+(page hashes vs AMFI policy). Both were wrong: namespace 9 is
+`OS_REASON_EXEC` and code `0xe` is `EXEC_EXIT_REASON_WRONG_PLATFORM`; see the
+0170 section above. The page-hash path never ran.
 
 `cs_invalid_page()` prints a `CODE SIGNING:` line naming the vnode/page only
 when `cs_debug` is on, and this log has none. **Next boot: add `cs_debug=1`**
