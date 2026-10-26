@@ -195,15 +195,14 @@ jobs:
           path: xnu/out
 
       - name: Install packaging toolchain
-        # A slow apt mirror once left this step running for 16 minutes.
-        # clang/lld already ship with the runner image; only the cross
-        # binutils and zopfli are missing, so install just those and fail
-        # fast instead of hanging.
+        # A slow apt mirror once left this step running for 16 minutes. Keep
+        # the exact package set of the last green build (trimming it to
+        # binutils-only made the packaging step fail with exit 127), add apt
+        # retries, and cap the step so a bad mirror fails fast.
         timeout-minutes: 10
         run: |
           sudo apt-get update -qq -o Acquire::Retries=3
-          sudo apt-get install -y -qq --no-install-recommends \
-            binutils-aarch64-linux-gnu zopfli
+          sudo apt-get install -y -qq clang lld gcc-aarch64-linux-gnu zopfli
           clang --version | head -1
           ld.lld --version | head -1
           aarch64-linux-gnu-objcopy --version | head -1
