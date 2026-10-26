@@ -1,6 +1,6 @@
 --- a/config/MASTER.arm64.lavender
 +++ b/config/MASTER.arm64.lavender
-@@ -110,7 +110,7 @@
+@@ -28,7 +28,7 @@
  #  BSD_RELEASE =    [ BSD_BASE ]
  #  BSD_DEV =        [ BSD_BASE config_vnguard ]
  #  BSD_DEBUG =      [ BSD_BASE config_vnguard ]
@@ -11,7 +11,7 @@
  #  FILESYS_DEBUG =  [ FILESYS_BASE config_iocount_trace ]
 --- a/config/MASTER.arm64.whyred
 +++ b/config/MASTER.arm64.whyred
-@@ -49,7 +49,7 @@
+@@ -30,7 +30,7 @@
  #  BSD_RELEASE =    [ BSD_BASE ]
  #  BSD_DEV =        [ BSD_BASE config_vnguard ]
  #  BSD_DEBUG =      [ BSD_BASE config_vnguard ]
