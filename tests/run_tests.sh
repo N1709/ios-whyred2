@@ -522,6 +522,16 @@ python3 tools/check_patch.py "$P166" -q \
 	--added-contains 'tools/santoni-init.S:#define SYS_lseek'
 echo "ok   0166 records the real 8-bit width and probes the HFS+ volume header"
 
+echo "== LOGS: the on-screen name is the phone, not the donor board       =="
+P167="xnu/patches/0167-sdhci-log-prefix-is-whyred.patch"
+python3 tools/check_patch.py "$P167" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:"WHYRED SDHCI: ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0167' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:"SANTONI SDHCI: ' \
+	--added-contains 'tools/santoni-init.S:"WHYRED userspace: ' \
+	--added-contains 'tools/santoni-init.S:"WHYRED init: '
+echo "ok   0167 prints WHYRED instead of SANTONI (identifiers unchanged)"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

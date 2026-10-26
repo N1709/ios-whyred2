@@ -1,0 +1,1555 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -1,5 +1,5 @@
+ /*
+- * SANTONI internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
++ * WHYRED internal eMMC 5.1 root device (polled SDHCI MSM v4, SDCC1).
+  *
+  * The Qualcomm LK bootloader already powered, clocked and identified the
+  * internal eMMC through SDCC1 and hands it over in Transfer State (TRAN) on
+@@ -606,7 +606,7 @@
+ 		{
+ 			uint32_t ps = hc_rd(SDHCI_PRESENT_STATE);
+ 
+-			printf("SANTONI SDHCI: command %u blocked (arg "
++			printf("WHYRED SDHCI: command %u blocked (arg "
+ 			    "0x%08x, INT_STATUS 0x%08x, PRESENT_STATE "
+ 			    "0x%08x:%s%s%s DAT0 %s)\n", index, arg,
+ 			    hc_rd(SDHCI_INT_STATUS), ps,
+@@ -638,7 +638,7 @@
+ 		if (st & SDHCI_INT_ERR) {
+ 			sdhci_cmd_stamp(start);
+ 			hc_wr(SDHCI_INT_STATUS, st);
+-			printf("SANTONI SDHCI: command %u failed (arg 0x%08x, "
++			printf("WHYRED SDHCI: command %u failed (arg 0x%08x, "
+ 			    "INT_STATUS 0x%08x%s%s%s%s, PRESENT_STATE "
+ 			    "0x%08x, %llu ns)\n", index, arg, st,
+ 			    (st & SDHCI_INT_CMD_TIMEOUT) ? " cmd-timeout" : "",
+@@ -659,7 +659,7 @@
+ 		}
+ 		if (mach_absolute_time() > deadline) {
+ 			sdhci_cmd_stamp(start);
+-			printf("SANTONI SDHCI: command %u timed out (arg "
++			printf("WHYRED SDHCI: command %u timed out (arg "
+ 			    "0x%08x, INT_STATUS 0x%08x, PRESENT_STATE 0x%08x, "
+ 			    "CMD_INHIBIT %u, %llu ns)\n", index, arg, st,
+ 			    hc_rd(SDHCI_PRESENT_STATE),
+@@ -675,7 +675,7 @@
+ static void
+ sdhci_data_failure(const char *what, uint32_t st)
+ {
+-	printf("SANTONI SDHCI: %s: INT_STATUS 0x%08x%s%s%s%s%s%s%s, "
++	printf("WHYRED SDHCI: %s: INT_STATUS 0x%08x%s%s%s%s%s%s%s, "
+ 	    "PRESENT_STATE 0x%08x\n", what, st,
+ 	    (st & SDHCI_INT_ERR) ? " err" : "",
+ 	    (st & SDHCI_INT_CMD_TIMEOUT) ? " cmd-timeout" : "",
+@@ -692,7 +692,7 @@
+ 	 * registers actually hold, so the next log says whether the block
+ 	 * size, the transfer mode (DMA/read bits) and the host width latched.
+ 	 */
+-	printf("SANTONI SDHCI: %s: BLOCK_SIZE 0x%04x BLOCK_COUNT 0x%04x "
++	printf("WHYRED SDHCI: %s: BLOCK_SIZE 0x%04x BLOCK_COUNT 0x%04x "
+ 	    "TRANSFER_MODE 0x%04x HOST_CONTROL 0x%02x CLOCK_CONTROL 0x%04x "
+ 	    "TIMEOUT_CONTROL 0x%02x\n", what, hc_rd16(SDHCI_BLOCK_SIZE),
+ 	    hc_rd16(SDHCI_BLOCK_COUNT), hc_rd16(SDHCI_TRANSFER_MODE),
+@@ -745,7 +745,7 @@
+ 		if (ps & ps_bit) {
+ 			if (!santoni_pstate_buf_logged) {
+ 				santoni_pstate_buf_logged = true;
+-				printf("SANTONI SDHCI: %s: %s buffer ready "
++				printf("WHYRED SDHCI: %s: %s buffer ready "
+ 				    "in PRESENT_STATE 0x%08x while INT_STATUS "
+ 				    "0x%08x never latched it; polling "
+ 				    "PRESENT_STATE from now on\n", what,
+@@ -809,7 +809,7 @@
+ 		    (all_bytes || !(ps & SDHCI_PSTATE_DATA_ACTIVE))) {
+ 			if (!santoni_pstate_tc_logged) {
+ 				santoni_pstate_tc_logged = true;
+-				printf("SANTONI SDHCI: %s: no TC in INT_STATUS "
++				printf("WHYRED SDHCI: %s: no TC in INT_STATUS "
+ 				    "0x%08x (PRESENT_STATE 0x%08x) but the "
+ 				    "block(s) are already in the buffer; "
+ 				    "treating the transfer as complete\n",
+@@ -835,7 +835,7 @@
+ 						break;
+ 					}
+ 					if (mach_absolute_time() > drain) {
+-						printf("SANTONI SDHCI: %s: "
++						printf("WHYRED SDHCI: %s: "
+ 						    "data machine still busy "
+ 						    "(PRESENT_STATE 0x%08x) "
+ 						    "after the last byte; "
+@@ -875,12 +875,12 @@
+ 	uint32_t f2 = hc_rd(CORE_VENDOR_SPEC_FUNC2);
+ 	int i;
+ 
+-	printf("SANTONI SDHCI: vendor reset: FUNCTION2 0x%08x -> 0x%08x "
++	printf("WHYRED SDHCI: vendor reset: FUNCTION2 0x%08x -> 0x%08x "
+ 	    "(HC_SW_RST_REQ)\n", f2, f2 | CORE_HC_SW_RST_REQ);
+ 	hc_wr(CORE_VENDOR_SPEC_FUNC2, f2 | CORE_HC_SW_RST_REQ);
+ 	for (i = 0; i < 100; i++) {
+ 		if (!(hc_rd(CORE_VENDOR_SPEC_FUNC2) & CORE_HC_SW_RST_REQ)) {
+-			printf("SANTONI SDHCI: vendor reset: request accepted "
++			printf("WHYRED SDHCI: vendor reset: request accepted "
+ 			    "after %d ms\n", i);
+ 			return 0;
+ 		}
+@@ -893,17 +893,17 @@
+ 	 * workaround; the reset then completes in the background.
+ 	 */
+ 	f2 = hc_rd(CORE_VENDOR_SPEC_FUNC2);
+-	printf("SANTONI SDHCI: vendor reset: request did not clear in 100 ms; "
++	printf("WHYRED SDHCI: vendor reset: request did not clear in 100 ms; "
+ 	    "disabling the wait for idle (FUNCTION2 0x%08x -> 0x%08x)\n",
+ 	    f2, f2 | CORE_HC_SW_RST_WAIT_IDLE_DIS);
+ 	hc_wr(CORE_VENDOR_SPEC_FUNC2, f2 | CORE_HC_SW_RST_WAIT_IDLE_DIS);
+ 	delay(10);
+ 	if (!(hc_rd(CORE_VENDOR_SPEC_FUNC2) & CORE_HC_SW_RST_REQ)) {
+-		printf("SANTONI SDHCI: vendor reset: request accepted after "
++		printf("WHYRED SDHCI: vendor reset: request accepted after "
+ 		    "the wait-idle workaround\n");
+ 		return 0;
+ 	}
+-	printf("SANTONI SDHCI: vendor reset: request still pending "
++	printf("WHYRED SDHCI: vendor reset: request still pending "
+ 	    "(FUNCTION2 0x%08x)\n", hc_rd(CORE_VENDOR_SPEC_FUNC2));
+ 	return ETIMEDOUT;
+ }
+@@ -920,7 +920,7 @@
+ 	while (hc_rd8(SDHCI_SOFTWARE_RESET) &
+ 	    (SDHCI_RESET_CMD | SDHCI_RESET_DATA)) {
+ 		if (mach_absolute_time() > deadline) {
+-			printf("SANTONI SDHCI: path reset did not complete "
++			printf("WHYRED SDHCI: path reset did not complete "
+ 			    "(SOFTWARE_RESET 0x%02x)\n",
+ 			    hc_rd8(SDHCI_SOFTWARE_RESET));
+ 			return ETIMEDOUT;
+@@ -939,7 +939,7 @@
+ 	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT))) {
+ 		return 0;
+ 	}
+-	printf("SANTONI SDHCI: path reset left PRESENT_STATE 0x%08x: "
++	printf("WHYRED SDHCI: path reset left PRESENT_STATE 0x%08x: "
+ 	    "CMD_INHIBIT/DAT_INHIBIT still set\n",
+ 	    hc_rd(SDHCI_PRESENT_STATE));
+ 	(void)sdhci_vendor_core_reset();
+@@ -947,10 +947,10 @@
+ 	sdhci_v5_standard_fifo();
+ 	if (!(hc_rd(SDHCI_PRESENT_STATE) &
+ 	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT))) {
+-		printf("SANTONI SDHCI: vendor reset cleared the inhibit\n");
++		printf("WHYRED SDHCI: vendor reset cleared the inhibit\n");
+ 		return 0;
+ 	}
+-	printf("SANTONI SDHCI: cycling the card clock to resample the "
++	printf("WHYRED SDHCI: cycling the card clock to resample the "
+ 	    "lines\n");
+ 	if (sdhci_enable_card_clock() != 0) {
+ 		return ETIMEDOUT;
+@@ -960,14 +960,14 @@
+ 		static bool reported;
+ 		if (!reported) {
+ 			reported = true;
+-			printf("SANTONI SDHCI: core still inhibited after a "
++			printf("WHYRED SDHCI: core still inhibited after a "
+ 			    "clock cycle (PRESENT_STATE 0x%08x): this core "
+ 			    "cannot be reset in software; later commands will "
+ 			    "report EBUSY\n", hc_rd(SDHCI_PRESENT_STATE));
+ 		}
+ 		return ETIMEDOUT;
+ 	}
+-	printf("SANTONI SDHCI: stale inhibit cleared by the clock cycle\n");
++	printf("WHYRED SDHCI: stale inhibit cleared by the clock cycle\n");
+ 	return 0;
+ }
+ 
+@@ -986,7 +986,7 @@
+ 	if (!open_ended) {
+ 		return;
+ 	}
+-	printf("SANTONI SDHCI: recover: stopping an open-ended transfer\n");
++	printf("WHYRED SDHCI: recover: stopping an open-ended transfer\n");
+ 	(void)sdhci_stop_transmission();
+ 	(void)sdhci_reset_paths();
+ }
+@@ -1048,7 +1048,7 @@
+ 	 * this path runs once per block below.
+ 	 */
+ 	if (index == 8) {
+-		printf("SANTONI SDHCI: %s: R1 0x%08x (state %u)%s%s\n", tag,
++		printf("WHYRED SDHCI: %s: R1 0x%08x (state %u)%s%s\n", tag,
+ 		    r1, (r1 & SDHCI_R1_STATE_MASK) >> 9,
+ 		    (r1 & SDHCI_R1_ILLEGAL_COMMAND) ? " illegal-command" : "",
+ 		    (r1 & SDHCI_R1_ERROR) ? " error" : "");
+@@ -1079,7 +1079,7 @@
+ 	 * caller can try the DMA engine instead.
+ 	 */
+ 	if (index == 8 && zero == count * (SDHCI_BLOCK / 4)) {
+-		printf("SANTONI SDHCI: %s: PIO returned %u zero words; no data "
++		printf("WHYRED SDHCI: %s: PIO returned %u zero words; no data "
+ 		    "arrived (PRESENT_STATE 0x%08x)\n", tag, zero,
+ 		    hc_rd(SDHCI_PRESENT_STATE));
+ 		sdhci_recover(false);
+@@ -1164,7 +1164,7 @@
+ 	}
+ 
+ 	pa = se.dma_pa + DMA_BOUNCE;
+-	printf("SANTONI SDHCI: %s: PIO failed (%d), retrying the same block "
++	printf("WHYRED SDHCI: %s: PIO failed (%d), retrying the same block "
+ 	    "with SDMA\n", tag, error);
+ 	dma_sync(count * SDHCI_BLOCK, TRUE);
+ 	error = sdhci_read_sdma(index, arg, count, pa);
+@@ -1200,7 +1200,7 @@
+ static void
+ sdhci_probe_dump(const char *what)
+ {
+-	printf("SANTONI SDHCI: %s: HS 0x%02x HC2 0x%04x CLK 0x%04x TMO 0x%02x "
++	printf("WHYRED SDHCI: %s: HS 0x%02x HC2 0x%04x CLK 0x%04x TMO 0x%02x "
+ 	    "VENDOR 0x%08x DLL 0x%08x/0x%08x\n", what,
+ 	    hc_rd8(SDHCI_HOST_CONTROL), hc_rd16(SDHCI_HOST_CONTROL2),
+ 	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_TIMEOUT_CONTROL),
+@@ -1328,7 +1328,7 @@
+ 		 * matrix try the next engine instead of keeping this setup.
+ 		 */
+ 		if (zero == SDHCI_BLOCK / 4) {
+-			printf("SANTONI SDHCI: data probe: FIFO returned %u "
++			printf("WHYRED SDHCI: data probe: FIFO returned %u "
+ 			    "zero words; no data arrived (PRESENT_STATE "
+ 			    "0x%08x DAT 0x%x)\n", zero,
+ 			    hc_rd(SDHCI_PRESENT_STATE),
+@@ -1413,7 +1413,7 @@
+ 		    EXT_CSD_BUS_WIDTH_1),
+ 		    cfg[i].ctrl_set, SDHCI_CTRL_BUS_MASK);
+ 		if (error) {
+-			printf("SANTONI SDHCI: data probe #%u %u-bit %s bc=%u "
++			printf("WHYRED SDHCI: data probe #%u %u-bit %s bc=%u "
+ 			    "pre=%u: width switch failed (%d)\n", i + 1,
+ 			    (unsigned)cfg[i].lanes, engine,
+ 			    (unsigned)cfg[i].blk_cnt,
+@@ -1428,7 +1428,7 @@
+ 		sdhci_ext_csd_clear();
+ 
+ 		error = sdhci_probe_attempt(tr_mode, &tm, &ps, &r1);
+-		printf("SANTONI SDHCI: data probe #%u %u-bit %s bc=%u pre=%u: "
++		printf("WHYRED SDHCI: data probe #%u %u-bit %s bc=%u pre=%u: "
+ 		    "%s (tm 0x%04x ps 0x%08x r1 0x%08x)\n", i + 1,
+ 		    (unsigned)cfg[i].lanes, engine, (unsigned)cfg[i].blk_cnt,
+ 		    (unsigned)!cfg[i].preset_off,
+@@ -1443,7 +1443,7 @@
+ 		 */
+ 		if (sdhci_ext_csd_sane()) {
+ 			*width = cfg[i].lanes;
+-			printf("SANTONI SDHCI: data probe: EXT_CSD moved at "
++			printf("WHYRED SDHCI: data probe: EXT_CSD moved at "
+ 			    "%u-bit %s bc=%u pre=%u%s - keeping it\n",
+ 			    (unsigned)cfg[i].lanes, engine,
+ 			    (unsigned)cfg[i].blk_cnt,
+@@ -1460,7 +1460,7 @@
+ 				uint32_t sec = 0;
+ 
+ 				memcpy(&sec, ext + 212, sizeof(sec));
+-				printf("SANTONI SDHCI: data probe #%u %u-bit "
++				printf("WHYRED SDHCI: data probe #%u %u-bit "
+ 				    "%s bc=%u pre=%u: block is not EXT_CSD "
+ 				    "(REV %u STRUCTURE %u SEC_COUNT %u, words "
+ 				    "%08x %08x %08x %08x); trying the next "
+@@ -1576,20 +1576,20 @@
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+ 	uint16_t host_version = hc_rd16(SDHCI_HOST_VERSION);
+ 	if (host_version == 0 || host_version == 0xffffu) {
+-		printf("SANTONI SDHCI: SDCC v5 HOST_VERSION invalid: 0x%04x\n", host_version);
++		printf("WHYRED SDHCI: SDCC v5 HOST_VERSION invalid: 0x%04x\n", host_version);
+ 		return ENXIO;
+ 	}
+-	printf("SANTONI SDHCI: SDCC v5 core present (HOST_VERSION 0x%04x)\n", host_version);
++	printf("WHYRED SDHCI: SDCC v5 core present (HOST_VERSION 0x%04x)\n", host_version);
+ 	return 0;
+ #else
+ 	if (mci_version == 0 || mci_version == 0xffffffffu) {
+-		printf("SANTONI SDHCI: vendor core does not answer "
++		printf("WHYRED SDHCI: vendor core does not answer "
+ 		    "(MCI_VERSION 0x%08x, GENERICS 0x%08x): GCC SDC1 clock "
+ 		    "branch off or block held in reset\n",
+ 		    mci_version, generics);
+ 		return ENXIO;
+ 	}
+-	printf("SANTONI SDHCI: core MCI_VERSION 0x%08x GENERICS 0x%08x\n",
++	printf("WHYRED SDHCI: core MCI_VERSION 0x%08x GENERICS 0x%08x\n",
+ 	    mci_version, generics);
+ 	return 0;
+ #endif
+@@ -1617,13 +1617,13 @@
+ 	uint32_t status = hc_rd(CORE_DLL_STATUS);
+ 
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+-	printf("SANTONI SDHCI: probe step 0: VENDOR_SPEC 0x%08x "
++	printf("WHYRED SDHCI: probe step 0: VENDOR_SPEC 0x%08x "
+ 	    "(MCLK sel %u, SELECT_IN 0x%x), DLL_CONFIG 0x%08x "
+ 	    "DLL_STATUS 0x%08x\n", vendor,
+ 	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8,
+ 	    (vendor & CORE_HC_SELECT_IN_MASK) >> 19, dll, status);
+ #else
+-	printf("SANTONI SDHCI: probe step 0: HC_MODE 0x%08x, "
++	printf("WHYRED SDHCI: probe step 0: HC_MODE 0x%08x, "
+ 	    "MCI_POWER 0x%08x, MCI_CLK 0x%08x, VENDOR_SPEC 0x%08x "
+ 	    "(MCLK sel %u, SELECT_IN 0x%x), DLL_CONFIG 0x%08x "
+ 	    "DLL_STATUS 0x%08x\n", core_rd(CORE_HC_MODE),
+@@ -1631,7 +1631,7 @@
+ 	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8,
+ 	    (vendor & CORE_HC_SELECT_IN_MASK) >> 19, dll, status);
+ #endif
+-	printf("SANTONI SDHCI: probe step 0: GCC sdcc1_apps CMD 0x%08x "
++	printf("WHYRED SDHCI: probe step 0: GCC sdcc1_apps CMD 0x%08x "
+ 	    "CFG 0x%08x M 0x%02x N 0x%02x D 0x%02x CBCR 0x%08x\n",
+ 	    gcc_rd(GCC_SDCC1_APPS_CMD_RCGR),
+ 	    gcc_rd(GCC_SDCC1_APPS_CFG_RCGR),
+@@ -1645,7 +1645,7 @@
+ static void
+ sdhci_snapshot_standard(const char *tag)
+ {
+-	printf("SANTONI SDHCI: probe step 0 %s: POWER_CONTROL 0x%02x, "
++	printf("WHYRED SDHCI: probe step 0 %s: POWER_CONTROL 0x%02x, "
+ 	    "CLOCK_CONTROL 0x%04x, HOST_CONTROL 0x%02x, HOST_CONTROL2 0x%04x, "
+ 	    "TIMEOUT_CONTROL 0x%02x, PRESENT_STATE 0x%08x, INT_STATUS 0x%08x, "
+ 	    "SOFTWARE_RESET 0x%02x, HOST_VERSION 0x%04x\n", tag,
+@@ -1680,10 +1680,10 @@
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+ 	uint16_t host_version = hc_rd16(SDHCI_HOST_VERSION);
+ 	if (host_version == 0 || host_version == 0xffffu) {
+-		printf("SANTONI SDHCI: SDCC v5 HOST_VERSION invalid: 0x%04x\n", host_version);
++		printf("WHYRED SDHCI: SDCC v5 HOST_VERSION invalid: 0x%04x\n", host_version);
+ 		return ENXIO;
+ 	}
+-	printf("SANTONI SDHCI: SDCC v5 in HC mode (HOST_VERSION 0x%04x)\n", host_version);
++	printf("WHYRED SDHCI: SDCC v5 in HC mode (HOST_VERSION 0x%04x)\n", host_version);
+ 	return 0;
+ #else
+ 	uint32_t hc_mode = core_rd(CORE_HC_MODE);
+@@ -1694,7 +1694,7 @@
+ 		return 0;
+ 	}
+ 
+-	printf("SANTONI SDHCI: HC_MODE 0x%08x, enabling HC mode\n", hc_mode);
++	printf("WHYRED SDHCI: HC_MODE 0x%08x, enabling HC mode\n", hc_mode);
+ 	/* Step 1: HC_MODE_EN, keeping any other vendor bits LK left. */
+ 	core_wr(CORE_HC_MODE, (hc_mode & ~CORE_HC_MODE_EN) | CORE_HC_MODE_EN);
+ 	hc_mode = core_rd(CORE_HC_MODE);
+@@ -1706,23 +1706,23 @@
+ 		 */
+ 		host_version = hc_rd16(SDHCI_HOST_VERSION);
+ 		if (host_version == 0 || host_version == 0xffffu) {
+-			printf("SANTONI SDHCI: HC mode did not latch "
++			printf("WHYRED SDHCI: HC mode did not latch "
+ 			    "(HC_MODE 0x%08x, HOST_VERSION 0x%04x)\n",
+ 			    hc_mode, host_version);
+ 			return ENXIO;
+ 		}
+-		printf("SANTONI SDHCI: HC_MODE_EN reads back 0 but the HC "
++		printf("WHYRED SDHCI: HC_MODE_EN reads back 0 but the HC "
+ 		    "window answers (HOST_VERSION 0x%04x)\n", host_version);
+ 	}
+ 	/* Step 2: the free-running-clock reset guard, after bit 0 is in. */
+ 	core_wr(CORE_HC_MODE, hc_mode | CORE_HC_MODE_EN | CORE_FF_CLK_SW_RST_DIS);
+ 	hc_mode = core_rd(CORE_HC_MODE);
+ 	if (!(hc_mode & CORE_FF_CLK_SW_RST_DIS)) {
+-		printf("SANTONI SDHCI: FF_CLK_SW_RST_DIS did not stick "
++		printf("WHYRED SDHCI: FF_CLK_SW_RST_DIS did not stick "
+ 		    "(HC_MODE 0x%08x): the core may self-reset while SDCLK "
+ 		    "feedback is stopped\n", hc_mode);
+ 	}
+-	printf("SANTONI SDHCI: HC mode enabled (HC_MODE 0x%08x, "
++	printf("WHYRED SDHCI: HC mode enabled (HC_MODE 0x%08x, "
+ 	    "HOST_VERSION 0x%04x)\n", hc_mode, hc_rd16(SDHCI_HOST_VERSION));
+ 	return 0;
+ #endif
+@@ -1752,7 +1752,7 @@
+ 	vs &= ~(CORE_HC_SELECT_IN_EN | CORE_HC_SELECT_IN_MASK);
+ 	hc_wr(CORE_VENDOR_SPEC, vs);
+ 	vs = hc_rd(CORE_VENDOR_SPEC);
+-	printf("SANTONI SDHCI: HC clock source MCLK sel %u (VENDOR_SPEC "
++	printf("WHYRED SDHCI: HC clock source MCLK sel %u (VENDOR_SPEC "
+ 	    "0x%08x)\n", (vs & CORE_HC_MCLK_SEL_MASK) >> 8, vs);
+ }
+ 
+@@ -1775,14 +1775,14 @@
+ 	uint32_t want = dll_live ? (dll | CORE_CK_OUT_EN) :
+ 	    ((dll | CORE_DLL_RST | CORE_DLL_PDN) & ~CORE_CK_OUT_EN);
+ 
+-	printf("SANTONI SDHCI: CORE_DLL_CONFIG 0x%08x CORE_DLL_STATUS 0x%08x "
++	printf("WHYRED SDHCI: CORE_DLL_CONFIG 0x%08x CORE_DLL_STATUS 0x%08x "
+ 	    "(DLL_EN %u, PDN %u, RST %u, LOCK %u, CK_OUT_EN %u)\n", dll, status,
+ 	    (dll & CORE_DLL_EN) ? 1u : 0u, (dll & CORE_DLL_PDN) ? 1u : 0u,
+ 	    (dll & CORE_DLL_RST) ? 1u : 0u, (status & CORE_DLL_LOCK) ? 1u : 0u,
+ 	    (dll & CORE_CK_OUT_EN) ? 1u : 0u);
+ 	if (want != dll) {
+ 		hc_wr(CORE_DLL_CONFIG, want);
+-		printf("SANTONI SDHCI: card clock output %s (CORE_DLL_CONFIG "
++		printf("WHYRED SDHCI: card clock output %s (CORE_DLL_CONFIG "
+ 		    "0x%08x)\n", dll_live ? "selected from the locked DLL" :
+ 		    "bypasses the powered-down DLL", hc_rd(CORE_DLL_CONFIG));
+ 	}
+@@ -1814,7 +1814,7 @@
+ 	uint32_t new_dll = (dll | CORE_DLL_RST | CORE_DLL_PDN) &
+ 	    ~CORE_CK_OUT_EN;
+ 
+-	printf("SANTONI SDHCI: %s: HOST_CONTROL 0x%02x -> 0x%02x, "
++	printf("WHYRED SDHCI: %s: HOST_CONTROL 0x%02x -> 0x%02x, "
+ 	    "HOST_CONTROL2 0x%04x -> 0x%04x (UHS 0, 1-bit), DLL_CONFIG "
+ 	    "0x%08x -> 0x%08x (RST|PDN, CK_OUT_EN off)\n", why, ctrl,
+ 	    new_ctrl, hc2, new_hc2, dll, new_dll);
+@@ -1867,7 +1867,7 @@
+ 		pending = core_rd(CORE_PWRCTL_STATUS) & CORE_PWRCTL_INT_MASK;
+ 	}
+ 	if (!pending) {
+-		printf("SANTONI SDHCI: PWRCTL %s: no request (STATUS 0x%08x), "
++		printf("WHYRED SDHCI: PWRCTL %s: no request (STATUS 0x%08x), "
+ 		    "already in that state\n", what,
+ 		    core_rd(CORE_PWRCTL_STATUS));
+ 		return 0;
+@@ -1876,7 +1876,7 @@
+ 	for (retry = 0; retry < 10; retry++) {
+ 		pending = core_rd(CORE_PWRCTL_STATUS) & CORE_PWRCTL_INT_MASK;
+ 		if (!pending) {
+-			printf("SANTONI SDHCI: PWRCTL %s acked (CTL 0x%08x)\n",
++			printf("WHYRED SDHCI: PWRCTL %s acked (CTL 0x%08x)\n",
+ 			    what, core_rd(CORE_PWRCTL_CTL));
+ 			return 0;
+ 		}
+@@ -1895,7 +1895,7 @@
+ 		core_wr(CORE_PWRCTL_CTL, ack);
+ 		delay(1);
+ 	}
+-	printf("SANTONI SDHCI: PWRCTL %s did not clear (STATUS 0x%08x): "
++	printf("WHYRED SDHCI: PWRCTL %s did not clear (STATUS 0x%08x): "
+ 	    "power handshake failed\n", what, core_rd(CORE_PWRCTL_STATUS));
+ 	return ETIMEDOUT;
+ #endif
+@@ -1918,7 +1918,7 @@
+ 
+ 	hc_wr8(SDHCI_POWER_CONTROL, want);
+ 	if (hc_rd8(SDHCI_POWER_CONTROL) != want) {
+-		printf("SANTONI SDHCI: POWER_CONTROL did not latch 0x%02x "
++		printf("WHYRED SDHCI: POWER_CONTROL did not latch 0x%02x "
+ 		    "(reads 0x%02x)\n", want, hc_rd8(SDHCI_POWER_CONTROL));
+ 		return ENXIO;
+ 	}
+@@ -1953,7 +1953,7 @@
+ 			break;
+ 		}
+ 		if (mach_absolute_time() > deadline) {
+-			printf("SANTONI SDHCI: SDHCI clock not stable after "
++			printf("WHYRED SDHCI: SDHCI clock not stable after "
+ 			    "150 ms (CLOCK_CONTROL 0x%04x): GCC SDC1 branch "
+ 			    "dead\n", clk);
+ 			return ETIMEDOUT;
+@@ -1964,10 +1964,10 @@
+ 	/* Read-modify-write: INT_STABLE is a status bit, never written back. */
+ 	hc_wr16(SDHCI_CLOCK_CONTROL, (uint16_t)(clk | SDHCI_CLOCK_CARD_EN));
+ 	clk = hc_rd16(SDHCI_CLOCK_CONTROL);
+-	printf("SANTONI SDHCI: card clock gate was closed, enabled "
++	printf("WHYRED SDHCI: card clock gate was closed, enabled "
+ 	    "(CLOCK_CONTROL 0x%04x, divider 0: GCC owns the rate)\n", clk);
+ 	if (!(clk & SDHCI_CLOCK_CARD_EN)) {
+-		printf("SANTONI SDHCI: card clock gate did not latch "
++		printf("WHYRED SDHCI: card clock gate did not latch "
+ 		    "(CLOCK_CONTROL 0x%04x)\n", clk);
+ 		return ENXIO;
+ 	}
+@@ -2006,13 +2006,13 @@
+ 	cmd = gcc_rd(GCC_SDCC1_APPS_CMD_RCGR);
+ 	cfg = gcc_rd(GCC_SDCC1_APPS_CFG_RCGR);
+ 	cbcr = gcc_rd(GCC_SDCC1_APPS_CBCR);
+-	printf("SANTONI SDHCI: GCC sdcc1_apps before: CMD 0x%08x CFG 0x%08x "
++	printf("WHYRED SDHCI: GCC sdcc1_apps before: CMD 0x%08x CFG 0x%08x "
+ 	    "M 0x%02x N 0x%02x D 0x%02x CBCR 0x%08x\n", cmd, cfg,
+ 	    gcc_rd(GCC_SDCC1_APPS_M) & 0xffu, gcc_rd(GCC_SDCC1_APPS_N) & 0xffu,
+ 	    gcc_rd(GCC_SDCC1_APPS_D) & 0xffu, cbcr);
+ 
+ 	if ((cmd & GCC_CMD_ROOT_OFF) || (cbcr & GCC_CBCR_CLK_OFF)) {
+-		printf("SANTONI SDHCI: GCC sdcc1_apps not running "
++		printf("WHYRED SDHCI: GCC sdcc1_apps not running "
+ 		    "(CMD 0x%08x CBCR 0x%08x), not touching it\n", cmd, cbcr);
+ 		return ENXIO;
+ 	}
+@@ -2031,7 +2031,7 @@
+ 	deadline += mach_absolute_time();
+ 	while (gcc_rd(GCC_SDCC1_APPS_CMD_RCGR) & GCC_CMD_UPDATE) {
+ 		if (mach_absolute_time() > deadline) {
+-			printf("SANTONI SDHCI: GCC sdcc1_apps update stuck "
++			printf("WHYRED SDHCI: GCC sdcc1_apps update stuck "
+ 			    "(CMD 0x%08x)\n",
+ 			    gcc_rd(GCC_SDCC1_APPS_CMD_RCGR));
+ 			return ETIMEDOUT;
+@@ -2039,7 +2039,7 @@
+ 		delay(1);
+ 	}
+ 
+-	printf("SANTONI SDHCI: GCC sdcc1_apps now: CMD 0x%08x CFG 0x%08x "
++	printf("WHYRED SDHCI: GCC sdcc1_apps now: CMD 0x%08x CFG 0x%08x "
+ 	    "M 0x%02x N 0x%02x D 0x%02x (%s)\n",
+ 	    gcc_rd(GCC_SDCC1_APPS_CMD_RCGR),
+ 	    gcc_rd(GCC_SDCC1_APPS_CFG_RCGR),
+@@ -2075,18 +2075,18 @@
+ 		*ocr = 0;
+ 		error = sdhci_cmd(1, arg, 0, SDHCI_CMD_RESP_SHORT, ocr);
+ 		if (error) {
+-			printf("SANTONI SDHCI: probe step 2: CMD1 attempt %d "
++			printf("WHYRED SDHCI: probe step 2: CMD1 attempt %d "
+ 			    "got no usable response (%d), OCR 0x%08x, "
+ 			    "%llu ns; stop\n", attempt + 1, error, *ocr,
+ 			    (unsigned long long)se.last_cmd_ns);
+ 			sdhci_recover(false);
+ 			return error;
+ 		}
+-		printf("SANTONI SDHCI: probe step 2: CMD1 attempt %d OCR "
++		printf("WHYRED SDHCI: probe step 2: CMD1 attempt %d OCR "
+ 		    "0x%08x (%llu ns)\n", attempt + 1, *ocr,
+ 		    (unsigned long long)se.last_cmd_ns);
+ 		if (*ocr & 0x80000000u) {
+-			printf("SANTONI SDHCI: probe step 2: CMD1 ready: OCR "
++			printf("WHYRED SDHCI: probe step 2: CMD1 ready: OCR "
+ 			    "bit31 set (card power-up complete)\n");
+ 			return 0;
+ 		}
+@@ -2098,7 +2098,7 @@
+ 		}
+ 		delay(10000);   /* 10 ms between polls, 1 s total */
+ 	}
+-	printf("SANTONI SDHCI: probe step 2: CMD1 still busy after 1 s\n");
++	printf("WHYRED SDHCI: probe step 2: CMD1 still busy after 1 s\n");
+ 	return ETIMEDOUT;
+ }
+ 
+@@ -2116,9 +2116,8 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0166 (enumeration records the width "
+-	    "it actually switched to; the 8-bit summary is no longer a "
+-	    "stale 1-bit)\n");
++	printf("WHYRED SDHCI: driver 0167 (log prefix is WHYRED; the eMMC "
++	    "path is unchanged from 0166)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2150,7 +2149,7 @@
+ 	 * then FF_CLK_SW_RST_DIS).
+ 	 */
+ 	vendor = hc_rd(CORE_VENDOR_SPEC);
+-	printf("SANTONI SDHCI: CORE_VENDOR_SPEC 0x%08x (MCLK sel %u, "
++	printf("WHYRED SDHCI: CORE_VENDOR_SPEC 0x%08x (MCLK sel %u, "
+ 	    "PWRSAVE %u) -> board 0x%08x\n", vendor,
+ 	    (vendor & CORE_HC_MCLK_SEL_MASK) >> 8, (vendor >> 1) & 1u,
+ 	    CORE_VENDOR_SPEC_BOARD_VAL);
+@@ -2192,7 +2191,7 @@
+ 	}
+ 	reset_done = (hc_rd8(SDHCI_SOFTWARE_RESET) & SDHCI_RESET_ALL) == 0;
+ 	if (!reset_done) {
+-		printf("SANTONI SDHCI: RESET_ALL did not self-clear "
++		printf("WHYRED SDHCI: RESET_ALL did not self-clear "
+ 		    "(SOFTWARE_RESET 0x%02x, PRESENT_STATE 0x%08x, "
+ 		    "CLOCK_CONTROL 0x%04x, VENDOR_SPEC 0x%08x)\n",
+ 		    hc_rd8(SDHCI_SOFTWARE_RESET), hc_rd(SDHCI_PRESENT_STATE),
+@@ -2205,7 +2204,7 @@
+ 		 * step 2 starts with an addressed CMD13 that proves the
+ 		 * inherited state. Continue and let that command decide.
+ 		 */
+-		printf("SANTONI SDHCI: continuing without a completed reset\n");
++		printf("WHYRED SDHCI: continuing without a completed reset\n");
+ #else
+ 		return ETIMEDOUT;
+ #endif
+@@ -2221,14 +2220,14 @@
+ 	hc_wr16(SDHCI_HOST_CONTROL2, handoff_hc2);
+ 	hc_wr8(SDHCI_TIMEOUT_CONTROL, handoff_timeout);
+ 	if (!(handoff_ctrl & SDHCI_CTRL_8BITBUS)) {
+-		printf("SANTONI SDHCI: host bus width not 8-bit "
++		printf("WHYRED SDHCI: host bus width not 8-bit "
+ 		    "(HOST_CONTROL 0x%02x)\n", handoff_ctrl);
+ 	}
+ 
+ 	/* Step 4: turn on 1.8V bus power and acknowledge BUS_ON request */
+ 	error = sdhci_set_bus_power();
+ 	if (error) {
+-		printf("SANTONI SDHCI: bus power not established (%d)\n", error);
++		printf("WHYRED SDHCI: bus power not established (%d)\n", error);
+ 		return error;
+ 	}
+ 
+@@ -2261,7 +2260,7 @@
+ 		uint32_t vs3 = hc_rd(CORE_VENDOR_SPEC3);
+ 
+ 		sdhci_v5_standard_fifo();
+-		printf("SANTONI SDHCI: alt FIFO VENDOR_SPEC3 0x%08x -> "
++		printf("WHYRED SDHCI: alt FIFO VENDOR_SPEC3 0x%08x -> "
+ 		    "0x%08x (bit 10 %s)\n", vs3,
+ 		    hc_rd(CORE_VENDOR_SPEC3),
+ 		    (vs3 & CORE_FIFO_ALT_EN) ?
+@@ -2270,14 +2269,14 @@
+ 	}
+ 
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+-	printf("SANTONI SDHCI: takeover complete (VENDOR_SPEC 0x%08x, "
++	printf("WHYRED SDHCI: takeover complete (VENDOR_SPEC 0x%08x, "
+ 	    "POWER_CONTROL 0x%02x, CLOCK_CONTROL 0x%04x, HOST_CONTROL 0x%02x, "
+ 	    "HOST_CONTROL2 0x%04x, TIMEOUT_CONTROL 0x%02x)\n",
+ 	    hc_rd(CORE_VENDOR_SPEC), hc_rd8(SDHCI_POWER_CONTROL),
+ 	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
+ 	    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd8(SDHCI_TIMEOUT_CONTROL));
+ #else
+-	printf("SANTONI SDHCI: takeover complete (HC_MODE 0x%08x, "
++	printf("WHYRED SDHCI: takeover complete (HC_MODE 0x%08x, "
+ 	    "VENDOR_SPEC 0x%08x, legacy MCI_CLK 0x%08x, MCI_POWER 0x%08x, "
+ 	    "POWER_CONTROL 0x%02x, CLOCK_CONTROL 0x%04x, HOST_CONTROL 0x%02x, "
+ 	    "HOST_CONTROL2 0x%04x, TIMEOUT_CONTROL 0x%02x)\n",
+@@ -2293,7 +2292,7 @@
+ 	 * The order matters: UHS=3 with the DLL powered down is why b6a8788
+ 	 * completed CMD0 (no response) but never sampled CMD1's response.
+ 	 */
+-	printf("SANTONI SDHCI: probe step 2: gate card clock, UHS=0, "
++	printf("WHYRED SDHCI: probe step 2: gate card clock, UHS=0, "
+ 	    "GCC 400 kHz\n");
+ 	hc_wr16(SDHCI_CLOCK_CONTROL, 0);
+ 	hc_wr(CORE_VENDOR_SPEC, CORE_VENDOR_SPEC_BOARD_VAL);
+@@ -2308,7 +2307,7 @@
+ 	 */
+ 	hc_wr8(SDHCI_HOST_CONTROL,
+ 	    (uint8_t)(handoff_ctrl & SDHCI_CTRL_BUS_MASK));
+-	printf("SANTONI SDHCI: probe step 2: bus width from ABL kept until "
++	printf("WHYRED SDHCI: probe step 2: bus width from ABL kept until "
+ 	    "CMD0 (HOST_CONTROL 0x%02x, %u-bit); CMD0 returns the card to "
+ 	    "1-bit and the host follows\n", hc_rd8(SDHCI_HOST_CONTROL),
+ 	    (handoff_ctrl & SDHCI_CTRL_8BITBUS) ? 8 :
+@@ -2316,11 +2315,11 @@
+ 
+ 	error = sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_400K]);
+ 	if (error) {
+-		printf("SANTONI SDHCI: probe step 2: GCC 400 kHz failed (%d)\n",
++		printf("WHYRED SDHCI: probe step 2: GCC 400 kHz failed (%d)\n",
+ 		    error);
+ 		return error;
+ 	}
+-	printf("SANTONI SDHCI: probe step 2: CLOCK_CONTROL 0x%04x "
++	printf("WHYRED SDHCI: probe step 2: CLOCK_CONTROL 0x%04x "
+ 	    "HOST_CONTROL 0x%02x HOST_CONTROL2 0x%04x DLL_CONFIG 0x%08x "
+ 	    "(SDHCI divider ignored; UHS 0; DLL off)\n",
+ 	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
+@@ -2338,10 +2337,10 @@
+ 	 * Reset the command and data paths here, with the clock running, so
+ 	 * the first real data transfer does not inherit ABL's last transfer.
+ 	 */
+-	printf("SANTONI SDHCI: probe step 2: reset paths with the clock "
++	printf("WHYRED SDHCI: probe step 2: reset paths with the clock "
+ 	    "live (PRESENT_STATE 0x%08x)\n", hc_rd(SDHCI_PRESENT_STATE));
+ 	if (sdhci_reset_paths() == 0) {
+-		printf("SANTONI SDHCI: probe step 2: PRESENT_STATE 0x%08x "
++		printf("WHYRED SDHCI: probe step 2: PRESENT_STATE 0x%08x "
+ 		    "after path reset\n", hc_rd(SDHCI_PRESENT_STATE));
+ 	}
+ 
+@@ -2358,28 +2357,28 @@
+ 		card_in_transfer =
+ 		    (probe_r1 & SDHCI_R1_STATE_MASK) ==
+ 		    (SDHCI_R1_STATE_TRAN << 9);
+-		printf("SANTONI SDHCI: probe step 2: CMD13 RCA 2 answered "
++		printf("WHYRED SDHCI: probe step 2: CMD13 RCA 2 answered "
+ 		    "before reset: R1 0x%08x (state %u%s)\n", probe_r1,
+ 		    (probe_r1 >> 9) & 0xf,
+ 		    card_in_transfer ? ", TRAN; CMD5 not needed" : "");
+ 	} else {
+-		printf("SANTONI SDHCI: probe step 2: CMD13 RCA 2 failed "
++		printf("WHYRED SDHCI: probe step 2: CMD13 RCA 2 failed "
+ 		    "before reset (%d)\n", error);
+ 	}
+ 
+ 	if (!card_in_transfer) {
+ 		error = sdhci_sleep_awake(SANTONI_CARD_RCA, &probe_r1);
+ 		if (!error) {
+-			printf("SANTONI SDHCI: probe step 2: CMD5 awake RCA 2 "
++			printf("WHYRED SDHCI: probe step 2: CMD5 awake RCA 2 "
+ 			    "answered: R1 0x%08x\n", probe_r1);
+ 		} else {
+ 			(void)sdhci_reset_paths();
+ 			error = sdhci_sleep_awake(1, &probe_r1);
+ 			if (!error) {
+-				printf("SANTONI SDHCI: probe step 2: CMD5 awake "
++				printf("WHYRED SDHCI: probe step 2: CMD5 awake "
+ 				    "RCA 1 answered: R1 0x%08x\n", probe_r1);
+ 			} else {
+-				printf("SANTONI SDHCI: probe step 2: CMD5 "
++				printf("WHYRED SDHCI: probe step 2: CMD5 "
+ 				    "awake got no answer on RCA 2 or 1\n");
+ 				(void)sdhci_reset_paths();
+ 			}
+@@ -2392,7 +2391,7 @@
+ 	 * needs the receive path to work.
+ 	 */
+ 	err0 = sdhci_cmd(0, 0, 0, 0, NULL);
+-	printf("SANTONI SDHCI: probe step 2: CMD0 -> error %d, %llu ns\n",
++	printf("WHYRED SDHCI: probe step 2: CMD0 -> error %d, %llu ns\n",
+ 	    err0, (unsigned long long)se.last_cmd_ns);
+ 	if (err0) {
+ 		sdhci_recover(false);
+@@ -2411,7 +2410,7 @@
+ 		uint8_t now = hc_rd8(SDHCI_HOST_CONTROL);
+ 		hc_wr8(SDHCI_HOST_CONTROL,
+ 		    (uint8_t)(now & ~SDHCI_CTRL_BUS_MASK));
+-		printf("SANTONI SDHCI: probe step 2: CMD0 reset the card to "
++		printf("WHYRED SDHCI: probe step 2: CMD0 reset the card to "
+ 		    "1-bit; host width 0x%02x -> 0x%02x\n", now,
+ 		    hc_rd8(SDHCI_HOST_CONTROL));
+ 	}
+@@ -2424,10 +2423,10 @@
+ 		 * primary reset; if CMD1 still fails the next suspect is the
+ 		 * host receive path, not another reset.
+ 		 */
+-		printf("SANTONI SDHCI: probe step 2: CMD1 failed (%d), one "
++		printf("WHYRED SDHCI: probe step 2: CMD1 failed (%d), one "
+ 		    "GO_PRE_IDLE retry (CMD0 0xf0f0f0f0)\n", err_cmd1);
+ 		err0 = sdhci_cmd(0, 0xf0f0f0f0u, 0, 0, NULL);
+-		printf("SANTONI SDHCI: probe step 2: CMD0 pre-idle -> "
++		printf("WHYRED SDHCI: probe step 2: CMD0 pre-idle -> "
+ 		    "error %d, %llu ns\n", err0,
+ 		    (unsigned long long)se.last_cmd_ns);
+ 		if (err0) {
+@@ -2435,7 +2434,7 @@
+ 		}
+ 		err_cmd1 = sdhci_cmd1_poll(&probe_ocr);
+ 	}
+-	printf("SANTONI SDHCI: probe step 2: CMD1 final -> error %d, "
++	printf("WHYRED SDHCI: probe step 2: CMD1 final -> error %d, "
+ 	    "OCR 0x%08x\n", err_cmd1, probe_ocr);
+ 	se.cmd1_error = err_cmd1;
+ 	se.cmd1_ocr = probe_ocr;
+@@ -2443,7 +2442,7 @@
+ 	if (err_cmd1 == 0) {
+ 		error = sdhci_enumerate_card();
+ 		if (error) {
+-			printf("SANTONI SDHCI: enumeration failed (%d); "
++			printf("WHYRED SDHCI: enumeration failed (%d); "
+ 			    "leaving the card alone\n", error);
+ 			return error;
+ 		}
+@@ -2462,7 +2461,7 @@
+ 	 * hand-off ladder.
+ 	 */
+ 	if (se.enumerated) {
+-		printf("SANTONI SDHCI: rung 3: refusing the legacy 1-bit "
++		printf("WHYRED SDHCI: rung 3: refusing the legacy 1-bit "
+ 		    "restore after enumeration\n");
+ 		return ENXIO;
+ 	}
+@@ -2479,14 +2478,14 @@
+ 	 */
+ 	sdhci_set_legacy_host("rung 3 controller restore");
+ 	if (sdhci_set_bus_power() != 0) {
+-		printf("SANTONI SDHCI: rung 3: bus power not restored\n");
++		printf("WHYRED SDHCI: rung 3: bus power not restored\n");
+ 		return ENXIO;
+ 	}
+ 	hc_wr(SDHCI_INT_ENABLE, 0xffffffffu);
+ 	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
+ 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
+ 	if (sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_400K]) != 0) {
+-		printf("SANTONI SDHCI: rung 3: 400 kHz clock not restored\n");
++		printf("WHYRED SDHCI: rung 3: 400 kHz clock not restored\n");
+ 		return ENXIO;
+ 	}
+ 	sdhci_clock_output();
+@@ -2565,7 +2564,7 @@
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 		    &r1);
+ 		if (error) {
+-			printf("SANTONI SDHCI: enumeration: %s: CMD13 status "
++			printf("WHYRED SDHCI: enumeration: %s: CMD13 status "
+ 			    "poll failed (%d)\n", what, error);
+ 			return error;
+ 		}
+@@ -2576,14 +2575,14 @@
+ 		}
+ 		if (mach_absolute_time() > deadline) {
+ 			st = hc_rd(SDHCI_PRESENT_STATE);
+-			printf("SANTONI SDHCI: enumeration: %s: card did not "
++			printf("WHYRED SDHCI: enumeration: %s: card did not "
+ 			    "become ready within 1 s (R1 0x%08x, "
+ 			    "PRESENT_STATE 0x%08x)\n", what, r1, st);
+ 			return ETIMEDOUT;
+ 		}
+ 		delay(1000);
+ 	}
+-	printf("SANTONI SDHCI: enumeration: %s: card ready "
++	printf("WHYRED SDHCI: enumeration: %s: card ready "
+ 	    "(R1 0x%08x, TRAN)\n", what, r1);
+ 	return 0;
+ }
+@@ -2605,7 +2604,7 @@
+ 	uint8_t ctrl;
+ 	int error;
+ 
+-	printf("SANTONI SDHCI: enumeration: CMD6 %s (arg 0x%08x)\n",
++	printf("WHYRED SDHCI: enumeration: CMD6 %s (arg 0x%08x)\n",
+ 	    what, arg);
+ 	/*
+ 	 * No R1b (busy) flag. On this core the R1b handshake is what latched
+@@ -2619,18 +2618,18 @@
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 	    &r1);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD6 %s failed (%d)\n",
++		printf("WHYRED SDHCI: enumeration: CMD6 %s failed (%d)\n",
+ 		    what, error);
+ 		return error;
+ 	}
+-	printf("SANTONI SDHCI: enumeration: CMD6 %s -> R1 0x%08x\n",
++	printf("WHYRED SDHCI: enumeration: CMD6 %s -> R1 0x%08x\n",
+ 	    what, r1);
+ 	if (r1 & SDHCI_R1_SWITCH_ERROR) {
+ 		/*
+ 		 * The card rejected the EXT_CSD byte. Do not touch
+ 		 * HOST_CONTROL: the card is still in its old bus/timing mode.
+ 		 */
+-		printf("SANTONI SDHCI: enumeration: CMD6 %s reported "
++		printf("WHYRED SDHCI: enumeration: CMD6 %s reported "
+ 		    "SWITCH_ERROR, host left unchanged\n", what);
+ 		return EIO;
+ 	}
+@@ -2639,7 +2638,7 @@
+ 	ctrl = (uint8_t)((ctrl & ~ctrl_clear) | ctrl_set);
+ 	hc_wr8(SDHCI_HOST_CONTROL, ctrl);
+ 	ctrl = hc_rd8(SDHCI_HOST_CONTROL);
+-	printf("SANTONI SDHCI: enumeration: HOST_CONTROL 0x%02x after "
++	printf("WHYRED SDHCI: enumeration: HOST_CONTROL 0x%02x after "
+ 	    "%s\n", ctrl, what);
+ 	/*
+ 	 * ctrl_set and ctrl_clear overlap on purpose (8-bit sets 0x20 and
+@@ -2649,7 +2648,7 @@
+ 	 */
+ 	if ((ctrl & ctrl_set) != ctrl_set ||
+ 	    ((ctrl & ~ctrl_set) & ctrl_clear) != 0) {
+-		printf("SANTONI SDHCI: enumeration: HOST_CONTROL did not "
++		printf("WHYRED SDHCI: enumeration: HOST_CONTROL did not "
+ 		    "latch %s (0x%02x, set 0x%02x, clear 0x%02x)\n", what,
+ 		    ctrl, ctrl_set, ctrl_clear);
+ 		return ENXIO;
+@@ -2694,7 +2693,7 @@
+ 		return true;
+ 	}
+ 	memcpy(&sec_count, (const void *)(ext + 212), 4);
+-	printf("SANTONI SDHCI: enumeration: EXT_CSD at %u-bit %s is not real "
++	printf("WHYRED SDHCI: enumeration: EXT_CSD at %u-bit %s is not real "
+ 	    "(REV %u STRUCTURE %u SEC_COUNT %u, words %08x %08x %08x %08x); "
+ 	    "trying the next setup\n", lanes, how, ext[192], ext[193],
+ 	    sec_count, w[0], w[1], w[2], w[3]);
+@@ -2741,7 +2740,7 @@
+ 	if (mbr) {
+ 		santoni_lba0_pio = !use_sdma;
+ 	}
+-	printf("SANTONI SDHCI: data self-test LBA0 %s %s: %s (%d), bytes %02x "
++	printf("WHYRED SDHCI: data self-test LBA0 %s %s: %s (%d), bytes %02x "
+ 	    "%02x, MBR %s, R1 0x%08x, words %08x %08x %08x %08x "
+ 	    "(PRESENT_STATE 0x%08x)\n",
+ 	    width, engine, error ? (error == ETIMEDOUT ? "timeout" : "error") :
+@@ -2791,7 +2790,7 @@
+ 	 * (2^16 clocks, ~164 ms at 400 kHz): a block that never arrives now
+ 	 * fails loudly and the core releases the path by itself.
+ 	 */
+-	printf("SANTONI SDHCI: data self-test: phase %s, TIMEOUT_CONTROL "
++	printf("WHYRED SDHCI: data self-test: phase %s, TIMEOUT_CONTROL "
+ 	    "0x%02x -> 0x03 (~164 ms at 400 kHz)\n", phase, saved_timeout);
+ 
+ 	/*
+@@ -2810,17 +2809,17 @@
+ 
+ 		hc_wr8(SDHCI_TIMEOUT_CONTROL, 0x03);
+ 		hc_wr8(SDHCI_HOST_CONTROL, want);
+-		printf("SANTONI SDHCI: data self-test: host width 0x%02x -> "
++		printf("WHYRED SDHCI: data self-test: host width 0x%02x -> "
+ 		    "0x%02x (%s, no CMD6)\n", ctrl,
+ 		    hc_rd8(SDHCI_HOST_CONTROL), widths[i].what);
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+ 		    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX,
+ 		    &r1);
+-		printf("SANTONI SDHCI: data self-test: CMD16 %s -> R1 "
++		printf("WHYRED SDHCI: data self-test: CMD16 %s -> R1 "
+ 		    "0x%08x\n", widths[i].what, r1);
+ 		if (sdhci_lba0_attempt(widths[i].what, "PIO", false) ||
+ 		    sdhci_lba0_attempt(widths[i].what, "SDMA", true)) {
+-			printf("SANTONI SDHCI: data self-test: the data path "
++			printf("WHYRED SDHCI: data self-test: the data path "
+ 			    "works at %s (phase %s)\n", widths[i].what, phase);
+ 			snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
+ 			    "ok-%s", widths[i].what);
+@@ -2871,11 +2870,11 @@
+ 	 */
+ 	if (hc_rd(SDHCI_PRESENT_STATE) &
+ 	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) {
+-		printf("SANTONI SDHCI: enumeration: core inhibited before the "
++		printf("WHYRED SDHCI: enumeration: core inhibited before the "
+ 		    "data phase (PRESENT_STATE 0x%08x); resetting\n",
+ 		    hc_rd(SDHCI_PRESENT_STATE));
+ 		if (sdhci_reset_paths() != 0) {
+-			printf("SANTONI SDHCI: enumeration: cannot start the "
++			printf("WHYRED SDHCI: enumeration: cannot start the "
+ 			    "data phase; the controller is wedged\n");
+ 			return EBUSY;
+ 		}
+@@ -2906,7 +2905,7 @@
+ 		 * once with the engine that just moved a block and let the
+ 		 * verdict say whether a second data command is possible at all.
+ 		 */
+-		printf("SANTONI SDHCI: enumeration: LBA0 moved a block with "
++		printf("WHYRED SDHCI: enumeration: LBA0 moved a block with "
+ 		    "%s at %u-bit; reading EXT_CSD the same way\n",
+ 		    santoni_lba0_pio ? "PIO" : "SDMA", lba0_lanes);
+ 		(void)sdhci_cmd(16, SDHCI_BLOCK, 0,
+@@ -2923,13 +2922,13 @@
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		if (sdhci_ext_csd_sane()) {
+ 			*width = lba0_lanes;
+-			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
++			printf("WHYRED SDHCI: enumeration: EXT_CSD read works "
+ 			    "at %u-bit (%s%s)\n", lba0_lanes,
+ 			    use_sdma ? "SDMA" : "PIO",
+ 			    error ? ", status error ignored" : "");
+ 			return 0;
+ 		}
+-		printf("SANTONI SDHCI: EXT_CSD verdict: %s at %u-bit failed "
++		printf("WHYRED SDHCI: EXT_CSD verdict: %s at %u-bit failed "
+ 		    "(%d), R1 0x%08x, PRESENT_STATE 0x%08x, INT_STATUS 0x%08x, "
+ 		    "BS 0x%04x BC 0x%04x TM 0x%04x\n",
+ 		    use_sdma ? "SDMA" : "PIO", lba0_lanes, error,
+@@ -2947,12 +2946,12 @@
+ 	 */
+ 	if (hc_rd(SDHCI_PRESENT_STATE) &
+ 	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT)) {
+-		printf("SANTONI SDHCI: data verdict: no width or engine moved "
++		printf("WHYRED SDHCI: data verdict: no width or engine moved "
+ 		    "a byte; core inhibited (PRESENT_STATE 0x%08x, INT_STATUS "
+ 		    "0x%08x, last error %d, R1 0x%08x)\n",
+ 		    hc_rd(SDHCI_PRESENT_STATE), hc_rd(SDHCI_INT_STATUS),
+ 		    santoni_data_error, santoni_data_r1);
+-		printf("SANTONI SDHCI: data verdict: BS 0x%04x BC 0x%04x TM "
++		printf("WHYRED SDHCI: data verdict: BS 0x%04x BC 0x%04x TM "
+ 		    "0x%04x SDMA 0x%08x HOST_CONTROL 0x%02x VENDOR_SPEC3 "
+ 		    "0x%08x\n",
+ 		    hc_rd16(SDHCI_BLOCK_SIZE), hc_rd16(SDHCI_BLOCK_COUNT),
+@@ -2972,7 +2971,7 @@
+ 	 */
+ 	if (sdhci_switch_ext_csd(EXT_CSD_HS_TIMING, 0, 0, SDHCI_CTRL_HISPD,
+ 	    "HS_TIMING=0 (legacy, before EXT_CSD)") != 0) {
+-		printf("SANTONI SDHCI: enumeration: HS_TIMING=0 failed; the "
++		printf("WHYRED SDHCI: enumeration: HS_TIMING=0 failed; the "
+ 		    "card may still be in a high-speed timing mode\n");
+ 	}
+ 
+@@ -2984,7 +2983,7 @@
+ 		    attempts[i].value, attempts[i].set, SDHCI_CTRL_BUS_MASK,
+ 		    attempts[i].what);
+ 		if (error) {
+-			printf("SANTONI SDHCI: enumeration: %s failed (%d)\n",
++			printf("WHYRED SDHCI: enumeration: %s failed (%d)\n",
+ 			    attempts[i].what, error);
+ 			last = error;
+ 			continue;
+@@ -3005,7 +3004,7 @@
+ 		 */
+ 		if (sdhci_ext_csd_sane()) {
+ 			*width = lanes;
+-			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
++			printf("WHYRED SDHCI: enumeration: EXT_CSD read works "
+ 			    "at %u-bit (SDMA%s)\n", lanes,
+ 			    error ? ", status error ignored" : "");
+ 			return 0;
+@@ -3014,7 +3013,7 @@
+ 			(void)sdhci_ext_csd_check(lanes, "SDMA");
+ 			error = EIO;
+ 		} else {
+-			printf("SANTONI SDHCI: enumeration: EXT_CSD SDMA read "
++			printf("WHYRED SDHCI: enumeration: EXT_CSD SDMA read "
+ 			    "at %u-bit failed (%d); trying PIO\n", lanes,
+ 			    error);
+ 		}
+@@ -3028,7 +3027,7 @@
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		if (sdhci_ext_csd_sane()) {
+ 			*width = lanes;
+-			printf("SANTONI SDHCI: enumeration: EXT_CSD read works "
++			printf("WHYRED SDHCI: enumeration: EXT_CSD read works "
+ 			    "at %u-bit (PIO%s)\n", lanes,
+ 			    error ? ", status error ignored" : "");
+ 			return 0;
+@@ -3037,7 +3036,7 @@
+ 			(void)sdhci_ext_csd_check(lanes, "PIO");
+ 			error = EIO;
+ 		}
+-		printf("SANTONI SDHCI: enumeration: EXT_CSD unreadable at "
++		printf("WHYRED SDHCI: enumeration: EXT_CSD unreadable at "
+ 		    "%u-bit (%d), trying the next width\n", lanes, error);
+ 		last = error;
+ 	}
+@@ -3072,35 +3071,35 @@
+ 	char pnm[7];
+ 	int error;
+ 
+-	printf("SANTONI SDHCI: enumeration: CMD2 ALL_SEND_CID (R2)\n");
++	printf("WHYRED SDHCI: enumeration: CMD2 ALL_SEND_CID (R2)\n");
+ 	error = sdhci_read_response128(2, 0, cid);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD2 failed (%d)\n", error);
++		printf("WHYRED SDHCI: enumeration: CMD2 failed (%d)\n", error);
+ 		return error;
+ 	}
+-	printf("SANTONI SDHCI: enumeration: CID 0x%08x 0x%08x 0x%08x "
++	printf("WHYRED SDHCI: enumeration: CID 0x%08x 0x%08x 0x%08x "
+ 	    "0x%08x\n", cid[0], cid[1], cid[2], cid[3]);
+ 
+-	printf("SANTONI SDHCI: enumeration: CMD3 SET_RELATIVE_ADDR RCA %u\n",
++	printf("WHYRED SDHCI: enumeration: CMD3 SET_RELATIVE_ADDR RCA %u\n",
+ 	    SANTONI_CARD_RCA);
+ 	error = sdhci_cmd(3, SANTONI_CARD_RCA << 16, 0,
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX, &r1);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD3 failed (%d)\n", error);
++		printf("WHYRED SDHCI: enumeration: CMD3 failed (%d)\n", error);
+ 		return error;
+ 	}
+ 	se.rca = SANTONI_CARD_RCA;
+-	printf("SANTONI SDHCI: enumeration: CMD3 -> R1 0x%08x (state %u)\n",
++	printf("WHYRED SDHCI: enumeration: CMD3 -> R1 0x%08x (state %u)\n",
+ 	    r1, (r1 & SDHCI_R1_STATE_MASK) >> 9);
+ 
+-	printf("SANTONI SDHCI: enumeration: CMD9 SEND_CSD RCA %u (R2)\n",
++	printf("WHYRED SDHCI: enumeration: CMD9 SEND_CSD RCA %u (R2)\n",
+ 	    se.rca);
+ 	error = sdhci_read_response128(9, se.rca << 16, csd);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD9 failed (%d)\n", error);
++		printf("WHYRED SDHCI: enumeration: CMD9 failed (%d)\n", error);
+ 		return error;
+ 	}
+-	printf("SANTONI SDHCI: enumeration: CSD 0x%08x 0x%08x 0x%08x "
++	printf("WHYRED SDHCI: enumeration: CSD 0x%08x 0x%08x 0x%08x "
+ 	    "0x%08x\n", csd[0], csd[1], csd[2], csd[3]);
+ 
+ 	pnm[0] = (char)(cid[0] & 0xff);
+@@ -3115,7 +3114,7 @@
+ 			pnm[i] = '.';
+ 		}
+ 	}
+-	printf("SANTONI SDHCI: eMMC MID 0x%02x CBX 0x%02x OID 0x%02x "
++	printf("WHYRED SDHCI: eMMC MID 0x%02x CBX 0x%02x OID 0x%02x "
+ 	    "PNM \"%s\" rev %u.%u S/N 0x%08x MDT 0x%02x CSD 0x%08x\n",
+ 	    (cid[0] >> 24) & 0xff, (cid[0] >> 16) & 0xff,
+ 	    (cid[0] >> 8) & 0xff, pnm, (cid[2] >> 20) & 0xf,
+@@ -3123,14 +3122,14 @@
+ 	    ((cid[2] & 0xffffu) << 16) | (cid[3] >> 16),
+ 	    (cid[3] >> 8) & 0xff, csd[0]);
+ 
+-	printf("SANTONI SDHCI: enumeration: CMD7 SELECT_CARD RCA %u\n",
++	printf("WHYRED SDHCI: enumeration: CMD7 SELECT_CARD RCA %u\n",
+ 	    se.rca);
+ 	error = sdhci_select_card(se.rca);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD7 failed (%d)\n", error);
++		printf("WHYRED SDHCI: enumeration: CMD7 failed (%d)\n", error);
+ 		return error;
+ 	}
+-	printf("SANTONI SDHCI: enumeration: card selected (TRAN)\n");
++	printf("WHYRED SDHCI: enumeration: card selected (TRAN)\n");
+ 
+ 	/*
+ 	 * CMD7 is the only command that may move the card to Transfer, so ask
+@@ -3141,15 +3140,15 @@
+ 	 */
+ 	error = sdhci_send_status(se.rca, &r1);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD13 after CMD7 failed "
++		printf("WHYRED SDHCI: enumeration: CMD13 after CMD7 failed "
+ 		    "(%d)\n", error);
+ 		return error;
+ 	}
+-	printf("SANTONI SDHCI: enumeration: CMD13 after CMD7 -> R1 0x%08x "
++	printf("WHYRED SDHCI: enumeration: CMD13 after CMD7 -> R1 0x%08x "
+ 	    "(state %u), HOST_CONTROL 0x%02x\n", r1,
+ 	    (r1 & SDHCI_R1_STATE_MASK) >> 9, hc_rd8(SDHCI_HOST_CONTROL));
+ 	if ((r1 & SDHCI_R1_STATE_MASK) != (SDHCI_R1_STATE_TRAN << 9)) {
+-		printf("SANTONI SDHCI: enumeration: card is not in TRAN after "
++		printf("WHYRED SDHCI: enumeration: card is not in TRAN after "
+ 		    "CMD7; an EXT_CSD read would have no data phase\n");
+ 		return EIO;
+ 	}
+@@ -3160,11 +3159,11 @@
+ 	 * Try each plausible width; sdhci_read_pio() also retries every
+ 	 * attempt through SDMA.
+ 	 */
+-	printf("SANTONI SDHCI: enumeration: CMD8 SEND_EXT_CSD "
++	printf("WHYRED SDHCI: enumeration: CMD8 SEND_EXT_CSD "
+ 	    "(512-byte read at 400 kHz)\n");
+ 	error = sdhci_read_ext_csd(&bus_width);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: CMD8 failed (%d): EXT_CSD "
++		printf("WHYRED SDHCI: enumeration: CMD8 failed (%d): EXT_CSD "
+ 		    "unreadable at 1-bit and 8-bit, both PIO and SDMA\n",
+ 		    error);
+ 		return error;
+@@ -3172,23 +3171,23 @@
+ 	dma_sync(SDHCI_BLOCK, TRUE);
+ 	memcpy(&sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
+ 	if (sec_count == 0) {
+-		printf("SANTONI SDHCI: enumeration: EXT_CSD SEC_COUNT is 0; "
++		printf("WHYRED SDHCI: enumeration: EXT_CSD SEC_COUNT is 0; "
+ 		    "CMD8 data is not trustworthy, not switching the bus\n");
+ 		return EIO;
+ 	}
+ 	se.sec_count = sec_count;
+-	printf("SANTONI SDHCI: enumeration: EXT_CSD SEC_COUNT %u "
++	printf("WHYRED SDHCI: enumeration: EXT_CSD SEC_COUNT %u "
+ 	    "(%llu MiB)\n", sec_count,
+ 	    (unsigned long long)((uint64_t)sec_count * SDHCI_BLOCK >> 20));
+ 
+-	printf("SANTONI SDHCI: enumeration: switch GCC to 25 MHz\n");
++	printf("WHYRED SDHCI: enumeration: switch GCC to 25 MHz\n");
+ 	error = sdhci_gcc_set_apps(&santoni_gcc_rates[SANTONI_GCC_RATE_25M]);
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: 25 MHz failed (%d)\n",
++		printf("WHYRED SDHCI: enumeration: 25 MHz failed (%d)\n",
+ 		    error);
+ 		return error;
+ 	}
+-	printf("SANTONI SDHCI: enumeration: CLOCK_CONTROL 0x%04x "
++	printf("WHYRED SDHCI: enumeration: CLOCK_CONTROL 0x%04x "
+ 	    "HOST_CONTROL 0x%02x HOST_CONTROL2 0x%04x\n",
+ 	    hc_rd16(SDHCI_CLOCK_CONTROL), hc_rd8(SDHCI_HOST_CONTROL),
+ 	    hc_rd16(SDHCI_HOST_CONTROL2));
+@@ -3209,7 +3208,7 @@
+ 		bus_width = 8;
+ 	}
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: 8-bit switch failed "
++		printf("WHYRED SDHCI: enumeration: 8-bit switch failed "
+ 		    "(%d); trying 4-bit\n", error);
+ 		error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
+ 		    EXT_CSD_BUS_WIDTH_4, SDHCI_CTRL_4BITBUS,
+@@ -3219,7 +3218,7 @@
+ 		}
+ 	}
+ 	if (error) {
+-		printf("SANTONI SDHCI: enumeration: 4-bit switch failed "
++		printf("WHYRED SDHCI: enumeration: 4-bit switch failed "
+ 		    "(%d); staying 1-bit\n", error);
+ 		error = sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH,
+ 		    EXT_CSD_BUS_WIDTH_1, 0, SDHCI_CTRL_BUS_MASK,
+@@ -3239,7 +3238,7 @@
+ 	}
+ 
+ 	se.enumerated = true;
+-	printf("SANTONI SDHCI: enumeration complete: 25 MHz, %u-bit, "
++	printf("WHYRED SDHCI: enumeration complete: 25 MHz, %u-bit, "
+ 	    "high-speed (HOST_CONTROL 0x%02x)\n", bus_width,
+ 	    hc_rd8(SDHCI_HOST_CONTROL));
+ 	return 0;
+@@ -3260,22 +3259,22 @@
+ 		if (state == 4) {               /* TRAN: usable */
+ 			return 0;
+ 		}
+-		printf("SANTONI SDHCI: card state %u (not TRAN), R1 0x%08x\n",
++		printf("WHYRED SDHCI: card state %u (not TRAN), R1 0x%08x\n",
+ 		    state, *r1);
+ 		if (state == 3) {
+-			printf("SANTONI SDHCI: selecting RCA %u (CMD7)\n",
++			printf("WHYRED SDHCI: selecting RCA %u (CMD7)\n",
+ 			    se.rca);
+ 			if (sdhci_select_card(se.rca) != 0) {
+ 				return EIO;
+ 			}
+ 		} else if (state == 5) {
+-			printf("SANTONI SDHCI: waking RCA %u (CMD5 "
++			printf("WHYRED SDHCI: waking RCA %u (CMD5 "
+ 			    "SLEEP_AWAKE)\n", se.rca);
+ 			if (sdhci_sleep_awake(se.rca, r1) != 0) {
+ 				return EIO;
+ 			}
+ 		} else {
+-			printf("SANTONI SDHCI: no repair for card state %u\n",
++			printf("WHYRED SDHCI: no repair for card state %u\n",
+ 			    state);
+ 			return ENXIO;
+ 		}
+@@ -3320,7 +3319,7 @@
+ 		if (!error) {
+ 			return sdhci_restore_state(&r1);
+ 		}
+-		printf("SANTONI SDHCI: post-enumeration CMD13 failed (%d); "
++		printf("WHYRED SDHCI: post-enumeration CMD13 failed (%d); "
+ 		    "not downgrading the card bus\n", error);
+ 		return ENXIO;
+ 	}
+@@ -3330,12 +3329,12 @@
+ 		if (!error) {
+ 			break;
+ 		}
+-		printf("SANTONI SDHCI: CMD13 with RCA %u got no answer\n",
++		printf("WHYRED SDHCI: CMD13 with RCA %u got no answer\n",
+ 		    candidates[i]);
+ 	}
+ 	if (!error) {
+ 		se.rca = candidates[i];
+-		printf("SANTONI SDHCI: card answered CMD13 on RCA %u "
++		printf("WHYRED SDHCI: card answered CMD13 on RCA %u "
+ 		    "(R1 0x%08x, state %u)\n", se.rca, r1, (r1 >> 9) & 0xf);
+ 		return sdhci_restore_state(&r1);
+ 	}
+@@ -3349,7 +3348,7 @@
+ 	 * cleared LK's pad power bits. Nothing has answered at this point,
+ 	 * so a full restore cannot cost a working card.
+ 	 */
+-	printf("SANTONI SDHCI: rung 3: restoring the controller "
++	printf("WHYRED SDHCI: rung 3: restoring the controller "
+ 	    "(VENDOR_SPEC 0x%08x, CLOCK_CONTROL 0x%04x, POWER_CONTROL 0x%02x, "
+ 	    "HOST_CONTROL 0x%02x, HOST_CONTROL2 0x%04x, TIMEOUT 0x%02x)\n",
+ 	    hc_rd(CORE_VENDOR_SPEC), hc_rd16(SDHCI_CLOCK_CONTROL),
+@@ -3358,16 +3357,16 @@
+ 	if (sdhci_restore_controller() == 0) {
+ 		if (sdhci_send_status(SANTONI_CARD_RCA, &r1) == 0) {
+ 			se.rca = SANTONI_CARD_RCA;
+-			printf("SANTONI SDHCI: CMD13 answers on RCA %u after "
++			printf("WHYRED SDHCI: CMD13 answers on RCA %u after "
+ 			    "the controller restore (R1 0x%08x, state %u)\n",
+ 			    se.rca, r1, (r1 >> 9) & 0xf);
+ 			return sdhci_restore_state(&r1);
+ 		}
+-		printf("SANTONI SDHCI: rung 3: still no CMD13 after a full "
++		printf("WHYRED SDHCI: rung 3: still no CMD13 after a full "
+ 		    "controller restore; the card may have lost VCC/RST_n and "
+ 		    "need CMD0 re-enumeration\n");
+ 	} else {
+-		printf("SANTONI SDHCI: rung 3: controller restore failed, "
++		printf("WHYRED SDHCI: rung 3: controller restore failed, "
+ 		    "continuing with the card-state rungs\n");
+ 	}
+ 
+@@ -3382,13 +3381,13 @@
+ 			(void)sdhci_reset_paths();
+ 			continue;
+ 		}
+-		printf("SANTONI SDHCI: CMD5 awake RCA %u -> R1 0x%08x\n",
++		printf("WHYRED SDHCI: CMD5 awake RCA %u -> R1 0x%08x\n",
+ 		    candidates[i], r1);
+ 		se.rca = candidates[i];
+ 		if (sdhci_send_status(se.rca, &r1) != 0) {
+ 			continue;
+ 		}
+-		printf("SANTONI SDHCI: CMD13 after wake-up (R1 0x%08x, "
++		printf("WHYRED SDHCI: CMD13 after wake-up (R1 0x%08x, "
+ 		    "state %u)\n", r1, (r1 >> 9) & 0xf);
+ 		return sdhci_restore_state(&r1);
+ 	}
+@@ -3400,10 +3399,10 @@
+ 	 * the card from Idle is a later patch, not this one.
+ 	 */
+ 	if (sdhci_cmd(0, 0, 0, 0, NULL) == 0) {
+-		printf("SANTONI SDHCI: CMD0 completed: the command path shifts, "
++		printf("WHYRED SDHCI: CMD0 completed: the command path shifts, "
+ 		    "but no addressed command answered\n");
+ 	} else {
+-		printf("SANTONI SDHCI: CMD0 did not complete either: no SDCLK "
++		printf("WHYRED SDHCI: CMD0 did not complete either: no SDCLK "
+ 		    "reaches the card\n");
+ 	}
+ 	return ENXIO;
+@@ -3436,19 +3435,19 @@
+ 		hs_timing = *(const uint8_t *)(se.dma + DMA_BOUNCE + 185);
+ 
+ 		if (verify_sec_count == expected_sec_count && hs_timing == 1) {
+-			printf("SANTONI SDHCI: DAT[7:0] 8-bit HS verified "
++			printf("WHYRED SDHCI: DAT[7:0] 8-bit HS verified "
+ 			    "(SEC_COUNT %u, HS_TIMING %u)\n",
+ 			    verify_sec_count, hs_timing);
+ 			return 0;
+ 		}
+-		printf("SANTONI SDHCI: EXT_CSD mismatch at 8-bit HS (got %u vs %u, HS=%u)\n",
++		printf("WHYRED SDHCI: EXT_CSD mismatch at 8-bit HS (got %u vs %u, HS=%u)\n",
+ 		    verify_sec_count, expected_sec_count, hs_timing);
+ 	} else {
+-		printf("SANTONI SDHCI: EXT_CSD read failed at 8-bit HS (%d)\n", error);
++		printf("WHYRED SDHCI: EXT_CSD read failed at 8-bit HS (%d)\n", error);
+ 	}
+ 
+ 	/* Fallback 1: Disable Host High-Speed edge mode & revert card HS_TIMING=0 */
+-	printf("SANTONI SDHCI: rolling back HS_TIMING to legacy edge at 25 MHz\n");
++	printf("WHYRED SDHCI: rolling back HS_TIMING to legacy edge at 25 MHz\n");
+ 	(void)sdhci_switch_ext_csd(EXT_CSD_HS_TIMING, 0, 0, SDHCI_CTRL_HISPD, "HS_TIMING=0");
+ 
+ 	dma_sync(SDHCI_BLOCK, TRUE);
+@@ -3457,14 +3456,14 @@
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		memcpy(&verify_sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
+ 		if (verify_sec_count == expected_sec_count) {
+-			printf("SANTONI SDHCI: DAT[7:0] 8-bit legacy edge verified (SEC_COUNT %u)\n",
++			printf("WHYRED SDHCI: DAT[7:0] 8-bit legacy edge verified (SEC_COUNT %u)\n",
+ 			    verify_sec_count);
+ 			return 0;
+ 		}
+ 	}
+ 
+ 	/* Fallback 2: Drop from 8-bit to 4-bit bus width */
+-	printf("SANTONI SDHCI: rolling back bus width to 4-bit\n");
++	printf("WHYRED SDHCI: rolling back bus width to 4-bit\n");
+ 	(void)sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_4,
+ 	    SDHCI_CTRL_4BITBUS, SDHCI_CTRL_BUS_MASK, "BUS_WIDTH=4");
+ 
+@@ -3474,14 +3473,14 @@
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		memcpy(&verify_sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
+ 		if (verify_sec_count == expected_sec_count) {
+-			printf("SANTONI SDHCI: 4-bit bus verified (SEC_COUNT %u)\n",
++			printf("WHYRED SDHCI: 4-bit bus verified (SEC_COUNT %u)\n",
+ 			    verify_sec_count);
+ 			return 0;
+ 		}
+ 	}
+ 
+ 	/* Fallback 3: one DAT line, legacy edge. */
+-	printf("SANTONI SDHCI: rolling back bus width to 1-bit\n");
++	printf("WHYRED SDHCI: rolling back bus width to 1-bit\n");
+ 	(void)sdhci_switch_ext_csd(EXT_CSD_BUS_WIDTH, EXT_CSD_BUS_WIDTH_1, 0,
+ 	    SDHCI_CTRL_BUS_MASK, "BUS_WIDTH=1");
+ 
+@@ -3491,7 +3490,7 @@
+ 		dma_sync(SDHCI_BLOCK, TRUE);
+ 		memcpy(&verify_sec_count, (const void *)(se.dma + DMA_BOUNCE + 212), 4);
+ 		if (verify_sec_count == expected_sec_count) {
+-			printf("SANTONI SDHCI: 1-bit bus verified (SEC_COUNT %u)\n",
++			printf("WHYRED SDHCI: 1-bit bus verified (SEC_COUNT %u)\n",
+ 			    verify_sec_count);
+ 			return 0;
+ 		}
+@@ -3506,7 +3505,7 @@
+ 		return EINVAL;
+ 	}
+ 	if (se.sec_count && lba + (uint64_t)count > se.sec_count) {
+-		printf("SANTONI SDHCI: refusing read of %u blocks at 0x%llx "
++		printf("WHYRED SDHCI: refusing read of %u blocks at 0x%llx "
+ 		    "(device has %u sectors)\n", count, (unsigned long long)lba,
+ 		    se.sec_count);
+ 		return EINVAL;
+@@ -3531,7 +3530,7 @@
+ 		goto refuse;
+ 	}
+ 	if (se.sec_count && lba + (uint64_t)count > se.sec_count) {
+-		printf("SANTONI SDHCI: refusing write of %u blocks at 0x%llx "
++		printf("WHYRED SDHCI: refusing write of %u blocks at 0x%llx "
+ 		    "(device has %u sectors)\n", count, (unsigned long long)lba,
+ 		    se.sec_count);
+ 		return EINVAL;
+@@ -3539,7 +3538,7 @@
+ 	return sdhci_write_pio((uint32_t)lba, count, buf);
+ 
+ refuse:
+-	printf("SANTONI SDHCI: refusing write of %u blocks at 0x%llx "
++	printf("WHYRED SDHCI: refusing write of %u blocks at 0x%llx "
+ 	    "(outside \"%s\")\n", count, (unsigned long long)lba, se.part);
+ 	return EPERM;
+ }
+@@ -3611,19 +3610,19 @@
+ 		return error;
+ 	}
+ 	if (memcmp(b, "EFI PART", 8) != 0) {
+-		printf("SANTONI SDHCI: eMMC has no GPT\n");
++		printf("WHYRED SDHCI: eMMC has no GPT\n");
+ 		return ENXIO;
+ 	}
+ 	memcpy(&hdr, b, sizeof(hdr));
+ 	if (hdr.header_size < sizeof(hdr) || hdr.header_size > SDHCI_BLOCK) {
+-		printf("SANTONI SDHCI: bad GPT header size %u\n", hdr.header_size);
++		printf("WHYRED SDHCI: bad GPT header size %u\n", hdr.header_size);
+ 		return EINVAL;
+ 	}
+ 	/* header_crc32 lives at offset 16 of the header */
+ 	memcpy(hdr_raw, b, SDHCI_BLOCK);
+ 	memset(hdr_raw + 16, 0, 4);
+ 	if (santoni_crc32(hdr_raw, hdr.header_size) != hdr.header_crc32) {
+-		printf("SANTONI SDHCI: GPT header CRC32 mismatch "
++		printf("WHYRED SDHCI: GPT header CRC32 mismatch "
+ 		    "(stored 0x%08x)\n", hdr.header_crc32);
+ 		return EBADMSG;
+ 	}
+@@ -3631,7 +3630,7 @@
+ 	esz = hdr.sizeof_partition_entry;
+ 	nent = hdr.num_partition_entries;
+ 	if (esz != 128 || nent == 0 || nent > BOUNCE_SIZE / esz) {
+-		printf("SANTONI SDHCI: unsupported GPT entries %u x %u\n", nent, esz);
++		printf("WHYRED SDHCI: unsupported GPT entries %u x %u\n", nent, esz);
+ 		return ENXIO;
+ 	}
+ 	entry_lba = hdr.partition_entry_lba;
+@@ -3642,7 +3641,7 @@
+ 		return error;
+ 	}
+ 	if (santoni_crc32(b, entry_bytes) != hdr.partition_entry_array_crc32) {
+-		printf("SANTONI SDHCI: GPT entry array CRC32 mismatch "
++		printf("WHYRED SDHCI: GPT entry array CRC32 mismatch "
+ 		    "(stored 0x%08x)\n", hdr.partition_entry_array_crc32);
+ 		return EBADMSG;
+ 	}
+@@ -3667,7 +3666,7 @@
+ 		memcpy(&first, e + 32, 8);
+ 		memcpy(&last, e + 40, 8);
+ 		if (last < first) {
+-			printf("SANTONI SDHCI: GPT entry \"%s\" has inverted "
++			printf("WHYRED SDHCI: GPT entry \"%s\" has inverted "
+ 			    "bounds 0x%llx..0x%llx\n", name,
+ 			    (unsigned long long)last, (unsigned long long)first);
+ 			return ENXIO;
+@@ -3685,7 +3684,7 @@
+ 		}
+ 	}
+ 	if (!root_found) {
+-		printf("SANTONI SDHCI: no GPT partition named \"%s\"\n", want);
++		printf("WHYRED SDHCI: no GPT partition named \"%s\"\n", want);
+ 		return ENOENT;
+ 	}
+ 
+@@ -3699,7 +3698,7 @@
+ 		/* Equality is not enough: a double-booked or nested "system"
+ 		 * entry would put log writes on the mounted root. */
+ 		if (sys_first < root_end && se.first_block < sys_end) {
+-			printf("SANTONI SDHCI: \"system\" (0x%llx..0x%llx) "
++			printf("WHYRED SDHCI: \"system\" (0x%llx..0x%llx) "
+ 			    "overlaps \"%s\" (0x%llx..0x%llx): persistent log "
+ 			    "disabled\n",
+ 			    (unsigned long long)sys_first,
+@@ -3712,7 +3711,7 @@
+ 			se.log_ok = true;
+ 		}
+ 	} else if (sys_found) {
+-		printf("SANTONI SDHCI: \"system\" too small for the log "
++		printf("WHYRED SDHCI: \"system\" too small for the log "
+ 		    "(%llu sectors, need %u)\n",
+ 		    (unsigned long long)sys_count, SANTONI_LOG_SYSTEM_BLOCKS);
+ 	}
+@@ -3747,7 +3746,7 @@
+ 	    lba + (uint64_t)count >
+ 	    se.sys_first_block + SANTONI_LOG_SYSTEM_BLOCKS ||
+ 	    lba > UINT32_MAX) {
+-		printf("SANTONI SDHCI: refusing log write of %u blocks at "
++		printf("WHYRED SDHCI: refusing log write of %u blocks at "
+ 		    "0x%llx (SYSTEM log is 0x%llx..0x%llx)\n", count,
+ 		    (unsigned long long)lba,
+ 		    (unsigned long long)se.sys_first_block,
+@@ -4113,11 +4112,11 @@
+ 	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 2 * sizeof(uintptr_t)) {
+-		printf("SANTONI SDHCI: no /santoni-sdhci node in the device tree\n");
++		printf("WHYRED SDHCI: no /santoni-sdhci node in the device tree\n");
+ 		return ENXIO;
+ 	}
+ 	if (reg[1] < 0x1000) {
+-		printf("SANTONI SDHCI: /santoni-sdhci reg window too small "
++		printf("WHYRED SDHCI: /santoni-sdhci reg window too small "
+ 		    "(0x%llx)\n", (unsigned long long)reg[1]);
+ 		return ENXIO;
+ 	}
+@@ -4136,13 +4135,13 @@
+ 	 */
+ 	se.gcc = ml_io_map(GCC_SDCC1_APPS_PHYS, GCC_SDCC1_APPS_SIZE);
+ 	if (se.gcc == 0) {
+-		printf("SANTONI SDHCI: no mapping for GCC sdcc1_apps\n");
++		printf("WHYRED SDHCI: no mapping for GCC sdcc1_apps\n");
+ 		return ENXIO;
+ 	}
+ 	if (kmem_alloc_contig(kernel_map, &se.dma, BOUNCE_SIZE, PAGE_MASK, 0, 0,
+ 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) !=
+ 	    KERN_SUCCESS) {
+-		printf("SANTONI SDHCI: no contiguous bounce buffer\n");
++		printf("WHYRED SDHCI: no contiguous bounce buffer\n");
+ 		return ENOMEM;
+ 	}
+ 	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)se.dma);
+@@ -4181,7 +4180,7 @@
+ 		    hc_rd16(SDHCI_HOST_CONTROL2), hc_rd(SDHCI_INT_STATUS),
+ 		    (unsigned long long)(se.last_cmd_ns / 1000),
+ 		    santoni_lba0_note);
+-		printf("SANTONI SDHCI: probe failed: %s\n", santoni_fail_text);
++		printf("WHYRED SDHCI: probe failed: %s\n", santoni_fail_text);
+ 		return error;
+ 	}
+ 
+@@ -4200,14 +4199,14 @@
+ 	    GID_OPERATOR, 0640, "remmcroot0");
+ 	se.ready = true;
+ 	if (se.sys_nblocks) {
+-		printf("SANTONI SDHCI: \"system\" first block 0x%llx, %llu MiB%s\n",
++		printf("WHYRED SDHCI: \"system\" first block 0x%llx, %llu MiB%s\n",
+ 		    (unsigned long long)se.sys_first_block,
+ 		    (unsigned long long)(se.sys_nblocks * SDHCI_BLOCK >> 20),
+ 		    se.sys_nblocks >= SANTONI_LOG_SYSTEM_BLOCKS ?
+ 		    " (console log area available)" :
+ 		    " (too small for the console log)");
+ 	}
+-	printf("SANTONI SDHCI: \"%s\" first block 0x%llx, %llu MiB, %s\n",
++	printf("WHYRED SDHCI: \"%s\" first block 0x%llx, %llu MiB, %s\n",
+ 	    se.part, (unsigned long long)se.first_block,
+ 	    (unsigned long long)(se.nblocks * SDHCI_BLOCK >> 20),
+ 	    se.writable ? "writable (emmcrw=1)" : "read-only");
+@@ -4283,7 +4282,7 @@
+ 	uint64_t flushed = 0, seq = 0;
+ 	uint8_t bounce[SDHCI_BLOCK];
+ 
+-	printf("SANTONI LOG: console log flusher active on SYSTEM partition "
++	printf("WHYRED LOG: console log flusher active on SYSTEM partition "
+ 	    "(block 0x%llx..0x%llx, %u KiB)\n",
+ 	    (unsigned long long)base,
+ 	    (unsigned long long)(base + SANTONI_LOG_BLOCKS - 1),
+@@ -4326,7 +4325,7 @@
+ 			error = santoni_sdhci_write_log_blocks(base, 1, bounce);
+ 		}
+ 		if (error) {
+-			printf("SANTONI LOG: write failed (%d), stopping "
++			printf("WHYRED LOG: write failed (%d), stopping "
+ 			    "flusher\n", error);
+ 			return;
+ 		}
+@@ -4388,4 +4387,4 @@
+ 	return 0;
+ }
+ 
+-#endif /* ARM64_BOARD_CONFIG_SANTONI || ARM64_BOARD_CONFIG_LAVENDER */
++#endif /* ARM64_BOARD_CONFIG_WHYRED || ARM64_BOARD_CONFIG_LAVENDER */
+--- a/tools/santoni-init.S
++++ b/tools/santoni-init.S
+@@ -1,5 +1,5 @@
+ /*
+- * First userspace program for SANTONI bring-up: mockfs serves the RAM disk
++ * First userspace program for WHYRED bring-up: mockfs serves the RAM disk
+  * itself as /sbin/launchd, so this static binary is PID 1. It proves that
+  * exec, the user/kernel boundary, devfs and the console all work on the
+  * Cortex-A53 target, then stays alive (init exiting panics the kernel).
+@@ -247,22 +247,22 @@
+ 	.asciz	"/dev/console"
+ hello:
+ 	.ascii	"\n========================================\n"
+-	.ascii	"*** SANTONI userspace: init running as PID "
++	.ascii	"*** WHYRED userspace: init running as PID "
+ hello_tail:
+ 	.ascii	" ***\n"
+ alive:
+-	.ascii	"SANTONI init: still alive (tick)\n"
++	.ascii	"WHYRED init: still alive (tick)\n"
+ alive_end:
+ emmc_path:
+ 	.asciz	"/dev/remmcroot0"
+ emmc_msg:
+-	.ascii	"SANTONI userspace: read eMMC LBA 0: ["
++	.ascii	"WHYRED userspace: read eMMC LBA 0: ["
+ emmc_msg_end:
+ emmc_tail:
+ 	.ascii	"]\n"
+ emmc_tail_end:
+ vh_msg:
+-	.ascii	"SANTONI userspace: volume header at 1024: 0x"
++	.ascii	"WHYRED userspace: volume header at 1024: 0x"
+ vh_msg_end:
+ vh_hfs:
+ 	.ascii	" (H+ HFS+ volume)\n"

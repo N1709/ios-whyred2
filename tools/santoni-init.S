@@ -1,5 +1,5 @@
 /*
- * First userspace program for SANTONI bring-up: mockfs serves the RAM disk
+ * First userspace program for WHYRED bring-up: mockfs serves the RAM disk
  * itself as /sbin/launchd, so this static binary is PID 1. It proves that
  * exec, the user/kernel boundary, devfs and the console all work on the
  * Cortex-A53 target, then stays alive (init exiting panics the kernel).
@@ -247,22 +247,22 @@ path:
 	.asciz	"/dev/console"
 hello:
 	.ascii	"\n========================================\n"
-	.ascii	"*** SANTONI userspace: init running as PID "
+	.ascii	"*** WHYRED userspace: init running as PID "
 hello_tail:
 	.ascii	" ***\n"
 alive:
-	.ascii	"SANTONI init: still alive (tick)\n"
+	.ascii	"WHYRED init: still alive (tick)\n"
 alive_end:
 emmc_path:
 	.asciz	"/dev/remmcroot0"
 emmc_msg:
-	.ascii	"SANTONI userspace: read eMMC LBA 0: ["
+	.ascii	"WHYRED userspace: read eMMC LBA 0: ["
 emmc_msg_end:
 emmc_tail:
 	.ascii	"]\n"
 emmc_tail_end:
 vh_msg:
-	.ascii	"SANTONI userspace: volume header at 1024: 0x"
+	.ascii	"WHYRED userspace: volume header at 1024: 0x"
 vh_msg_end:
 vh_hfs:
 	.ascii	" (H+ HFS+ volume)\n"

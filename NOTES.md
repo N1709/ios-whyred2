@@ -1,5 +1,25 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0167 (2026-10-26): the log says WHYRED; the userspace read returned
+
+- **The 0165 boot is confirmed stable, not hung.** On hardware the 5 s tick
+  keeps printing (`WHYRED init: still alive (tick)` after the rename), so the
+  userspace read of `/dev/remmcroot0` returned, the driver stayed alive and
+  PID 1 kept running. The paste simply ended at `card selected (TRAN)`.
+- **0167
+  (`xnu/patches/0167-sdhci-log-prefix-is-whyred.patch`).** Every human-visible
+  `SANTONI ...` prefix in `bsd/dev/santoni_sdhci.c` and
+  `tools/santoni-init.S` is now `WHYRED ...` (194 + 5 strings). Internal
+  identifiers are untouched on purpose: `SANTONI_LOG_SIZE`,
+  `SANTONI_CARD_RCA`, `SANTONILOG1` (the on-disk log magic) and the file
+  names stay, so every earlier patch still applies and old logs still decode.
+  The one `IOLog("SANTONI: eMMC probe failed ...")` in
+  `iokit/bsddev/IOKitBSDInit.cpp` is not renamed yet (it needs a hunk against
+  a file that is not kept in this tree); the driver prefix is what the boot
+  log is full of.
+- **Banner:** `driver 0167 (log prefix is WHYRED; the eMMC path is unchanged
+  from 0166)`.
+
 ## 0166 (2026-10-26): the eMMC wall is down - 8-bit HS and the GPT are real
 
 - **0165 ran on hardware and finished enumeration.** The pasted log:
