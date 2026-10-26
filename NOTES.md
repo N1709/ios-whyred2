@@ -1,5 +1,44 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 2026-10-26 (boot log): HFSX root mounted from eMMC, launchd killed by code signing
+
+A whyred boot reported (build labelled `driver 0160`):
+
+- `WHYRED SDHCI: "userdata" first block 0x1360000, 49719 MiB, writable (emmcry=1)`
+- `BSD root: emmcroot0, major 2, minor 0`
+- `hfs: mounted iOSRoot on device b(2, 0)`
+- `SWEET: root volume is not authenticated (error 25); continuing unsealed`
+- `load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development`
+  then `/sbin/launchd`
+- `SWEET EARLY PANIC: unexpected SIGKILL of launchd (CS_KILLED) with reason --
+  namespace 9 code 0xe description none`
+
+**What this proves.** The block layer carries a whole HFSX volume: GPT,
+partition offset `0x1360000`, HFS+ mount, journal replay and a real `launchd`
+exec. That means 8-bit high-speed reads, the multi-block path (`CMD18` +
+`AUTO_CMD12`) and the write path all worked at least once on hardware. The
+eMMC mount is no longer the blocker.
+
+**New blocker: code signing.** `CS_KILLED` is the flag the kernel sets when it
+kills a task for code-signing invalidity; namespace 9 is codesigning. Two
+candidates, and the log does not distinguish them:
+
+1. page-hash validation (`cs_invalid_page()`) failed - bad data read from the
+   volume, or the pages do not match the signature's code directory;
+2. the AMFI/trust-cache policy rejected the binary (no Image4; `TrustCache`
+   stays at version 0; `sweet_amfi_vnode_check_signature` marks only root-fs
+   binaries as platform binaries).
+
+`cs_invalid_page()` prints a `CODE SIGNING:` line naming the vnode/page only
+when `cs_debug` is on, and this log has none. **Next boot: add `cs_debug=1`**
+and read that line; it separates (1) from (2) without guessing.
+
+**Build identity caveat.** The banner in that log
+(`SDCC v4 is present`, `driver 0160 (root "userdata", writes enabled; boot args
+decide ...)`) appears nowhere in this branch (`git log -S` finds no such
+text), so the image was built from another tree. The hardware result is real;
+the source has to be reconciled before the fix is attributed to this branch.
+
 ## 0168 (2026-10-26): root staged in userdata, boot from eMMC
 
 - **0167 ran on hardware and the two fixes are confirmed.**

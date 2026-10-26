@@ -15,23 +15,24 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 | Boot | Stock Xiaomi ABL → `fastboot boot` of our shim (boot image v0/v1) → XNU. Boot partitions are not touched |
 | CPU | The four Cortex-A73 ("Gold", MPIDR `0x100`–`0x103`) cores, 16K pages, GICv3, timers. The Silver cores are parked |
 | Memory | DRAM physical base `0x80000000`, safe kernel budget `0xa0000000` + 1 GiB |
-| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110). Enumeration is complete at **8-bit high-speed** (CMD6 BUS_WIDTH=8 + HS_TIMING=1), EXT_CSD is valid (122,142,720 sectors = 58.2 GiB), the GPT is parsed, and userspace can read `/dev/remmcroot0`. The write path exists but is untested (`emmcrw=1`) |
-| iOS userland | iPhone X 16.7.16 root filesystem; the ramdisk `init` runs as PID 1, and the HFSX root (16.0 GiB, `HX`/`HFSJ`) is now staged in userdata. Booting `launchd` from eMMC is the next test |
+| Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110) at **8-bit high-speed** (CMD6 BUS_WIDTH=8 + HS_TIMING=1), EXT_CSD valid (122,142,720 sectors = 58.2 GiB), GPT parsed. A 16.0 GiB HFSX volume in `userdata` **mounts read-write** as `emmcroot0`; single-block and multi-block (`CMD18`/`CMD25` + `AUTO_CMD12`) transfers and the HFS+ journal replay have all run on hardware |
+| iOS userland | iPhone X 16.7.16 root filesystem on eMMC; `launchd` is loaded from the HFSX root and starts. It is then killed by code signing (`CS_KILLED`), so the root volume is mounted but not yet trusted |
 | Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## Progress
 
-Last updated 2026-10-26 (patch `0168`, image 0167 verified in CI).
+Last updated 2026-10-26 (HFSX root mounted from eMMC; `launchd` killed by `CS_KILLED`).
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s |
-| eMMC command and data path | **90%** | 0165-0167: EXT_CSD at 1-bit PIO, CMD6 8-bit + HS, GPT, 58.2 GiB, userspace block reads. Write path implemented but never used on hardware |
-| Root filesystem from eMMC (`launchd`, real daemons) | **55%** | HFSX root (16.0 GiB, `HX`/`HFSJ`) is staged in userdata; `rd=emmcroot0` mount and `launchd` from eMMC are not yet verified |
+| eMMC command, data and mount path | **95%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, PIO single- and multi-block, journal replay, HFSX mounted read-write. Only repeated boots and heavy I/O are unproven |
+| Root filesystem from eMMC (`launchd`, real daemons) | **85%** | `BSD root: emmcroot0` + `hfs: mounted iOSRoot` + `launchd` exec verified on hardware. Blocked at code signing, not at storage |
+| Code signing / AMFI (trust cache, entitlements) | **40%** | Built-in AMFI stand-in registers and grants XML entitlements, but `launchd` dies with `CS_KILLED`; `cs_debug=1` is the next measurement |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
-| **Kernel readiness for an eMMC boot** | **~70%** | Storage reads are proven; mount, writes and repeated boots are not |
-| **Overall port (weighted)** | **~65%** | Kernel and userspace are far ahead of the periphery |
+| **Kernel readiness for an eMMC boot** | **~80%** | Mount and launchd exec are proven; signing, stable re-boots and the peripherals remain |
+| **Overall port (weighted)** | **~70%** | Storage caught up with the kernel; signing and peripherals are now the gap |
 
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.
