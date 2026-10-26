@@ -58,6 +58,14 @@ data is self-consistent and the kernel is reading a different page, a
 different slide entry, or a different index base - exactly what the `entry`,
 `file` and `w[]` fields in the 0173 line distinguish.
 
+**Built image (2026-10-26):** `/home/n1709/whyred-0173.img`, 5,857,280 B
+(ABL limit 6,291,456), sha256
+`8dbf93f0122e6f56020e70c8b8ed29702238e031391345885273e3cbe3dced8e`, from CI
+run `40354348274` (kernel `0ed7e0d`, sha256
+`7421891c415d850b533f018a41de26755ccdf4e73a1bdcaea83db2cde9680175`, verified
+`driver 0173` / `CSPAGE` / `slide fail v%u idx %u entry`). Boot it with
+`fastboot boot /home/n1709/whyred-0173.img`.
+
 **Next:** boot the 0173 image, `grep -E "driver 0173|CODE SIGNING: (CD|CSBLOB|
 CSPAGE)|SHARED CACHE"` the log, then match the printed words against the root
 image with the offsets in `/tmp/opencode` scripts (root
