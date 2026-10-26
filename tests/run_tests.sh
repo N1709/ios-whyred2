@@ -582,6 +582,17 @@ python3 tools/check_patch.py xnu/patches/0037-sweet-config-bindfs.patch -q \
 	--added-contains 'config/MASTER.arm64.sweet:nullfs bindfs'
 echo "ok   0171 enables bindfs so mount-phase-1 can bind the preboot paths"
 
+echo "== CACHE: 0172 skips the AMFI service the kernel does not provide =="
+P172="xnu/patches/0172-sdhci-name-the-unsecure-cache-build.patch"
+python3 tools/check_patch.py "$P172" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0172' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0171'
+# launchd_cache_loader aborts with "Unable to find AMFI" (namespace 7,
+# subcode 0x1) after mount-phase-1. The iOS 16 binary accepts this boot-arg
+# and skips both the signature push and the AMFI connection.
+grep -q 'launchd_unsecure_cache=1' .github/workflows/xnu.yml
+echo "ok   0172 passes launchd_unsecure_cache=1 for the cache loader"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

@@ -1,5 +1,40 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0171 boot (2026-10-26): bindfs fixed mount; launchd_cache_loader wants AMFI
+
+**Confirmed on hardware** (image `d1f65604...da4e`): with `bindfs` in the
+whyred config the boot no longer stops at `mount-phase-1`. The panic now is
+
+```
+SWEET EARLY PANIC: launchd_cache_loader[23] exited -- exit reason namespace 7
+subcode 0x1 description: unable to find AMFI
+```
+
+`launchd_cache_loader` runs after the boot-task chain, so `mount-phase-1`,
+`mount-phase-2`, the required `fips`/`cc_fips_test` and the tasks before it
+all exited successfully (`RequireSuccess`/`RequireRun` would have panicked
+otherwise). The ENODEV theory was right and the mount blocker is gone.
+
+**New blocker.** The cache loader validates `/System/Library/xpc/
+launchd.plist`, then does `IOServiceGetMatchingService(
+"AppleMobileFileIntegrity")`, `IOServiceOpen` type 0 and selector 6 to push
+the cdhash into the trust cache. This kernel implements the AMFI MAC policy
+(`SWEET AMFI` in `bsd/kern/sweet_amfi.c`) but registers no
+`AppleMobileFileIntegrity` IOKit service, so the lookup fails and the process
+aborts with namespace 7 subcode 0x1. It is not a page-hash failure.
+
+**Fix for 0172.** The iOS 16 `/usr/libexec/launchd_cache_loader` contains the
+`launchd_unsecure_cache=` boot argument and the string `Using unsecure
+cache: %s`; with it the loader skips the signature push and the AMFI lookup.
+The lavender tree used exactly this at the same stage (`launchd_unsecure_cache
+=1` -> daemons started). 0172 adds it to `EXTRA_CMDLINE` and bumps the banner
+to `driver 0172`. Building a real `AppleMobileFileIntegrity` stub is left for
+later; the tunable only affects the launchd cache path.
+
+**Progress:** root/boot tasks 91%, code signing 60% (unchanged: the cache
+signature is being skipped, not verified), kernel readiness ~87%, overall
+~75%.
+
 ## 0171 (patch ready, awaiting CI): bindfs for the lavender/whyred config
 
 **Why mount-phase-1 failed on 0170.** `/sbin/mount` bind-mounts the preboot

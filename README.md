@@ -22,20 +22,20 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-26 (build `0170` boots iOS `launchd` from eMMC and stops at
-`mount-phase-1`; build `0171` adds the missing `bindfs` to the lavender/whyred
-filesystem list so that job can attach the preboot firmware paths, awaiting a
-boot).
+Last updated 2026-10-26 (build `0171` fixed `mount-phase-1` with `bindfs` and
+the boot now reaches `launchd_cache_loader`, which stops because the kernel has
+no `AppleMobileFileIntegrity` service; build `0172` passes
+`launchd_unsecure_cache=1`, awaiting a boot).
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s |
 | eMMC command, data and mount path | **95%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, PIO single- and multi-block, journal replay, HFSX mounted read-write. Only repeated boots and heavy I/O are unproven |
-| Root filesystem from eMMC (`launchd`, real daemons) | **88%** | `launchd` really runs as PID 1 (Version 7.0.0), `fsck` and `mount-phase-1` boot tasks execute. `mount-phase-1` fails with `ENODEV` because the kernel lacks `bindfs`; `0171` adds it and is waiting for a boot |
-| Code signing / AMFI (trust cache, entitlements) | **60%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec (`exec launchd`, `exec fsck`, `exec mount`). Trust cache is still unavailable and page hashes are not exercised yet; no code-signing kill has occurred |
+| Root filesystem from eMMC (`launchd`, real daemons) | **91%** | `launchd` runs as PID 1; with `bindfs` in `0171` the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exits successfully up to `launchd_cache_loader` |
+| Code signing / AMFI (trust cache, entitlements) | **60%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec. There is still no `AppleMobileFileIntegrity` IOKit service, so `launchd_cache_loader` aborts until `launchd_unsecure_cache=1` skips it in `0172`; trust cache and page hashes remain |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
-| **Kernel readiness for an eMMC boot** | **~85%** | Mount, platform-binary exec and the first launchd boot tasks are proven; single-volume Preboot/mount policy, stable re-boots and the peripherals remain |
-| **Overall port (weighted)** | **~73%** | iOS userspace now starts; the Preboot/mount handoff and the peripherals are the gap |
+| **Kernel readiness for an eMMC boot** | **~87%** | Mount, bind mounts, platform-binary exec and the full boot-task chain are proven; the launchd cache/AMFI path, stable re-boots and the peripherals remain |
+| **Overall port (weighted)** | **~75%** | iOS userspace now gets through the mount phase; the launchd cache/AMFI path and the peripherals are the gap |
 
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.
