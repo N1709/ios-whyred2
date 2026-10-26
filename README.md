@@ -22,19 +22,19 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-26 (HFSX root mounted from eMMC; `launchd` was killed by
-`EXEC_EXIT_REASON_WRONG_PLATFORM`; build `0170` passes
-`unentitled_ios_sim_launch=1`, awaiting a boot).
+Last updated 2026-10-26 (build `0170` boots iOS `launchd` from eMMC; the next
+blocker is `mount-phase-1` trying to mount `usr/standalone/firmware` from a
+Preboot volume that a single HFSX root does not have).
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s |
 | eMMC command, data and mount path | **95%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, PIO single- and multi-block, journal replay, HFSX mounted read-write. Only repeated boots and heavy I/O are unproven |
-| Root filesystem from eMMC (`launchd`, real daemons) | **85%** | `BSD root: emmcroot0` + `hfs: mounted iOSRoot` + `launchd` exec verified on hardware. Blocked at code signing, not at storage |
-| Code signing / AMFI (trust cache, entitlements) | **40%** | Built-in AMFI stand-in registers and grants XML entitlements. The `launchd` kill is decoded: `OS_REASON_EXEC` / code `0xe` = `EXEC_EXIT_REASON_WRONG_PLATFORM`, fixed by the `unentitled_ios_sim_launch=1` boot arg in `0170` (not yet confirmed on hardware) |
+| Root filesystem from eMMC (`launchd`, real daemons) | **88%** | `launchd` really runs as PID 1 (Version 7.0.0), `fsck` and `mount-phase-1` boot tasks execute. Blocked at `mount-phase-1`, not at storage or exec |
+| Code signing / AMFI (trust cache, entitlements) | **60%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec (`exec launchd`, `exec fsck`, `exec mount`). Trust cache is still unavailable and page hashes are not exercised yet; no code-signing kill has occurred |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
-| **Kernel readiness for an eMMC boot** | **~80%** | Mount and launchd exec are proven; signing, stable re-boots and the peripherals remain |
-| **Overall port (weighted)** | **~70%** | Storage caught up with the kernel; signing and peripherals are now the gap |
+| **Kernel readiness for an eMMC boot** | **~85%** | Mount, platform-binary exec and the first launchd boot tasks are proven; single-volume Preboot/mount policy, stable re-boots and the peripherals remain |
+| **Overall port (weighted)** | **~73%** | iOS userspace now starts; the Preboot/mount handoff and the peripherals are the gap |
 
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.

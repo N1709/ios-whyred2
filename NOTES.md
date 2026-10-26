@@ -1,5 +1,39 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0170 boot (2026-10-26): launchd runs; mount-phase-1 wants a Preboot volume
+
+**Confirmed on hardware** (`driver 0170`, image `c4624030...d3cb`):
+
+- `exec launchd` followed the platform-binary message - the exec-time code
+  signing blocker is gone. `launchd` reports `Darwin Bootstrapper Version
+  7.0.0` and `entering ondemand mode`.
+- `fsck` (pid 2) and `mount-phase-1` (pid 3) then run as boot tasks, so
+  launchd is really scheduling jobs, not just starting.
+- `libignition` still fails before that: `preboot: mounting preboot` ->
+  `failed to lookup preboot: 25` -> `ignition failed: 25`, `ignite() returned
+  25`. launchd continues anyway.
+- `fsck`: `failed to get filesystem info`; `not booting main or diagnostic OS,
+  Skipping fsck on OS container`.
+- **The new fatal step:** `mount-phase-1` runs `/sbin/mount` and reports
+  `mount: failed to mount
+  /private/preboot/9ACF60BB.../usr/standalone/firmware ->
+  /usr/standalone/firmware - Operation not supported by device(19)`, then
+  `pid 3 exited ... (signal 0, exit 74)` (74 = `EX_IOERR`). Because the job is
+  spawned with `POSIX_SPAWN_PANIC_ON_EXIT`, `proc_should_trigger_panic()`
+  panics: `mount[3] exited -- no exit reason available`.
+- **Why:** a single HFSX root mounted from `userdata` has no
+  `/private/preboot/<uuid>` volume. iOS 16 keeps `usr/standalone/firmware`
+  and the dyld shared cache on Preboot. The source path does not exist, and
+  `mount` cannot attach it.
+- **Not code signing:** exit 74 with signal 0 and no os_reason is a normal
+  `mount` failure, not `CS_KILLED`.
+- **Next:** read the root image's `mount-phase-1` job to learn the exact
+  source, target and filesystem type, then either provide that tree/volume or
+  stop the job from being fatal. The image is a 16 GiB HFSX volume staged as
+  `ios16-root.simg`; unsparse with `simg2img` before inspecting.
+- **Progress:** launchd/root filesystem 88%, code signing 60%, kernel
+  readiness ~85%, overall ~73%.
+
 ## 0170 (2026-10-26): the kill is EXEC/WRONG_PLATFORM, not a page hash
 
 - **The 0169 boot log is ours.** `setting platform binary on task: pid = 1` is
