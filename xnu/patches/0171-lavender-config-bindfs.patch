@@ -1,0 +1,22 @@
+--- a/config/MASTER.arm64.lavender
++++ b/config/MASTER.arm64.lavender
+@@ -110,7 +110,7 @@
+ #  BSD_RELEASE =    [ BSD_BASE ]
+ #  BSD_DEV =        [ BSD_BASE config_vnguard ]
+ #  BSD_DEBUG =      [ BSD_BASE config_vnguard ]
+-#  FILESYS_BASE =   [ devfs fdesc fifo mockfs sweet_hfs fs_compression config_protect config_mnt_rootsnap config_rosv_startup config_mount_vm config_mount_prebootrecovery config_basesystemroot config_fse quota namedstreams config_imgsrc_access config_triggers config_ext_resolver config_searchfs config_volfs config_appledouble nullfs config_mnt_suid config_firmlinks config_dataless_files config_union_mounts config_file_leases ]
++#  FILESYS_BASE =   [ devfs fdesc fifo mockfs sweet_hfs fs_compression config_protect config_mnt_rootsnap config_rosv_startup config_mount_vm config_mount_prebootrecovery config_basesystemroot config_fse quota namedstreams config_imgsrc_access config_triggers config_ext_resolver config_searchfs config_volfs config_appledouble nullfs bindfs config_mnt_suid config_firmlinks config_dataless_files config_union_mounts config_file_leases ]
+ #  FILESYS_RELEASE= [ FILESYS_BASE ]
+ #  FILESYS_DEV =    [ FILESYS_BASE config_iocount_trace ]
+ #  FILESYS_DEBUG =  [ FILESYS_BASE config_iocount_trace ]
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -2116,7 +2116,7 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("WHYRED SDHCI: driver 0170 (root \"%s\", writes %s; boot "
++	printf("WHYRED SDHCI: driver 0171 (root \"%s\", writes %s; boot "
+ 	    "args decide whether the HFS+ root comes from eMMC)\n",
+ 	    se.part, se.writable ? "enabled" : "read-only");
+ 

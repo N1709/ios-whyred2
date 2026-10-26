@@ -568,6 +568,19 @@ grep -q 'unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
 grep -q 'unentitled_ios_sim_launch' xnu/patches/0042-sweet-short-exec-log.patch
 echo "ok   0170 passes unentitled_ios_sim_launch=1 for the iOS launchd exec"
 
+echo "== MOUNT: 0171 gives the lavender/whyred kernel bindfs =="
+P171="xnu/patches/0171-lavender-config-bindfs.patch"
+python3 tools/check_patch.py "$P171" -q \
+	--added-contains 'config/MASTER.arm64.lavender:nullfs bindfs' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0171' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0170'
+# /sbin/mount carries com.apple.private.bindfs-allow and bind-mounts the
+# preboot firmware paths; without bindfs in FILESYS_BASE the vfs switch
+# answers ENODEV(19) -> mount exits 74 -> launchd's PANIC_ON_EXIT panics.
+python3 tools/check_patch.py xnu/patches/0037-sweet-config-bindfs.patch -q \
+	--added-contains 'config/MASTER.arm64.sweet:nullfs bindfs'
+echo "ok   0171 enables bindfs so mount-phase-1 can bind the preboot paths"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"

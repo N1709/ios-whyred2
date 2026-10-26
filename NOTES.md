@@ -1,5 +1,29 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0171 (patch ready, awaiting CI): bindfs for the lavender/whyred config
+
+**Why mount-phase-1 failed on 0170.** `/sbin/mount` bind-mounts the preboot
+firmware tree (`/private/preboot/<boot-manifest-hash>/usr/standalone/firmware`
+onto `/usr/standalone/firmware`, plus Pearl and FactoryData) and carries the
+`com.apple.private.bindfs-allow` entitlement, so the call is allowed. XNU's
+bindfs is present in the tree and `config/MASTER` sets `options BINDFS`, but
+`config/MASTER.arm64.lavender` inherited a `FILESYS_BASE` list with `nullfs`
+and no `bindfs`. `vfs_conf.c` registers the `"bindfs"` name only under
+`#if BINDFS`, so the vfs switch has no such filesystem and `mount(2)` returns
+`ENODEV` - exactly the `Operation not supported by device(19)` in the 0170 log.
+This is a mount failure, not a code-signing kill (exit 74, signal 0).
+
+**Fix.** Patch **0171** adds `bindfs` to `FILESYS_BASE` in
+`config/MASTER.arm64.lavender` (the same change 0037 made for sweet) and bumps
+the banner to `driver 0171`. The lavender reference hit the identical ENODEV
+and its bindfs boot passed `mount-phase-1` and `mount-phase-2`; `mount -P 1`
+passes env 0, so a missing bind source is tolerated with ENOENT once the
+filesystem type exists.
+
+**Next after this boot:** `mount-phase-2`, `cc_fips_test`, then `keybagd
+--init` (system keybag / AppleKeyStore stand-in) and the missing dyld shared
+cache.
+
 ## 0170 boot (2026-10-26): launchd runs; mount-phase-1 wants a Preboot volume
 
 **Confirmed on hardware** (`driver 0170`, image `c4624030...d3cb`):
