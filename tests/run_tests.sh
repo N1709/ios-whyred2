@@ -481,6 +481,21 @@ python3 tools/check_patch.py "$P163" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0163' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0162'
 echo "ok   0163 puts the card R1 in the data verdict and drops the EBUSY wall"
+echo "== SDHCI v5: ABL hands over in CMDQ mode, so the alt FIFO must be =="
+echo "==        off, and block/command are 32-bit register pairs       =="
+P164="xnu/patches/0164-sdhci-v5-standard-fifo-and-32bit-writes.patch"
+python3 tools/check_patch.py "$P164" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define CORE_FIFO_ALT_EN        0x00000400u' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:sdhci_v5_standard_fifo(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:alt FIFO VENDOR_SPEC3 0x%08x -> ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:(count << 16) | SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:((uint32_t)SDHCI_MAKE_CMD(index, flags) << 16) | tr_mode' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:tr_mode = SDHCI_TRNS_READ | SDHCI_TRNS_BLK_CNT_EN;' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:VENDOR_SPEC3 ' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:"PIO", false) ||' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0164' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0163'
+echo "ok   0164 selects the standard FIFO and uses the v5 32-bit register pairs"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py

@@ -1,0 +1,196 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -264,6 +264,20 @@
+ #else
+ #define CORE_VENDOR_SPEC        0x10c
+ #endif
++/*
++ * HC + 0x250: CORE_VENDOR_SPEC3. Bit 10 is CORE_FIFO_ALT_EN: with it set the
++ * controller routes data through the command-queue "alternative FIFO" and the
++ * standard SDHCI buffer (PIO) and SDMA engines never see a byte. Linux's
++ * sdhci_msm_init() clears it after every reset ("Ensure SDHCI FIFO is enabled
++ * by disabling alternative FIFO"), and this board is handed over in CMDQ mode,
++ * which is exactly what leaves it set.
++ */
++#if defined(ARM64_BOARD_CONFIG_LAVENDER)
++#define CORE_VENDOR_SPEC3       0x250
++#else
++#define CORE_VENDOR_SPEC3       0x1b0
++#endif
++#define CORE_FIFO_ALT_EN        0x00000400u     /* BIT(10) */
+ #define CORE_VENDOR_SPEC_POR_VAL 0x00000a9cu
+ #define CORE_VENDOR_SPEC_BOARD_VAL (CORE_VENDOR_SPEC_POR_VAL | \
+ 	CORE_IO_PAD_PWR_SWITCH_EN | CORE_IO_PAD_PWR_SWITCH)
+@@ -473,6 +487,31 @@
+ 	*(volatile uint8_t *)(se.regs + SDHCI_HC_OFFSET + off) = val;
+ }
+ 
++/*
++ * BLOCK_SIZE (0x04) and BLOCK_COUNT (0x06) are the two halves of one 32-bit
++ * register in SDHCI 3.0: size in 15:0, count in 31:16. The v5 core latches
++ * the pair on a 32-bit access; two 16-bit writes can leave the count at zero,
++ * after which the transfer never starts - no DATA_TIMEOUT, no DAT activity and
++ * CMD_INHIBIT stays set, which is exactly the wedge every boot shows.
++ */
++static inline void
++sdhci_set_block(uint32_t count)
++{
++	hc_wr(SDHCI_BLOCK_SIZE,
++	    (count << 16) | SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
++}
++
++/* Linux sdhci_msm_init(): keep the standard FIFO selected. */
++static inline void
++sdhci_v5_standard_fifo(void)
++{
++	uint32_t vs3 = hc_rd(CORE_VENDOR_SPEC3);
++
++	if (vs3 & CORE_FIFO_ALT_EN) {
++		hc_wr(CORE_VENDOR_SPEC3, vs3 & ~CORE_FIFO_ALT_EN);
++	}
++}
++
+ static inline uint32_t
+ core_rd(uint32_t off)
+ {
+@@ -578,9 +617,15 @@
+ 
+ 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
+ 	hc_wr(SDHCI_ARGUMENT, arg);
+-	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
++	/*
++	 * SDHCI 3.0 defines the 32-bit view at 0x0C too: command in bits 31:16,
++	 * transfer mode in 15:0. The v5 core samples the pair from one access,
++	 * so a separate 16-bit write can lose READ/DMA/BLK_CNT_EN and leave the
++	 * command waiting for a data phase that never begins.
++	 */
+ 	start = mach_absolute_time();
+-	hc_wr16(SDHCI_COMMAND, (uint16_t)SDHCI_MAKE_CMD(index, flags));
++	hc_wr(SDHCI_TRANSFER_MODE,
++	    ((uint32_t)SDHCI_MAKE_CMD(index, flags) << 16) | tr_mode);
+ 
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+ 	deadline += mach_absolute_time();
+@@ -896,6 +941,7 @@
+ 	    hc_rd(SDHCI_PRESENT_STATE));
+ 	(void)sdhci_vendor_core_reset();
+ 	(void)hc_rd(SDHCI_INT_STATUS);
++	sdhci_v5_standard_fifo();
+ 	if (!(hc_rd(SDHCI_PRESENT_STATE) &
+ 	    (SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT))) {
+ 		printf("SANTONI SDHCI: vendor reset cleared the inhibit\n");
+@@ -976,14 +1022,13 @@
+ 		index = 18;
+ 	}
+ 
+-	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
+-	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
++	sdhci_set_block(count);
+ 
+ 	if (index == 18) {
+ 		tr_mode = SDHCI_TRNS_READ | SDHCI_TRNS_BLK_CNT_EN |
+ 		    SDHCI_TRNS_MULTI | SDHCI_TRNS_AUTO_CMD12;
+ 	} else {
+-		tr_mode = SDHCI_TRNS_READ;
++		tr_mode = SDHCI_TRNS_READ | SDHCI_TRNS_BLK_CNT_EN;
+ 	}
+ 	error = sdhci_cmd(index, arg, tr_mode,
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
+@@ -1076,8 +1121,7 @@
+ 	santoni_sdma_active = true;
+ 	santoni_sdma_start = (uint32_t)pa;
+ 	hc_wr(SDHCI_SDMA_ADDR, (uint32_t)pa);
+-	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
+-	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
++	sdhci_set_block(count);
+ 	error = sdhci_cmd(index, arg, tr_mode,
+ 	    SDHCI_CMD_RESP_SHORT | SDHCI_CMD_CRC | SDHCI_CMD_INDEX |
+ 	    SDHCI_CMD_DATA, &santoni_data_r1);
+@@ -1220,8 +1264,7 @@
+ 		santoni_sdma_active = true;
+ 		santoni_sdma_start = (uint32_t)(se.dma_pa + DMA_BOUNCE);
+ 	}
+-	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
+-	hc_wr16(SDHCI_BLOCK_COUNT, 1);
++	sdhci_set_block(1);
+ 	hc_wr16(SDHCI_TRANSFER_MODE, tr_mode);
+ 	*tm_rb = hc_rd16(SDHCI_TRANSFER_MODE);
+ 
+@@ -1451,14 +1494,13 @@
+ 	if (count == 0 || count > BOUNCE_SIZE / SDHCI_BLOCK) {
+ 		return EINVAL;
+ 	}
+-	hc_wr16(SDHCI_BLOCK_SIZE, SDHCI_MAKE_BLKSZ(0, SDHCI_BLOCK));
+-	hc_wr16(SDHCI_BLOCK_COUNT, (uint16_t)count);
++	sdhci_set_block(count);
+ 
+ 	if (index == 25) {
+ 		tr_mode = SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN |
+ 		    SDHCI_TRNS_AUTO_CMD12;
+ 	} else {
+-		tr_mode = 0;
++		tr_mode = SDHCI_TRNS_BLK_CNT_EN;
+ 	}
+ 
+ 	error = sdhci_cmd(index, lba, tr_mode,
+@@ -2071,9 +2113,8 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("SANTONI SDHCI: driver 0163 (card R1 and transfer registers "
+-	    "in the data verdict; stop when the sweep leaves the core "
+-	    "inhibited)\n");
++	printf("SANTONI SDHCI: driver 0164 (v5 data path: standard FIFO, "
++	    "32-bit block and command writes, PIO before SDMA)\n");
+ 
+ 	error = sdhci_core_check();
+ 	if (error) {
+@@ -2207,6 +2248,23 @@
+ 	hc_wr(SDHCI_SIGNAL_ENABLE, 0);
+ 	hc_wr(SDHCI_INT_STATUS, hc_rd(SDHCI_INT_STATUS));
+ 
++	/*
++	 * The one state bit that explains "no data, no timeout, no DAT
++	 * activity": the command-queue FIFO. Print what ABL left, then select
++	 * the standard FIFO the PIO and SDMA engines feed from.
++	 */
++	{
++		uint32_t vs3 = hc_rd(CORE_VENDOR_SPEC3);
++
++		sdhci_v5_standard_fifo();
++		printf("SANTONI SDHCI: alt FIFO VENDOR_SPEC3 0x%08x -> "
++		    "0x%08x (bit 10 %s)\n", vs3,
++		    hc_rd(CORE_VENDOR_SPEC3),
++		    (vs3 & CORE_FIFO_ALT_EN) ?
++		    "was set: data went to the CMDQ FIFO, not SDHCI" :
++		    "already clear");
++	}
++
+ #if defined(ARM64_BOARD_CONFIG_LAVENDER)
+ 	printf("SANTONI SDHCI: takeover complete (VENDOR_SPEC 0x%08x, "
+ 	    "POWER_CONTROL 0x%02x, CLOCK_CONTROL 0x%04x, HOST_CONTROL 0x%02x, "
+@@ -2753,8 +2811,8 @@
+ 		    &r1);
+ 		printf("SANTONI SDHCI: data self-test: CMD16 %s -> R1 "
+ 		    "0x%08x\n", widths[i].what, r1);
+-		if (sdhci_lba0_attempt(widths[i].what, "SDMA", true) ||
+-		    sdhci_lba0_attempt(widths[i].what, "PIO", false)) {
++		if (sdhci_lba0_attempt(widths[i].what, "PIO", false) ||
++		    sdhci_lba0_attempt(widths[i].what, "SDMA", true)) {
+ 			printf("SANTONI SDHCI: data self-test: the data path "
+ 			    "works at %s (phase %s)\n", widths[i].what, phase);
+ 			snprintf(santoni_lba0_note, sizeof(santoni_lba0_note),
+@@ -2872,10 +2930,11 @@
+ 		    hc_rd(SDHCI_PRESENT_STATE), hc_rd(SDHCI_INT_STATUS),
+ 		    santoni_data_error, santoni_data_r1);
+ 		printf("SANTONI SDHCI: data verdict: BS 0x%04x BC 0x%04x TM "
+-		    "0x%04x SDMA 0x%08x HOST_CONTROL 0x%02x\n",
++		    "0x%04x SDMA 0x%08x HOST_CONTROL 0x%02x VENDOR_SPEC3 "
++		    "0x%08x\n",
+ 		    hc_rd16(SDHCI_BLOCK_SIZE), hc_rd16(SDHCI_BLOCK_COUNT),
+ 		    hc_rd16(SDHCI_TRANSFER_MODE), hc_rd(SDHCI_SDMA_ADDR),
+-		    hc_rd8(SDHCI_HOST_CONTROL));
++		    hc_rd8(SDHCI_HOST_CONTROL), hc_rd(CORE_VENDOR_SPEC3));
+ 		return EBUSY;
+ 	}
+ 

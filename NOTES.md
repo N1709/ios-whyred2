@@ -1,5 +1,68 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0164 (2026-10-26): the lavender tree names the missing register
+
+- **0163 is built and verified.** CI run `40207977225` (commit `8ebe843`)
+  finished **green**. Artifact: `shim-boot.img` 5,849,088 B, SHA-256
+  `c5abbcb49df52a62079a32c23fad3b4d2c2cf2324b808b926dc017d211096990`
+  (kernel section 5,842,977 B). Strings: `driver 0163` 1, `data verdict:` 2,
+  `R1 0x%08x` 12, `driver 0162` 0; DTB byte-identical. Local copy
+  `shim/out/shim-boot-whyred-0163-CI.img`. **Not yet booted on hardware.**
+- **Reference repo `aLpHa-Git-69/ios-lavender`, branch `lavender` (`55f097b`),
+  checked.** What its own `NOTES.md` and `.planning/phases/04-*` say:
+  - On **lavender** it reaches `IOKit IOMD setownership ENABLED`; its listed
+    next step is still *SDHCI eMMC enumeration*. The "80-85%" is a kernel
+    bring-up estimate, not a storage claim.
+  - The eMMC evidence in that tree (`EXT_CSD SEC_COUNT 61071360`, HFS+
+    `userdata`, 4 MiB console log flushed to `SYSTEM`) belongs to the
+    **santoni/sweet** branch, whose data path is **polled PIO only** - no DMA
+    or ADMA, no `CLOCK_CONTROL` write, no `RESET_ALL`, 8-bit width kept and
+    `CMD12` framed R1b.
+  - Its newest `0147-lavender-sdhci-v5-and-bsdroot.patch` adds exactly the
+    v5 data-path changes our driver lacks (see below). Our `0147` is an
+    earlier subset (host-version check, snapshot prints, PWRCTL bypass).
+- **The difference that matters** (reference `0147` + Linux
+  `drivers/mmc/host/sdhci-msm.c`, `sdhci_msm_init()`):
+  1. `CORE_VENDOR_SPEC3` (HC + 0x250) bit 10 is `CORE_FIFO_ALT_EN`. Linux
+     clears it after every reset (*"Ensure SDHCI FIFO is enabled by
+     disabling alternative FIFO"*). With it set, data goes to the
+     command-queue FIFO and **PIO/SDMA never see a byte** - which is
+     precisely our symptom: no data, no `DATA_TIMEOUT`, no DAT activity,
+     `CMD_INHIBIT` latched. TWRP's dmesg (`64-bit ADMA in CMDQ mode`) says
+     ABL hands the controller over in CMDQ mode, i.e. the state that sets it.
+  2. `TRANSFER_MODE`/`COMMAND` (0x0C) and `BLOCK_SIZE`/`BLOCK_COUNT` (0x04)
+     are 32-bit register pairs in SDHCI 3.0. The reference writes each pair
+     with one 32-bit access; two 16-bit writes can drop READ/DMA/BLK_CNT_EN
+     or leave the count at zero.
+  3. `BLK_CNT_EN` is set for single-block transfers too.
+- **0164
+  (`xnu/patches/0164-sdhci-v5-standard-fifo-and-32bit-writes.patch`).**
+  - At take-over, print and clear `CORE_VENDOR_SPEC3` bit 10, and re-clear it
+    after the vendor-reset recovery path. Decisive line:
+    `alt FIFO VENDOR_SPEC3 0x........ -> 0x........ (bit 10 was set: data
+    went to the CMDQ FIFO, not SDHCI | already clear)`.
+  - `sdhci_set_block()` writes size|count as one 32-bit access; all four data
+    paths use it.
+  - `sdhci_cmd()` writes transfer mode|command as one 32-bit access.
+  - Single-block PIO read/write set `BLK_CNT_EN`.
+  - The LBA0 sweep tries **PIO before SDMA** (the reference's proven path).
+  - Verdict line now ends with `VENDOR_SPEC3 0x%08x`.
+  - Banner: `driver 0164 (v5 data path: standard FIFO, 32-bit block and
+    command writes, PIO before SDMA)`.
+  - Unchanged on purpose: `RESET_ALL` completes on whyred (unlike the
+    reference's lavender, where it stalls), and the card is already in TRAN.
+- **The first data command in the boot is the LBA0 probe.** Until now every
+  boot wedged there, so 0163's later verdict could only report a blocked
+  command (`R1 0x00000000`). 0164 changes the state that first command runs
+  in, so the next log answers the question directly:
+  - `alt FIFO ... bit 10 was set` + `LBA0 <w>-bit PIO: OK, MBR 55aa` -> root
+    cause found; the rest is EXT_CSD/GPT.
+  - `bit 10 already clear` + still no data -> the 32-bit pairs were the
+    difference (or neither); then read `BS/BC` in `data verdict` (`BC` must
+    be 0x0001, `TM` must carry DMA/READ or READ|BLK_CNT_EN).
+  - `LBA0 ... PIO: error (5)` on the first width -> the command was still
+    blocked before PIO ran; the alt-FIFO line is then the only new fact.
+
 ## 0163 (2026-10-25): get the card's own answer before guessing again
 
 - **0162 ran on hardware: all three host widths failed.** The summary said
