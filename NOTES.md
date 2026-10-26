@@ -34,6 +34,16 @@
   long form; `ARM64_BOARD_CONFIG_SWEET` prints `exec launchd`), then launchd
   keeps running instead of the early panic.
 - **Banner:** `driver 0170`.
+- **0170 is built and verified.** CI run `40328070266` (commit `b41e597`)
+  finished **green**. Artifact `shim-boot.img` 5,849,088 B, SHA-256
+  `c4624030b88c125e7b4b6d2c8b50c142af6a7da1c484d7bfee7faf14f020d3cb`,
+  kernel image 17,931,984 B after gunzip. Strings: `driver 0170`,
+  `unentitled_ios_sim_launch`, `cs_enforcement_disable`. Embedded command
+  line: `debug=0x14e ... rd=emmcroot0 ... emmcrw=1 cs_debug=1
+  cs_enforcement_disable=1 unentitled_ios_sim_launch=1`. DTB 8,012 B,
+  byte-identical to `resources/whyred_dtb.bin`. Local copies
+  `shim/out/shim-boot-whyred-0170-CI.img` and `/home/n1709/whyred-0170.img`.
+  **Not yet booted on hardware.**
 - **"WHYRED init: still alive (tick)" will not appear on this boot** and its
   absence is expected: that tick comes from our ramdisk init
   (`tools/santoni-init.S`), which is PID 1 only when `rd=md0`. With
