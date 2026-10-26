@@ -62,6 +62,16 @@
     be 0x0001, `TM` must carry DMA/READ or READ|BLK_CNT_EN).
   - `LBA0 ... PIO: error (5)` on the first width -> the command was still
     blocked before PIO ran; the alt-FIFO line is then the only new fact.
+- **CI run `40276626713`** (commit `fd09fe8`) finished **green**. Artifact
+  fetched and verified:
+  - `shim-boot.img` 5,849,088 B, SHA-256
+    `6e914f7d5bf1930d585418f11014e29e689bbead8afa0d631110eda7e59377f6`
+    (kernel section 5,842,591 B).
+  - Strings: `driver 0164` 1, `alt FIFO VENDOR_SPEC3 0x%08x -> ` 1,
+    `was set: data went to the CMDQ FIFO, not SDHCI` 1,
+    `32-bit block and command writes, PIO before SDMA` 1, `driver 0163`/`0162`
+    0. DTB byte-identical.
+  - Local copy: `shim/out/shim-boot-whyred-0164-CI.img`.
 
 ## 0163 (2026-10-25): get the card's own answer before guessing again
 
