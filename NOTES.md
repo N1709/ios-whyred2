@@ -19,6 +19,15 @@
   log is full of.
 - **Banner:** `driver 0167 (log prefix is WHYRED; the eMMC path is unchanged
   from 0166)`.
+- **0167 is built and verified.** CI run `40294334379` (commit `15a8d0b`,
+  the commit that removed the non-XNU hunks) finished **green**. Artifact:
+  `shim-boot.img` 5,849,088 B, SHA-256
+  `451707f68ad456805281aa90f8607bee5afacf64ee675319ff3feff716680660`,
+  kernel image 17,931,984 B after gunzip. Strings: `driver 0167` 1,
+  `WHYRED SDHCI:` 159, `SANTONI SDHCI:` 0, `volume header at 1024` 1,
+  `WHYRED userspace: read eMMC LBA 0` 1; DTB at 0x591a9a, 8,012 B,
+  byte-identical to `resources/whyred_dtb.bin`. Local copy
+  `shim/out/shim-boot-whyred-0167-CI.img`. **Not yet booted on hardware.**
 - **CI run `40292548638` failed, and the cause was mine:** patch 0166 and 0167
   carried a `tools/santoni-init.S` hunk. dxb applies the series **inside the
   XNU tree**, where that file does not exist, so both patches were skipped
