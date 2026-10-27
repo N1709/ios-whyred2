@@ -678,6 +678,34 @@ if s.index('\tsantoni_log_start();') > s.index('\tsantoni_fb_test();'):
 PY
 echo "ok   0177 maps the bars from kernel_map and logs them"
 
+echo "== LOG 0178: the header is written before the first ring block =="
+P178="xnu/patches/0178-whyred-log-header-before-blocks.patch"
+python3 tools/check_patch.py "$P178" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0178' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_log_write_header(uint64_t base, uint64_t total, uint64_t seq)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:herr = santoni_log_write_header(base, 0, 0);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:header update failed' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:first flush ok' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:ring write failed' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0177'
+# 0177: the flusher wrote 26 ring blocks, sector 0 stayed blank, and the
+# header write that followed the first flush is what ended the flusher. Keep
+# the header first and keep a header failure non-fatal; a ring block error is
+# still fatal because that is the payload.
+python3 - <<'PY'
+s = open('drivers/storage/santoni_sdhci.c').read()
+t = s[s.index('santoni_log_thread('):]
+if 'santoni_log_write_header(base, 0, 0)' not in t:
+    raise SystemExit('the header is not written before the first ring block')
+hdr = t.index('header update failed')
+first = t.index('first flush ok')
+if hdr > first:
+    raise SystemExit('the header failure is reported after the flush result')
+if t.index('ring write failed') > hdr:
+    raise SystemExit('the ring write failure is no longer the fatal one')
+PY
+echo "ok   0178 labels the log area first and survives a header failure"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
@@ -714,6 +742,21 @@ PATH="$tmp/bin:$PATH" FAKE_AREA="$tmp/area.bin" \
 	tools/sweet-log-pull.sh "$tmp/out.txt" 2>"$tmp/err"
 grep -q 'SWEET EARLY 20: kprintf startup complete' "$tmp/out.txt"
 grep -q 'SYSTEM partition' "$tmp/err"
+# A headerless ring with a real boot-log start must still decode: 0177 left
+# 26 blocks of text and a blank sector 0, and the old script threw that away.
+python3 - "$tmp/headerless.bin" <<'PY'
+import sys
+text = (b'iBoot version: whyred-shim\n'
+        b'WHYRED SDHCI: driver 0178 (root "userdata", writes enabled)\n'
+        b'BSD root: emmcroot0, major 2, minor 0\n')
+area = bytearray(8193 * 512)
+area[512:512 + len(text)] = text
+open(sys.argv[1], 'wb').write(area)
+PY
+PATH="$tmp/bin:$PATH" FAKE_AREA="$tmp/headerless.bin" \
+	tools/sweet-log-pull.sh "$tmp/salvaged.txt" 2>"$tmp/salvaged-err"
+grep -q 'driver 0178' "$tmp/salvaged.txt"
+grep -q 'salvaged' "$tmp/salvaged-err"
 # A blank area must fail loudly (exit 2 + the flusher hint), not decode noise.
 dd if=/dev/zero of="$tmp/blank.bin" bs=512 count=8193 status=none
 PATH="$tmp/bin:$PATH" FAKE_AREA="$tmp/blank.bin" \

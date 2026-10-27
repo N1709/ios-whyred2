@@ -49,6 +49,12 @@ directory, the same EACCES that SWEET fixed by dropping `config_ext_resolver`
 (`0057`); `0175` does that for WHYRED/LAVENDER. The boot-stage checklist
 stays in the chat, not here.
 
+`0178` repairs the SYSTEM console ring that 0177 exposed: the log boot wrote
+26 blocks of real console text but never a header, so every `sweet-log-pull`
+refused the area and the log looked empty. The header is now written before
+the first ring block and a header failure no longer stops the flusher; the
+pull tool can also decode a headerless ring.
+
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172`. `0177` adds the missing proof that the panel scans this framebuffer out after hand-off: four bars written by the kernel are visible. The boot screen is still black by design because the console is routed to the UART and `kPEAcquireScreen` clears the buffer |

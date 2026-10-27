@@ -332,6 +332,45 @@ Next: boot `shim-boot-log.img` (ring on SYSTEM), let the daemons run, then
 pull the ring from recovery with `tools/sweet-log-pull.sh` and read the
 `backboardd`/`SpringBoard`/`SWEET FB:` lines.
 
+### 0177 ring pull: the log was there, the header was not (2026-10-27)
+
+Two pulls after a `sweetlog=1` boot reported "no SANTONILOG1 header", and the
+area was assumed empty. It was not: reading the raw 4 MiB back by hand shows
+26 blocks of real console text starting at offset 0x200, and sector 0 still
+all zero. What is on the disk is the *first flush only*, which ends at
+
+```
+BSD root: emmcroot0, major 2, minor 0
+WHYRED LOG: console log flusher active on SYSTEM partition (block 0x220000..0x222000, 4096 KiB)
+jnl: b(2, 0): replay_journal: from: 8327680 to: 2113024 (joffset 0x82000)
+jnl: b(2, 0): journal replay done.
+```
+
+so the boot did reach the HFSX mount and its journal replay, and the ring
+blocks themselves were written correctly (`WHYRED FB: readback ffe02020
+ff20e020 ff2020e0 ffe8e8e8` is in there too). The blocks stop exactly at the
+first flush, and the header that the flusher writes *after* those blocks never
+reached sector 0. Every later flush then had nothing new to do, so the pull
+never saw a header and the log was thrown away twice.
+
+`0178` moves the header write to the start of `santoni_log_thread()` — while
+the card is idle, before the first ring block — and repeats it after every
+flush. A header failure is now reported once (`header update failed (%d)`)
+but no longer returns from the flusher; only a *ring block* failure is fatal,
+because those blocks are the payload. The first successful flush prints the
+decisive line `WHYRED LOG: first flush ok (... bytes, header ok|failed)`.
+
+`tools/sweet-log-pull.sh` no longer refuses a headerless area: it decodes the
+leading run of printable blocks after `--salvage` and says how many bytes it
+recovered, but only when the start looks like a boot log (`Darwin Kernel
+Version`, `iBoot version`, `WHYRED SDHCI`). The recovered 0177 boot is kept as
+`/tmp/opencode/salvage-0177.txt` (12,867 bytes). This is what a pull looks
+like when the header is missing:
+
+```
+# no SANTONILOG1 header (sector 0 is blank): salvaged 13312 bytes from the 26-block ring prefix
+```
+
 ### The 0177 artifact lost two switches (2026-10-27)
 
 The first 0177 run (`40440352903`) built, but its payload command line was

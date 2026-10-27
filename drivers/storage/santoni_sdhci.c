@@ -2118,7 +2118,7 @@ sdhci_take_over(void)
 	 * Name the build in the log. Matching a boot log to a patch by
 	 * guessing from its messages has already cost flash cycles.
 	 */
-	printf("WHYRED SDHCI: driver 0177 (root \"%s\", writes %s; boot "
+	printf("WHYRED SDHCI: driver 0178 (root \"%s\", writes %s; boot "
 	    "args decide whether the HFS+ root comes from eMMC)\n",
 	    se.part, se.writable ? "enabled" : "read-only");
 
@@ -4398,18 +4398,54 @@ struct santoni_log_header {
 	uint64_t seq;
 } __attribute__((packed));
 
+/*
+ * Block 0 of the log area: the "SANTONILOG1" header. Split out because 0177
+ * showed the header is the fragile part. A boot with sweetlog=1 left 26
+ * blocks of real console text on SYSTEM (offset 0x200 onwards) while sector 0
+ * was still all zero, so every pull refused the area and the log looked
+ * missing. The header is now written before the first ring block and again
+ * after every flush; a header failure is reported but no longer stops the
+ * flusher, because the ring blocks are the payload and a stale header is
+ * still better than none.
+ */
+static int
+santoni_log_write_header(uint64_t base, uint64_t total, uint64_t seq)
+{
+	struct santoni_log_header h = {
+		.magic = "SANTONILOG1",
+		.version = 1,
+		.size = SANTONI_LOG_SIZE,
+		.total = total,
+		.seq = seq,
+	};
+	uint8_t bounce[SDHCI_BLOCK];
+
+	bzero(bounce, SDHCI_BLOCK);
+	memcpy(bounce, &h, sizeof(h));
+	return santoni_sdhci_write_log_blocks(base, 1, bounce);
+}
+
 static void
 santoni_log_thread(__unused void *arg, __unused wait_result_t wr)
 {
 	uint64_t base = se.sys_first_block;
 	uint64_t flushed = 0, seq = 0;
-	uint8_t bounce[SDHCI_BLOCK];
+	bool header_warned = false, first_flush = false;
+	int herr;
 
 	printf("WHYRED LOG: console log flusher active on SYSTEM partition "
 	    "(block 0x%llx..0x%llx, %u KiB)\n",
 	    (unsigned long long)base,
 	    (unsigned long long)(base + SANTONI_LOG_BLOCKS - 1),
 	    (SANTONI_LOG_BLOCKS * SDHCI_BLOCK) >> 10);
+
+	/* Label the area while the card is idle: sector 0 must identify the
+	 * ring even if this boot stops in the middle of the first flush. */
+	herr = santoni_log_write_header(base, 0, 0);
+	if (herr) {
+		printf("WHYRED LOG: header write failed (%d), ring blocks "
+		    "still written\n", herr);
+	}
 	for (;;) {
 		(void)tsleep(&santoni_log_chan, PZERO, "santonilog", hz);
 
@@ -4434,23 +4470,25 @@ santoni_log_thread(__unused void *arg, __unused wait_result_t wr)
 			    n, santoni_log_ring + (uint64_t)blk * SDHCI_BLOCK);
 			pos += (uint64_t)(blk + n) * SDHCI_BLOCK - off;
 		}
-		if (!error) {
-			struct santoni_log_header h = {
-				.magic = "SANTONILOG1",
-				.version = 1,
-				.size = SANTONI_LOG_SIZE,
-				.total = total,
-				.seq = ++seq,
-			};
-
-			bzero(bounce, SDHCI_BLOCK);
-			memcpy(bounce, &h, sizeof(h));
-			error = santoni_sdhci_write_log_blocks(base, 1, bounce);
-		}
 		if (error) {
-			printf("WHYRED LOG: write failed (%d), stopping "
+			printf("WHYRED LOG: ring write failed (%d), stopping "
 			    "flusher\n", error);
 			return;
+		}
+		herr = santoni_log_write_header(base, total, ++seq);
+		if (herr && !header_warned) {
+			header_warned = true;
+			printf("WHYRED LOG: header update failed (%d), ring "
+			    "still written\n", herr);
+		}
+		if (!first_flush) {
+			first_flush = true;
+			/* Decisive line: the first flush used to be the end of
+			 * the log, because the header write that followed it
+			 * took the flusher down. */
+			printf("WHYRED LOG: first flush ok (%llu bytes, header "
+			    "%s)\n", (unsigned long long)total,
+			    herr ? "failed" : "ok");
 		}
 		flushed = total;
 	}

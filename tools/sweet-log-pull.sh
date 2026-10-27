@@ -36,7 +36,14 @@ system)
     adb exec-out "dd if=$dev bs=512 count=8193 2>/dev/null" > "$out.bin"
     echo "$dev: read $(stat -c %s "$out.bin") bytes" >&2
     if ! head -c 11 "$out.bin" | grep -q SANTONILOG1; then
-        echo "no SANTONILOG1 header at the start of SYSTEM." >&2
+        # 0177 left 26 blocks of real console text and a blank sector 0: the
+        # header write after the first flush failed, so refusing the area threw
+        # the log away. Decode the ring without the header when the start looks
+        # like a boot log; 0178 writes the header before the first block.
+        echo "no SANTONILOG1 header at the start of SYSTEM; trying the ring anyway" >&2
+        if python3 "$(dirname "$0")/sweet-log.py" "$out.bin" "$out" --salvage; then
+            exit 0
+        fi
         echo "The flusher never wrote: that boot did not have sweetlog=1," >&2
         echo "or its log never started. Look for this line on the console:" >&2
         echo "  WHYRED LOG: console log flusher active on SYSTEM partition" >&2
