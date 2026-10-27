@@ -121,6 +121,39 @@ Open question from this boot: the screen stayed black. That needs the
 tell "has not drawn yet" from "started and died"; the observed window alone
 does not contain them.
 
+### 0174 + persistent console log (2026-10-27)
+
+The serial scrollback only reaches the tail, which is a launchd respawn loop
+(`xpcproxy` -> `bluetoothd` -> `xpcproxy` -> `fairplayd.H2`, pid climbing
+341 -> 350), so the beginning - the only place that says whether `backboardd`
+or `SpringBoard` ever ran - is lost. 0143 already has a 4 MiB console ring
+and a flusher, gated on `sweetlog=1`; the kernel image for it is unchanged.
+`/home/n1709/whyred-0174-log.img` is the 0174 kernel repacked with
+`sweetlog=1` in the payload command line:
+
+```
+6,107,136 B  (ABL limit 6,291,456; margin 184,320)
+sha256 4c7a265e1a0e8e0057d24901f17b54f9c90e757cb2fc111a54491882b9545385
+```
+
+Only the 608-byte payload command line changed; `driver 0174`, the 0173 CS
+diagnostics and the 8,012-byte DTB are unchanged. The kernel field was
+recompressed with `gzip -9` instead of zopfli; that costs 254 KiB and leaves
+less margin than 0174, but still fits. The flusher takes
+`santoni_sdhci_lock` and passes the static ring straight to `sdhci_write_pio`
+(WR-01), so it does not race the root's bounce buffer.
+
+Read it after the boot from OrangeFox:
+
+```
+fastboot boot <recovery>/recovery.img
+tools/sweet-log-pull.sh /tmp/whyred-0174-full.txt
+adb reboot bootloader
+```
+
+The first 4 MiB of the SYSTEM partition become the log area (the user
+approved this on 2026-10-27); Android's `system` is no longer bootable.
+
 ## HakiOS driver references (2026-10-27)
 
 Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
