@@ -313,6 +313,25 @@ with no `sweetlog`, no `cs_debug=2` and no kprintf spam; the log image adds
 `sweetlog=1 cs_debug=2 -enable_kprintf_spam`. Either boots the HFSX root from
 `userdata`; use the normal one unless the boot has to be diagnosed.
 
+### 0177 on hardware: the panel scans the framebuffer (2026-10-27)
+
+The normal 0177 image was booted on the phone and the four bars
+(red/green/blue/white) appear on the panel. That is the answer the 0176 test
+was built for:
+
+- MDSS/DSI keep scanning `0x9d400000` out after ABL hands over, so no MDSS,
+  DSI or NT36672 driver is needed to put pixels on this panel;
+- the black boot screen is only the UART console (`serial=3`) plus
+  `kPEAcquireScreen` clearing the boot framebuffer, not dead display
+  hardware;
+- the bars staying there means nothing painted over them: userspace
+  presentation is the missing piece (`backboardd`/`SpringBoard` opening
+  `AppleCLCD`), not the panel.
+
+Next: boot `shim-boot-log.img` (ring on SYSTEM), let the daemons run, then
+pull the ring from recovery with `tools/sweet-log-pull.sh` and read the
+`backboardd`/`SpringBoard`/`SWEET FB:` lines.
+
 ### The 0177 artifact lost two switches (2026-10-27)
 
 The first 0177 run (`40440352903`) built, but its payload command line was

@@ -17,13 +17,22 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 | Memory | DRAM physical base `0x80000000`, safe kernel budget `0xa0000000` + 1 GiB |
 | Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110) at **8-bit high-speed** (CMD6 BUS_WIDTH=8 + HS_TIMING=1), EXT_CSD valid (122,142,720 sectors = 58.2 GiB), GPT parsed. A 16.0 GiB HFSX volume in `userdata` **mounts read-write** as `emmcroot0`; single-block and multi-block (`CMD18`/`CMD25` + `AUTO_CMD12`) transfers and the HFS+ journal replay have all run on hardware |
 | iOS userland | iPhone X 16.7.16 root filesystem on eMMC; `launchd` is loaded from the HFSX root and starts. It is then killed by code signing (`CS_KILLED`), so the root volume is mounted but not yet trusted |
-| Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`) |
+| Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`). `0177` proves on hardware that MDSS/DSI still scan that memory out after hand-off: four colour bars written by the kernel appear on the panel |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## Progress
 
-Last updated 2026-10-27. Build `0174` is the last hardware-confirmed state and
-it cleared the code-signing gate: `SpringBoard` execs, opens
+Last updated 2026-10-27. Build `0177` is the last hardware-confirmed state:
+it draws four colour bars (red/green/blue/white) into the ABL framebuffer
+at `0x9d400000` during the SANTONI probe, before `launchd`, and they appear
+on the panel. That settles the display question — MDSS/DSI keep scanning the
+boot framebuffer out after hand-off, so the black boot screen is the UART
+console plus `kPEAcquireScreen` clearing the buffer, not missing display
+hardware. It also proves the `0177` mapping fix: `0176` panicked with
+`KERN_NO_SPACE` because `ml_io_map_wcomb()` allocates from the 8 MiB
+`io_submap`, and the bars need 9,331,200 B.
+
+The code-signing gate was cleared by `0174`: `SpringBoard` execs, opens
 `IOPMrootDomain` and its `SWEET AKS` calls return `0x0`, with no
 `csblob invalid` line. That closed the `csblob invalid: 85` /
 `vm_shared_region_slide_page()` failures traced in `0173b`: the driver
@@ -31,25 +40,24 @@ returned bytes produced by a *different* request, because it copied the
 shared bounce buffer after dropping its lock. `0174` keeps the copy inside
 the transfer's critical section.
 
-Two things still separate that daemon set from a usable screen. First, the
-system already routes its console to the UART (`serial=3`) while
-`kPEAcquireScreen` clears the boot framebuffer, so the panel goes black at
-once even though the kernel is alive; the SANTONI/SYSTEM console ring
-(`sweetlog=1`) is the log channel that does not depend on the screen. Second,
-`installcoordinationd` fails with `NSPOSIXErrorDomain 13` creating its data
+One thing still separates that daemon set from a usable screen: nothing
+presents into the framebuffer yet. The panel is proven alive, so the next
+work is userspace presentation (`backboardd`/`SpringBoard` opening
+`AppleCLCD`) rather than an MDSS/DSI driver. Separately,
+`installcoordinationd` failed with `NSPOSIXErrorDomain 13` creating its data
 directory, the same EACCES that SWEET fixed by dropping `config_ext_resolver`
-(`0057`); `0175` does that for WHYRED/LAVENDER. The boot-stage checklist stays
-in the chat, not here.
+(`0057`); `0175` does that for WHYRED/LAVENDER. The boot-stage checklist
+stays in the chat, not here.
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
-| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172`. The panel stays black because the console is routed to the UART and `kPEAcquireScreen` clears the framebuffer; on-screen text is the next experiment, not a kernel gap |
+| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172`. `0177` adds the missing proof that the panel scans this framebuffer out after hand-off: four bars written by the kernel are visible. The boot screen is still black by design because the console is routed to the UART and `kPEAcquireScreen` clears the buffer |
 | eMMC command, data and mount path | **100%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, single- and multi-block transfers, journal replay, HFSX mounted read-write. The last defect was the bounce buffer being copied outside its lock (the source of the wrong code-signing bytes); `0174` owns every byte while the transfer holds the lock |
 | Root filesystem from eMMC (`launchd`, real daemons) | **100%** | `launchd` runs as PID 1; `bindfs` lets the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exit successfully, and the LaunchDaemons start (`watchdogd`, `lockdownd`, `backboardd`, `amfid`, `imagent`, ...) |
 | Code signing / AMFI (trust cache, entitlements) | **85%** | `0174` is confirmed on hardware: `SpringBoard` (a platform binary) execs, queries IOPMrootDomain and its `SWEET AKS` calls return `0x0`, with no `csblob invalid`. Remaining for 100%: the same proof in the full `sweetlog` ring for `backboardd`, and removing the `unentitled_ios_sim_launch` / `launchd_unsecure_cache` bring-up switches |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
 | **Kernel readiness for an eMMC boot** | **100%** | Mount, bind mounts, platform-binary exec, the full boot-task chain and `SpringBoard` are proven on hardware by `0174`; `0175` only removes a permission bug on the userspace side |
-| **Overall port (weighted)** | **~88%** | The kernel side is done; what is left is the display path (kernel console routed to serial) and the peripherals |
+| **Overall port (weighted)** | **~90%** | The kernel and the panel scan-out are done; what is left is userspace presentation (`backboardd`/`SpringBoard` opening `AppleCLCD`) and the peripherals |
 
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.
