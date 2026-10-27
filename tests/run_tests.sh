@@ -641,6 +641,19 @@ else
 fi
 echo "ok   borrowed HakiOS driver references are unmodified"
 
+echo "== FB TEST: 0176 paints the boot framebuffer without the console =="
+P176="xnu/patches/0176-whyred-framebuffer-test-pattern.patch"
+python3 tools/check_patch.py "$P176" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0176' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:PE_parse_boot_argn("sweetfbtest"' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#define WHYRED_FB_PHYS          0x9d400000ULL' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_fb_test();' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0175'
+# The whole point is that this does not depend on cons_ops_index: no vcputc,
+# no console switch, just writes to the physical framebuffer ABL set up.
+grep -q 'sweetfbtest=1' .github/workflows/xnu.yml
+echo "ok   0176 paints four bars into the ABL framebuffer under sweetfbtest=1"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

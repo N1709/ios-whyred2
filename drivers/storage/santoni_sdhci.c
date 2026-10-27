@@ -60,6 +60,7 @@
 #include <os/atomic_private.h>
 
 static void santoni_log_start(void);
+static void santoni_fb_test(void);
 
 extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
 /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
@@ -2116,7 +2117,7 @@ sdhci_take_over(void)
 	 * Name the build in the log. Matching a boot log to a patch by
 	 * guessing from its messages has already cost flash cycles.
 	 */
-	printf("WHYRED SDHCI: driver 0175 (root \"%s\", writes %s; boot "
+	printf("WHYRED SDHCI: driver 0176 (root \"%s\", writes %s; boot "
 	    "args decide whether the HFS+ root comes from eMMC)\n",
 	    se.part, se.writable ? "enabled" : "read-only");
 
@@ -4247,6 +4248,7 @@ santoni_sdhci_init(void)
 	    se.writable ? "writable (emmcrw=1)" : "read-only");
 
 	/* Private console log area on SYSTEM, if the partition is there. */
+	santoni_fb_test();
 	santoni_log_start();
 	return 0;
 }
@@ -4300,6 +4302,51 @@ santoni_log_append(const char *c, int size)
 	for (int i = 0; i < size; i++) {
 		santoni_log_ring[(at + (uint64_t)i) % SANTONI_LOG_SIZE] = c[i];
 	}
+}
+
+/*
+ * 0176: one-shot test pattern in the boot framebuffer, gated on
+ * sweetfbtest=1. The console is on the UART (serial=3) and kPEAcquireScreen
+ * clears the boot framebuffer, so a black panel says nothing about MDSS/DSI.
+ * Four bars tell the two apart: bars on the panel mean ABL's continuous
+ * splash is still scanned out and a black UI is a userspace problem; no bars
+ * mean the panel is off and the display path must be brought up before any
+ * UI can be visible. Runs once, early in BSD init, long before backboardd.
+ */
+#define WHYRED_FB_PHYS          0x9d400000ULL
+#define WHYRED_FB_WIDTH         1080u
+#define WHYRED_FB_HEIGHT        2160u
+#define WHYRED_FB_STRIDE        4320u   /* bytes, 32bpp */
+
+extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
+
+static void
+santoni_fb_test(void)
+{
+	static const uint32_t bars[4] = {
+		0xffe02020, 0xff20e020, 0xff2020e0, 0xffe8e8e8
+	};
+	uint32_t on = 0;
+
+	if (!PE_parse_boot_argn("sweetfbtest", &on, sizeof(on)) || !on) {
+		return;
+	}
+	volatile uint32_t *fb = (volatile uint32_t *)ml_io_map_wcomb(
+	    WHYRED_FB_PHYS, (vm_size_t)WHYRED_FB_STRIDE * WHYRED_FB_HEIGHT);
+	if (fb == NULL) {
+		printf("WHYRED FB: test pattern map failed\n");
+		return;
+	}
+	for (uint32_t y = 0; y < WHYRED_FB_HEIGHT; y++) {
+		volatile uint32_t *line = fb + (uint64_t)y *
+		    (WHYRED_FB_STRIDE / 4);
+		for (uint32_t x = 0; x < WHYRED_FB_WIDTH; x++) {
+			line[x] = bars[x / (WHYRED_FB_WIDTH / 4)];
+		}
+	}
+	printf("WHYRED FB: test pattern 4 bars at 0x%llx (%ux%u, stride %u)\n",
+	    (unsigned long long)WHYRED_FB_PHYS, WHYRED_FB_WIDTH,
+	    WHYRED_FB_HEIGHT, WHYRED_FB_STRIDE);
 }
 
 struct santoni_log_header {

@@ -253,7 +253,11 @@ jobs:
           # scrollback only reaches the tail (launchd respawn loop), and the
           # backboardd/SpringBoard lines are at the start. Pull it from
           # recovery with tools/sweet-log-pull.sh.
-          EXTRA_CMDLINE: emmcrw=1 cs_debug=2 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetlog=1
+          # sweetfbtest=1 draws four colour bars into the boot framebuffer
+          # once, early in BSD init: the console is on the UART and
+          # kPEAcquireScreen clears the panel, so the bars are the only way
+          # to see whether MDSS still scans the ABL splash out.
+          EXTRA_CMDLINE: emmcrw=1 cs_debug=2 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1
         run: |
           set -euo pipefail
           KERNEL=xnu/out/kernel.development.whyred
