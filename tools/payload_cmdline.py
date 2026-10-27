@@ -57,6 +57,10 @@ def main():
     ap.add_argument("--require", action="append", default=[], metavar="TEXT",
                     help="exit 1 unless TEXT appears in the command line "
                          "(repeatable)")
+    ap.add_argument("--reject", action="append", default=[], metavar="TEXT",
+                    help="exit 1 if TEXT appears in the command line; used to "
+                         "prove the fast image has no diagnostic switches "
+                         "(repeatable)")
     args = ap.parse_args()
 
     with open(args.payload or args.image, "rb") as f:
@@ -77,6 +81,11 @@ def main():
     if missing:
         for need in missing:
             print(f"missing from the command line: {need}", file=sys.stderr)
+        return 1
+    unwanted = [bad for bad in args.reject if bad in line]
+    if unwanted:
+        for bad in unwanted:
+            print(f"unexpected in the command line: {bad}", file=sys.stderr)
         return 1
     return 0
 

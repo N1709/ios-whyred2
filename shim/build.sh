@@ -80,7 +80,13 @@ RAMDISK="out/ramdisk.bin"
 # iOS root is staged in userdata. EXTRA_CMDLINE carries e.g. emmcrw=1.
 ROOTDEV="${ROOTDEV:-md0}"
 EXTRA_CMDLINE="${EXTRA_CMDLINE:-}"
-CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 -enable_kprintf_spam sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
+# Verbosity is a build knob, not a source change. The diagnostic image keeps
+# -enable_kprintf_spam; the fast one sets KPRINTF_SPAM= (empty) because every
+# extra line costs 115200-baud UART time and, with cs_debug=2, megabytes of it.
+# Unset means "spam", so a hand build keeps the old command line.
+KPRINTF_SPAM="${KPRINTF_SPAM--enable_kprintf_spam}"
+[ -n "$KPRINTF_SPAM" ] && KPRINTF_SPAM="$KPRINTF_SPAM "
+CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 ${KPRINTF_SPAM}sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
 
 # Ensure a minimal ramdisk.bin is always present
 if command -v cpio >/dev/null 2>&1; then

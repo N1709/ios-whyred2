@@ -83,6 +83,13 @@ def main():
         assert "rd=md0 boots the ramdisk probe" not in r.stdout + r.stderr
         assert "rd=emmcroot0" in r.stdout
 
+        # --reject proves a "fast" image carries no diagnostic switch.
+        r = run("--image", str(ip), "--reject", "cs_debug=2")
+        assert r.returncode == 1, r.stdout + r.stderr
+        assert "unexpected in the command line: cs_debug=2" in r.stderr
+        r = run("--image", str(ip), "--reject=-enable_kprintf_spam")
+        assert r.returncode == 0, r.stderr
+
     print("test_payload_cmdline: payload wins over the boot.img header")
     return 0
 

@@ -544,7 +544,8 @@ python3 tools/check_patch.py "$P168" -q \
 grep -q 'ROOTDEV="${ROOTDEV:-md0}"' shim/build.sh
 grep -q 'rd=$ROOTDEV' shim/build.sh
 grep -q 'ROOTDEV: emmcroot0' .github/workflows/xnu.yml
-grep -q 'EXTRA_CMDLINE: emmcrw=1' .github/workflows/xnu.yml
+grep -q 'COMMON=emmcrw=1' .github/workflows/xnu.yml
+grep -q 'EXTRA_CMDLINE="$COMMON $2"' .github/workflows/xnu.yml
 # HFSX (case-sensitive HFS+) signs its volume header with HX, not BD.
 grep -q '0x58' tools/santoni-init.S
 echo "ok   0168 boots the HFSX root from userdata (rd=emmcroot0 emmcrw=1)"
@@ -553,7 +554,7 @@ P169="xnu/patches/0169-sdhci-name-the-code-signing-build.patch"
 python3 tools/check_patch.py "$P169" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0169' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0168'
-grep -q 'EXTRA_CMDLINE: emmcrw=1 cs_debug=' .github/workflows/xnu.yml
+grep -q 'DIAG="cs_debug=2"' .github/workflows/xnu.yml
 grep -q 'cs_enforcement_disable=1 unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
 echo "ok   0169 enables cs_debug and cs_enforcement_disable for the root boot"
 
@@ -707,6 +708,17 @@ python3 tests/test_zip_partial.py >/dev/null
 echo "ok   zip_partial proves an entry before calling it the kernel"
 python3 tests/test_payload_cmdline.py >/dev/null
 echo "ok   payload_cmdline reads the line the shim really uses, not boot.img"
+
+echo "== IMAGES: the workflow builds a fast and a diagnostic image =="
+# Both come from the same kernel; only the payload command line and the
+# kprintf spam knob differ. The fast image must not carry cs_debug=2: those
+# page dumps cost megabytes of 115200-baud UART time.
+grep -q 'KPRINTF_SPAM=' shim/build.sh
+grep -q 'build_mode "-log"' .github/workflows/xnu.yml
+grep -q 'shim-boot-log.img' .github/workflows/xnu.yml
+grep -q -- '--reject cs_debug=2' .github/workflows/xnu.yml
+grep -q -- '--reject=-enable_kprintf_spam' .github/workflows/xnu.yml
+echo "ok   fast image has no cs_debug dump, log image keeps it"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).

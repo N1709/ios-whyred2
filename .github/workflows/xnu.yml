@@ -231,12 +231,21 @@ jobs:
           # Root from the HFS+ (HFSX) volume staged in userdata, with writes
           # enabled so HFS+ can replay its journal and mount read-write.
           ROOTDEV: emmcroot0
-          # cs_debug=1 makes cs_invalid_page() name the vnode/page it rejects;
-          # cs_enforcement_disable=1 is XNU's own switch (kern_cs.c cs_init) that
-          # stops the kernel from killing tasks for an unsealed root. debug= is
-          # already in the command line, so PE_i_can_has_debugger() is true.
+          # The two command lines live in the run block: this job publishes a
+          # fast image and a diagnostic one from the same kernel.
+        run: |
+          set -euo pipefail
+          KERNEL=xnu/out/kernel.development.whyred
+          test -f "$KERNEL" || { echo "::error::no whyred kernel in the artifact"; ls -lR xnu/out; exit 1; }
+          test -f resources/whyred_dtb.bin || { echo "::error::resources/whyred_dtb.bin missing"; exit 1; }
+          (cd xnu/out && sha256sum -c SHA256SUMS)
+
+          # Common switches. cs_enforcement_disable=1 is XNU's own switch
+          # (kern_cs.c cs_init) that stops the kernel from killing tasks for an
+          # unsealed root; debug= is already in the command line, so
+          # PE_i_can_has_debugger() is true.
           #
-          # unentitled_ios_sim_launch=1 is required because this is a
+          # unentitled_ios_sim_launch=1 is required because this is an
           # XNU_TARGET_OS_OSX kernel running an iOS userland: process_signature()
           # refuses PLATFORM_IOS binaries unless the spawn carries the platform
           # or this DEVELOPMENT tunable is set (EXEC_EXIT_REASON_WRONG_PLATFORM,
@@ -246,69 +255,105 @@ jobs:
           # this kernel only implements the AMFI MAC policy, not the service.
           # The iOS 16 binary has launchd_unsecure_cache= for exactly this
           # bring-up case: it skips the signature push and the AMFI lookup.
-          # 0173 needs cs_debug=2: the CD dump and the per-blob "proc ..." line
-          # are gated on cs_debug > 1. The CSBLOB/CSPAGE/SHARED CACHE prints
-          # are unconditional so the failing page data can be matched offline.
+          #
           # sweetlog=1 keeps the 4 MiB console ring on SYSTEM: the serial
           # scrollback only reaches the tail (launchd respawn loop), and the
           # backboardd/SpringBoard lines are at the start. Pull it from
-          # recovery with tools/sweet-log-pull.sh.
+          # recovery with tools/sweet-log-pull.sh. Both images keep it; only
+          # the verbosity differs.
+          #
           # sweetfbtest=1 draws four colour bars into the boot framebuffer
           # once, early in BSD init: the console is on the UART and
           # kPEAcquireScreen clears the panel, so the bars are the only way
           # to see whether MDSS still scans the ABL splash out.
-          EXTRA_CMDLINE: emmcrw=1 cs_debug=2 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1
-        run: |
-          set -euo pipefail
-          KERNEL=xnu/out/kernel.development.whyred
-          test -f "$KERNEL" || { echo "::error::no whyred kernel in the artifact"; ls -lR xnu/out; exit 1; }
-          test -f resources/whyred_dtb.bin || { echo "::error::resources/whyred_dtb.bin missing"; exit 1; }
-          (cd xnu/out && sha256sum -c SHA256SUMS)
+          COMMON=emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1
+          COMMON="$COMMON launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1"
+          # Diagnostic: cs_debug=2 prints the CD dump and the per-blob line for
+          # every validated page (megabytes), and -enable_kprintf_spam adds the
+          # rest. At 115200 baud that is the biggest single cost in boot time,
+          # so it is not in the fast image.
+          DIAG="cs_debug=2"
+          SPAM="-enable_kprintf_spam"
 
-          # First pass produces the uncompressed Image; whyred's ABL rejects a
-          # single download over 6 MiB, and gzip -9 lands at ~6.31 MB, so
-          # compress that Image with zopfli and pack it in a second pass.
-          bash shim/build.sh "$KERNEL"
-          zopfli --i15 -c shim/out/Image > shim/out/Image.z.gz
-          # build.sh cd's into shim/, so IMAGE_GZ must be absolute: a relative
-          # path is re-resolved there, silently misses the file and the second
-          # pass packs a gzip -9 Image (6.54 MB) - exactly the failure this
-          # job exists to prevent.
-          test -s shim/out/Image.z.gz
-          IMAGE_GZ="$PWD/shim/out/Image.z.gz" bash shim/build.sh "$KERNEL"
+          mkdir -p images
+          build_mode() { # suffix extra spam
+            rm -rf shim/out
+            EXTRA_CMDLINE="$COMMON $2" KPRINTF_SPAM="$3" \
+              bash shim/build.sh "$KERNEL"
+            # First pass produces the uncompressed Image; whyred's ABL rejects a
+            # single download over 6 MiB, and gzip -9 lands at ~6.31 MB, so
+            # compress that Image with zopfli and pack it in a second pass.
+            zopfli --i15 -c shim/out/Image > shim/out/Image.z.gz
+            # build.sh cd's into shim/, so IMAGE_GZ must be absolute: a relative
+            # path is re-resolved there, silently misses the file and the second
+            # pass packs a gzip -9 Image (6.54 MB) - exactly the failure this
+            # job exists to prevent.
+            test -s shim/out/Image.z.gz
+            EXTRA_CMDLINE="$COMMON $2" KPRINTF_SPAM="$3" \
+              IMAGE_GZ="$PWD/shim/out/Image.z.gz" bash shim/build.sh "$KERNEL"
 
-          # The image only boots if the storage fixes and the ram-disk root are
-          # in it: fail here instead of on the phone.
-          # bindfs must be in the payload: without it mount-phase-1 gets
-          # ENODEV(19) on the preboot bind mounts and launchd panics.
-          for s in "mockfs" "sweet_hfs" "bindfs" "bus width from ABL kept"; do
-            grep -aq "$s" shim/out/Image || { echo "::error::payload lacks '$s'"; exit 1; }
-          done
-          size=$(stat -c%s shim/out/shim-boot.img)
-          echo "shim-boot.img = $size bytes (ABL limit 6291456)"
-          test "$size" -le 6291456 || { echo "::error::boot image exceeds the ABL download limit"; exit 1; }
+            # The image only boots if the storage fixes and the ram-disk root
+            # are in it: fail here instead of on the phone. bindfs must be in
+            # the payload: without it mount-phase-1 gets ENODEV(19) on the
+            # preboot bind mounts and launchd panics.
+            for s in "mockfs" "sweet_hfs" "bindfs" "bus width from ABL kept"; do
+              grep -aq "$s" shim/out/Image || { echo "::error::payload lacks '$s'"; exit 1; }
+            done
+            local size
+            size=$(stat -c%s shim/out/shim-boot.img)
+            echo "shim-boot$1.img = $size bytes (ABL limit 6291456)"
+            test "$size" -le 6291456 || { echo "::error::boot image exceeds the ABL download limit"; exit 1; }
+            cp shim/out/shim-boot.img "images/shim-boot$1.img"
+          }
+
+          build_mode ""    ""     ""
+          build_mode "-log" "$DIAG" "$SPAM"
+
+          # Prove each image carries the command line it claims: the fast one
+          # must not have the diagnostic switches.
+          python3 tools/payload_cmdline.py --image images/shim-boot.img \
+            --require rd=emmcroot0 --require emmcrw=1 --require sweetlog=1 \
+            --require sweetfbtest=1 --reject cs_debug=2 --reject=-enable_kprintf_spam
+          python3 tools/payload_cmdline.py --image images/shim-boot-log.img \
+            --require rd=emmcroot0 --require cs_debug=2 --require sweetlog=1
 
       - name: Collect the flashable image
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp shim/out/shim-boot.img dist/
-          (cd dist && sha256sum shim-boot.img > SHA256SUMS)
+          cp images/shim-boot.img images/shim-boot-log.img dist/
+          (cd dist && sha256sum shim-boot.img shim-boot-log.img > SHA256SUMS)
           cat > dist/FLASH.txt <<'EOF'
-          whyred (Redmi Note 5 / Note 5 Pro) iOS boot image
-          =================================================
+          whyred (Redmi Note 5 / Note 5 Pro) iOS boot images
+          ==================================================
 
-          The image loads the XNU kernel from the kernel artifact of the same
-          CI run and continues from the iOS HFS+ root in userdata.
+          Both load the same XNU kernel from the kernel artifact of this CI run
+          and continue from the iOS HFSX root on eMMC. They differ only in how
+          much the kernel prints.
 
-          Flash it to the recovery partition (slot a on this phone):
+          shim-boot.img      fast: no cs_debug=2 page dumps, no kprintf spam.
+                             Console output still goes to the UART and to the
+                             4 MiB console ring on SYSTEM (sweetlog=1).
+
+          shim-boot-log.img  diagnostic: cs_debug=2 and -enable_kprintf_spam.
+                             Every validated code page is dumped, so the UART
+                             at 115200 baud makes the boot several times
+                             slower. Use it when a line is missing from the
+                             fast image, not for daily use.
+
+          Both draw four colour bars into the boot framebuffer once, early in
+          BSD init (sweetfbtest=1), so a lit panel proves MDSS still scans the
+          ABL splash out even while the console is on the UART.
+
+          Flash to the recovery partition (slot a on this phone):
 
               fastboot flash recovery shim-boot.img
               fastboot reboot recovery
 
-          To test without overwriting recovery:
+          Test without overwriting recovery:
 
               fastboot boot shim-boot.img
+              fastboot boot shim-boot-log.img
 
           Verify before flashing:
 
