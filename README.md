@@ -22,33 +22,34 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-27. Build `0173b` is the last hardware-confirmed state:
-the cache loader starts the daemon set, and the one remaining blocker is
-code signing - `csblob invalid: 85` on `thermalmonitord`/`lockdownd`/
-`backboardd` plus `vm_shared_region_slide_page()` failures and SIGBUS in the
-shared cache. Build `0173` prints the exact CD, CS blob and slide-chain bytes
-the kernel validates. The first `0173` image was packaged with `rd=md0` (the
-ramdisk probe), so its log could not reach the CS path; the corrected image is
-`/home/n1709/whyred-0173b.img` (5,853,184 B, sha256
-`d4c5aa9c...3eb246`), built with the iOS-root command line. That boot reached
-code signing and proved the signature bytes on disk are correct: the kernel
-hashed bytes produced by a *different* request. The driver shares one bounce
-buffer and copied it out after dropping its lock, so a concurrent page-in or
-write could replace the data while the transfer still reported success. Build
-`0174` keeps that copy inside the transfer's critical section. The image for
-that build is `/home/n1709/whyred-0174.img` (5,853,184 B, sha256
-`d320731e...ad3ac6`, from CI run `40427503776`). The boot-stage checklist
-stays in the chat, not here.
+Last updated 2026-10-27. Build `0174` is the last hardware-confirmed state and
+it cleared the code-signing gate: `SpringBoard` execs, opens
+`IOPMrootDomain` and its `SWEET AKS` calls return `0x0`, with no
+`csblob invalid` line. That closed the `csblob invalid: 85` /
+`vm_shared_region_slide_page()` failures traced in `0173b`: the driver
+returned bytes produced by a *different* request, because it copied the
+shared bounce buffer after dropping its lock. `0174` keeps the copy inside
+the transfer's critical section.
+
+Two things still separate that daemon set from a usable screen. First, the
+system already routes its console to the UART (`serial=3`) while
+`kPEAcquireScreen` clears the boot framebuffer, so the panel goes black at
+once even though the kernel is alive; the SANTONI/SYSTEM console ring
+(`sweetlog=1`) is the log channel that does not depend on the screen. Second,
+`installcoordinationd` fails with `NSPOSIXErrorDomain 13` creating its data
+directory, the same EACCES that SWEET fixed by dropping `config_ext_resolver`
+(`0057`); `0175` does that for WHYRED/LAVENDER. The boot-stage checklist stays
+in the chat, not here.
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
-| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172` |
+| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172`. The panel stays black because the console is routed to the UART and `kPEAcquireScreen` clears the framebuffer; on-screen text is the next experiment, not a kernel gap |
 | eMMC command, data and mount path | **100%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, single- and multi-block transfers, journal replay, HFSX mounted read-write. The last defect was the bounce buffer being copied outside its lock (the source of the wrong code-signing bytes); `0174` owns every byte while the transfer holds the lock |
 | Root filesystem from eMMC (`launchd`, real daemons) | **100%** | `launchd` runs as PID 1; `bindfs` lets the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exit successfully, and the LaunchDaemons start (`watchdogd`, `lockdownd`, `backboardd`, `amfid`, `imagent`, ...) |
-| Code signing / AMFI (trust cache, entitlements) | **65%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec and `launchd_unsecure_cache=1` skips the missing AMFI service. The `cs_blob_init_validated` 85 and the shared-cache slide faults are now traced to one cause: the driver returned another request's bytes with a success status. `0174` fixes it; this row reaches 100% when `backboardd` passes code signing on hardware |
+| Code signing / AMFI (trust cache, entitlements) | **85%** | `0174` is confirmed on hardware: `SpringBoard` (a platform binary) execs, queries IOPMrootDomain and its `SWEET AKS` calls return `0x0`, with no `csblob invalid`. Remaining for 100%: the same proof in the full `sweetlog` ring for `backboardd`, and removing the `unentitled_ios_sim_launch` / `launchd_unsecure_cache` bring-up switches |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
-| **Kernel readiness for an eMMC boot** | **~95%** | Mount, bind mounts, platform-binary exec and the full boot-task chain are proven; `0174` is the last kernel-side verification |
-| **Overall port (weighted)** | **~85%** | Code signing is the only gate left between the daemon set and SpringBoard; the peripherals are the rest |
+| **Kernel readiness for an eMMC boot** | **100%** | Mount, bind mounts, platform-binary exec, the full boot-task chain and `SpringBoard` are proven on hardware by `0174`; `0175` only removes a permission bug on the userspace side |
+| **Overall port (weighted)** | **~88%** | The kernel side is done; what is left is the display path (kernel console routed to serial) and the peripherals |
 
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.
