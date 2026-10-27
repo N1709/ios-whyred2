@@ -291,6 +291,28 @@ a black screen, use the log image (or the UART) to see why. That is the
 trade the two modes make; `sweetlog=1` used to be in every image, so even a
 "normal" boot paid for the ring writes.
 
+### 0177 image: bars mapped from kernel_map (2026-10-27)
+
+CI run `40443516099` (commit `1ffb864`) is green and both artifacts verify:
+
+| File | Size | SHA-256 |
+| --- | --- | --- |
+| `shim-boot.img` (normal) | 5,844,992 B | `b5422bd9f9a893d563a6ebbeb0765c8f5a12bdf89d297d2e8432823d73d15966` |
+| `shim-boot-log.img` | 5,844,992 B | `a350b4ffab36921aee97a85d381586e4422d450370208cdd1da3a339fa8450b0` |
+
+kept as `/home/n1709/whyred-0177.img` and `/home/n1709/whyred-0177-log.img`.
+Both carry driver 0177 and the `ml_io_map_unmappable` bars test, and leave
+446,464 B below the 6,291,456-byte ABL limit. The normal command line is
+
+```
+... whyred emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1
+launchd_unsecure_cache=1 sweetfbtest=1
+```
+
+with no `sweetlog`, no `cs_debug=2` and no kprintf spam; the log image adds
+`sweetlog=1 cs_debug=2 -enable_kprintf_spam`. Either boots the HFSX root from
+`userdata`; use the normal one unless the boot has to be diagnosed.
+
 ### The 0177 artifact lost two switches (2026-10-27)
 
 The first 0177 run (`40440352903`) built, but its payload command line was
