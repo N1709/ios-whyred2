@@ -2116,7 +2116,7 @@ sdhci_take_over(void)
 	 * Name the build in the log. Matching a boot log to a patch by
 	 * guessing from its messages has already cost flash cycles.
 	 */
-	printf("WHYRED SDHCI: driver 0174 (root \"%s\", writes %s; boot "
+	printf("WHYRED SDHCI: driver 0175 (root \"%s\", writes %s; boot "
 	    "args decide whether the HFS+ root comes from eMMC)\n",
 	    se.part, se.writable ? "enabled" : "read-only");
 

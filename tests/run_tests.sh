@@ -609,6 +609,24 @@ grep -q 'cs_debug=2' .github/workflows/xnu.yml
 grep -q 'ARM64_BOARD_CONFIG_WHYRED' "$P173"
 echo "ok   0173 dumps CD/CSBLOB/CSPAGE/slide bytes under cs_debug=2"
 
+echo "== ACL: 0175 drops config_ext_resolver like the SWEET config =="
+P175="xnu/patches/0175-board-configs-no-ext-resolver.patch"
+python3 tools/check_patch.py "$P175" -q \
+	--added-contains 'config/MASTER.arm64.whyred:config_triggers config_searchfs' \
+	--added-contains 'config/MASTER.arm64.lavender:config_triggers config_searchfs' \
+	--added-lacks 'config/MASTER.arm64.whyred:config_ext_resolver' \
+	--added-lacks 'config/MASTER.arm64.lavender:config_ext_resolver' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0175' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0174'
+# Container Library dirs carry ACL-only entries with a GUID ACE. With
+# config_ext_resolver the kernel asks memberd/opendirectoryd (not running on
+# iOS), the ACE check returns EWOULDBLOCK and installcoordinationd sees EACCES
+# ("Failed to create data directory", NSPOSIXErrorDomain 13). SWEET removed
+# the resolver in 0057 and its GUI milestone followed.
+grep -q 'config_ext_resolver' xnu/patches/0057-sweet-no-ext-resolver.patch
+grep -q 'sweetlog=1' .github/workflows/xnu.yml
+echo "ok   0175 uses the compatibility ACL mapping and keeps the full boot log"
+
 echo "== DRIVERS: the mirrors under drivers/ match the patch series =="
 # mkdrv: the patch is canonical; a mirror can only be refreshed by the tool.
 python3 tools/extract_drivers.py --check

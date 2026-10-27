@@ -116,6 +116,34 @@ For `IMDPersistenceAgent` (`nCode 14`, `codeLimit 0xd380`) the logged offsets
 embedded signature; the constant `off 0x13000` is the same signature page of
 `xpcproxy`. They appear because `cs_debug=2` is set.
 
+### SpringBoard runs (0174, 2026-10-27)
+
+A later window of the same boot shows the gate is open: `IOK SpringBoard:
+path IOPower:/IOPowerConnection/IOPMrootDomain -> IOPMrootDomain`,
+`IOK SpringBoard: open IOPMrootDomain type 0 -> 0x0` and repeated
+`SWEET AKS: SpringBoard sel 17 ... -> 0x0`. SpringBoard execs and does IOKit
+lookups, so 0174 fixed the signature bytes; the screen is still black but the
+UI process exists.
+
+Two real failures in that window:
+
+- `installcoordinationd` crashes with `NSPOSIXErrorDomain Code=13` (EACCES)
+  while creating its data directory. SWEET saw the same error and fixed it in
+  `0057-sweet-no-ext-resolver.patch`: the container `Library` dirs carry
+  ACL-only entries keyed by GUID, `config_ext_resolver` asks
+  memberd/opendirectoryd (not running on iOS), the ACE lookup returns
+  EWOULDBLOCK and the create ends as EACCES. The WHYRED/LAVENDER configs
+  still list `config_ext_resolver`; **0175** removes it from both, following
+  0057.
+- `mobileactivation` takes SIGTRAP (ns 2, code 5) and launchd eventually says
+  "Too many corpses being created"; that is the activation/FairPlay path, not
+  the display.
+
+The black screen is not explained by the excerpt: it needs the `backboardd`
+and `SWEET FB:` lines, which are early. `sweetlog=1` is now in the CI
+`EXTRA_CMDLINE`, so every build keeps the 4 MiB ring and the full boot can be
+pulled from recovery.
+
 Open question from this boot: the screen stayed black. That needs the
 `backboardd`/`SpringBoard` lines from the full log (or their exit status) to
 tell "has not drawn yet" from "started and died"; the observed window alone
