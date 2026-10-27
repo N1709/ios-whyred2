@@ -182,6 +182,43 @@ adb reboot bootloader
 The first 4 MiB of the SYSTEM partition become the log area (the user
 approved this on 2026-10-27); Android's `system` is no longer bootable.
 
+### Why the panel goes black immediately (2026-10-27)
+
+`serial=3` is `SERIALMODE_OUTPUT|SERIALMODE_INPUT`. In `arm_init.c`:
+
+```c
+if ((serialmode & SERIALMODE_OUTPUT) && serial_exists) {
+	serial_console_enabled = true;
+	(void)switch_to_serial_console();   /* cons_ops_index = SERIAL_CONS_OPS */
+}
+```
+
+`cons_ops[]` holds one console at a time (`serial_putc_options` xor
+`vcputc_options`), so with the UART selected the kernel never calls `vcputc`:
+no box-drawing, no progress, no text. Meanwhile `initialize_screen()` still
+handles `kPEAcquireScreen` and calls `gc_enable(TRUE)`, which clears the
+mapped boot framebuffer. The ABL splash is therefore replaced by a black
+frame and the boot log goes to the UART only. The panel being dark from the
+first second is expected with this command line and says nothing about the
+DSI/panel hardware.
+
+Keeping the UART is deliberate: it is the only live channel, and patch 0143
+already writes every character to the SYSTEM ring from `_cnputs` before the
+console-ops dispatch, so `sweetlog=1` records the same text the UART shows.
+The next display experiment is therefore a one-shot test pattern drawn into
+the boot framebuffer (`0x9d400000`, 1080x2160, stride 4320) from the SANTONI
+probe, gated on a boot arg: if the bars appear on the panel, the ABL's
+continuous splash is still scanned out and the black UI is a userspace
+problem; if they do not, the MDSS/DSI/panel path has to be brought up before
+any UI can be visible.
+
+The same boot also explains the "wrong area" from `sweet-log-pull.sh`: the
+`by-name/system` symlink resolves to `/dev/block/mmcblk0p61`, and the script
+grepped "system" in the resolved path, so it always fell into the userdata
+tail. It now keeps the matched *name* and reads 8193 sectors from SYSTEM,
+fails with exit 2 and the flusher hint when sector 0 has no `SANTONILOG1`
+magic, and `tests/run_tests.sh` covers both cases with a stub `adb`.
+
 ## HakiOS driver references (2026-10-27)
 
 Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
