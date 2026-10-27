@@ -641,6 +641,50 @@ else
 fi
 echo "ok   borrowed HakiOS driver references are unmodified"
 
+echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
+# SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
+# "grep system $resolved_path" check always fell through to the userdata tail
+# and reported "wrong area" even when the log was there. Stub adb, feed a
+# well-formed 8193-block area, and require the decoded text.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+cat > "$tmp/bin/adb" <<'STUB'
+#!/bin/sh
+case "$1" in
+get-state) echo device ;;
+shell)
+	case "$2" in
+	*by-name*) echo "system /dev/block/mmcblk0p61" ;;
+	blockdev*) echo 6241124352 ;;
+	*) exit 1 ;;
+	esac ;;
+exec-out) cat "$FAKE_AREA" ;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$tmp/bin/adb"
+python3 - "$tmp/area.bin" <<'PY'
+import struct, sys
+text = b'SWEET EARLY 20: kprintf startup complete\n'
+ring = bytearray(4 * 1024 * 1024)
+ring[:len(text)] = text
+hdr = struct.pack('<12sIIQQ', b'SANTONILOG1', 1, len(ring), len(text), 1)
+area = hdr.ljust(512, b'\0') + bytes(ring)
+open(sys.argv[1], 'wb').write(area[:8193 * 512])
+PY
+PATH="$tmp/bin:$PATH" FAKE_AREA="$tmp/area.bin" \
+	tools/sweet-log-pull.sh "$tmp/out.txt" 2>"$tmp/err"
+grep -q 'SWEET EARLY 20: kprintf startup complete' "$tmp/out.txt"
+grep -q 'SYSTEM partition' "$tmp/err"
+# A blank area must fail loudly (exit 2 + the flusher hint), not decode noise.
+dd if=/dev/zero of="$tmp/blank.bin" bs=512 count=8193 status=none
+PATH="$tmp/bin:$PATH" FAKE_AREA="$tmp/blank.bin" \
+	tools/sweet-log-pull.sh "$tmp/bad.txt" 2>"$tmp/bad-err" && exit 1 || true
+grep -q 'no SANTONILOG1 header' "$tmp/bad-err"
+grep -q 'WHYRED LOG: console log flusher active' "$tmp/bad-err"
+echo "ok   log pull reads the SYSTEM area through the by-name symlink"
+
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="
 python3 tests/test_payload.py
 echo "ok   check_payload matches whyred/lavender DTBs and the extractor walks a table"
