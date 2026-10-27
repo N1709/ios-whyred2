@@ -35,8 +35,10 @@ code signing and proved the signature bytes on disk are correct: the kernel
 hashed bytes produced by a *different* request. The driver shares one bounce
 buffer and copied it out after dropping its lock, so a concurrent page-in or
 write could replace the data while the transfer still reported success. Build
-`0174` keeps that copy inside the transfer's critical section. The boot-stage
-checklist stays in the chat, not here.
+`0174` keeps that copy inside the transfer's critical section. The image for
+that build is `/home/n1709/whyred-0174.img` (5,853,184 B, sha256
+`d320731e...ad3ac6`, from CI run `40427503776`). The boot-stage checklist
+stays in the chat, not here.
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |

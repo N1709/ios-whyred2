@@ -74,6 +74,26 @@ Decisive boot check: `driver 0174` present, plus **no** `csblob invalid`,
 `unable to create a validated cs_blob object` or `cs_validate_page ... !=`
 lines; `backboardd` should then pass code signing.
 
+**0174 image (2026-10-27):** CI run `40427503776` (commit `b6e3bb5`) went
+green and its `whyred-boot-img` artifact is the flashable image:
+
+```
+/home/n1709/whyred-0174.img
+5,853,184 B  (ABL limit 6,291,456; margin 438,272)
+sha256 d320731e13a0ec5f995a337bacccd679a1d4275d3770136fab7053853ad3ac6
+```
+
+Verified inside the image: `driver 0174` (1 hit, `driver 0173` 0), the new
+`bounce buffer already owned by another request` line, the 0173 CS/slide
+diagnostics still present, the 8,012-byte `resources/whyred_dtb.bin`, and the
+payload command line `rd=emmcroot0 ... emmcrw=1 cs_debug=2 ...`. The hash
+matches the artifact's own `SHA256SUMS`. It is built by the CI `package` job
+with `ROOTDEV=emmcroot0`; no local repack was needed.
+
+Boot it with `fastboot boot /home/n1709/whyred-0174.img`. Look for the
+`bounce buffer already owned` line (proof the old window was reachable) and
+for the absence of `csblob invalid` (proof the fix holds).
+
 ## HakiOS driver references (2026-10-27)
 
 Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
