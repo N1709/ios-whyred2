@@ -132,16 +132,16 @@ and a flusher, gated on `sweetlog=1`; the kernel image for it is unchanged.
 `sweetlog=1` in the payload command line:
 
 ```
-6,107,136 B  (ABL limit 6,291,456; margin 184,320)
-sha256 4c7a265e1a0e8e0057d24901f17b54f9c90e757cb2fc111a54491882b9545385
+5,853,184 B  (ABL limit 6,291,456; margin 438,272)
+sha256 219890bb8a12d8a7b971e92db4e1e1e9bcbf04ae2d9e6b736606a477c8c74afc
 ```
 
 Only the 608-byte payload command line changed; `driver 0174`, the 0173 CS
 diagnostics and the 8,012-byte DTB are unchanged. The kernel field was
-recompressed with `gzip -9` instead of zopfli; that costs 254 KiB and leaves
-less margin than 0174, but still fits. The flusher takes
-`santoni_sdhci_lock` and passes the static ring straight to `sdhci_write_pio`
-(WR-01), so it does not race the root's bounce buffer.
+recompressed with `zopfli --i15`, so it keeps 0174's exact size and ABL
+margin. The flusher takes `santoni_sdhci_lock` and passes the static ring
+straight to `sdhci_write_pio` (WR-01), so it does not race the root's bounce
+buffer.
 
 Read it after the boot from OrangeFox:
 
