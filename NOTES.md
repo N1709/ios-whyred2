@@ -212,6 +212,19 @@ continuous splash is still scanned out and the black UI is a userspace
 problem; if they do not, the MDSS/DSI/panel path has to be brought up before
 any UI can be visible.
 
+### 0175 image (2026-10-27)
+
+CI run `40434115533` (commit `207f914`) is green. The artifact verifies as
+
+```
+5,844,992 B  (ABL limit 6,291,456; margin 446,464)
+sha256 001ec1c29faa2e813129c1ae020c5c3a610954ec54567453068b22c7c5f90593
+driver 0175, sweetlog=1, no sweetfbtest
+```
+
+saved as `/home/n1709/whyred-0175.img`. It is superseded by 0176 for the next
+boot (0176 = 0175 + the framebuffer bars), so it is kept only as a fallback.
+
 The same boot also explains the "wrong area" from `sweet-log-pull.sh`: the
 `by-name/system` symlink resolves to `/dev/block/mmcblk0p61`, and the script
 grepped "system" in the resolved path, so it always fell into the userdata
