@@ -22,13 +22,16 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-26 (build `0172` confirmed on hardware: the cache loader
-starts the daemon set, and the remaining blocker moved to code signing -
-`csblob invalid: 85` on `thermalmonitord`/`lockdownd`/`backboardd` plus
-`vm_shared_region_slide_page()` failures and SIGBUS in the shared cache.
-Build `0173` is a diagnostics-only boot that prints the exact CD, CS blob and
-slide-chain bytes the kernel validates, so the fault can be matched against
-the root image offline).
+Last updated 2026-10-27. Build `0172` is still the last hardware-confirmed
+state: the cache loader starts the daemon set, and the remaining blocker is
+code signing - `csblob invalid: 85` on `thermalmonitord`/`lockdownd`/
+`backboardd` plus `vm_shared_region_slide_page()` failures and SIGBUS in the
+shared cache. Build `0173` prints the exact CD, CS blob and slide-chain bytes
+the kernel validates. The first `0173` image was packaged with `rd=md0` (the
+ramdisk probe), so its log could not reach the CS path; the corrected image is
+`/home/n1709/whyred-0173b.img` (5,853,184 B, sha256
+`d4c5aa9c...3eb246`), built with the iOS-root command line. The boot-stage
+checklist stays in the chat, not here.
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |

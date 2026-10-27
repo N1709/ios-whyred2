@@ -105,6 +105,10 @@ if [ -n "$PAYLOAD" ] && [ -f "out/payload.bin" ]; then
 	truncate -s "$align_size" out/Image
 	cat out/payload.bin >> out/Image
 	python3 -c 'import os,struct,sys; f=open(sys.argv[1],"r+b"); f.seek(16); f.write(struct.pack("<Q", os.path.getsize(sys.argv[1])))' out/Image
+	# The shim reads this line from the payload, not from the boot.img header:
+	# print it so a build that silently boots the ramdisk probe cannot pass as
+	# an iOS-root build.
+	python3 ../tools/payload_cmdline.py --payload out/payload.bin
 fi
 
 # Package as Image.gz-dtb (standard SDM660 kernel format for Qualcomm ABL)

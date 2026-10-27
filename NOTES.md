@@ -1,5 +1,47 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0173 build fix (2026-10-27): the first image booted the ramdisk probe
+
+The log from `/home/n1709/whyred-0173.img` is the **ramdisk probe**, not the
+iOS root: its payload command line was
+
+```
+... rd=md0 -v keepsyms=1 whyred
+```
+
+with no `emmcrw=1`, `cs_debug=2`, `unentitled_ios_sim_launch=1` or
+`launchd_unsecure_cache=1`. `shim/build.sh` reads that line from the payload
+(`SWEETXNU` header at `0x48`), not from the boot.img header, and the local
+rebuild was run without `ROOTDEV=emmcroot0` / `EXTRA_CMDLINE=...`. The kernel
+itself is 0173 (`driver 0173`, `CSPAGE`, `SHARED CACHE: slide fail ...` are all
+present); only the packaging was wrong. 0172 on the phone had the right line,
+so nothing on the phone regressed.
+
+**Corrected image (2026-10-27):** `/home/n1709/whyred-0173b.img`, 5,853,184 B
+(ABL limit 6,291,456), sha256
+`d4c5aa9ccbb4e548b9fc354a4b8110ec13274c65269d639ab4794f4f333eb246`. The
+payload command line now reads
+
+```
+debug=0x14e ... rd=emmcroot0 -v keepsyms=1 whyred emmcrw=1 cs_debug=2
+cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1
+```
+
+It was rebuilt from the existing 0173 payload by replacing the 608-byte
+command line in place, recompressing the shim image with zopfli and repacking
+with the same DTB; no new kernel or CI run was needed. The kernel strings and
+the DTB were verified inside the final image.
+
+**Guard:** `tools/payload_cmdline.py` reads the line from either
+`shim/out/payload.bin` or a built boot image and fails on a missing `--require`
+token. `shim/build.sh` now prints it after appending the payload and warns when
+the line selects `rd=md0`, so a probe image cannot silently be handed over as
+an iOS-root image.
+
+**Next:** boot `0173b`, then `grep -E "driver 0173|CODE SIGNING: (CD|CSBLOB|
+CSPAGE)|SHARED CACHE"` the log. 0172 remains the last hardware-confirmed state;
+this is forward, not a rollback.
+
 ## HakiOS driver references (2026-10-27)
 
 Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
