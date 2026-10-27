@@ -94,6 +94,33 @@ Boot it with `fastboot boot /home/n1709/whyred-0174.img`. Look for the
 `bounce buffer already owned` line (proof the old window was reachable) and
 for the absence of `csblob invalid` (proof the fix holds).
 
+### 0174 boot, observed window (2026-10-27)
+
+The first 0174 boot reached userspace and kept running: the excerpt shows
+`launchd` spawning daemons through pid 257 (`cloudd`, `fairplayd.H2`,
+`IMDPersistenceAgent`, `syncdefaultsd`, `bluetoothd`, `UserEventAgent`,
+`rtcreportingd`, `pipelined`, `searchpartyd`, ...), each with
+`setting platform binary on task` and `exec <name>`. No `csblob invalid` and
+no `cs_validate_page ... !=` line appears in that window, unlike 0173b where
+`backboardd`/`lockdownd`/`thermalmonitord` failed with 85 (EBADEXEC).
+
+The repeated `CODE SIGNING: cs_validate_page: mobj ... off 0x13000: no hash
+to validate !?` lines are **not** failures. `cs_validate_hash()` returns no
+hash for any 4 KiB chunk whose index is at or past the CodeDirectory's
+`nCodeSlots` (the `hashes()` call returns NULL once `page > nCodeSlots`, and
+the last slot is out of range). `cs_validate_page()` then sees
+`bytes_processed == 0`, skips that chunk and leaves it unvalidated
+(`ubc_subr.c`), so execution from it is never allowed but nothing is killed.
+For `IMDPersistenceAgent` (`nCode 14`, `codeLimit 0xd380`) the logged offsets
+`0xe000`/`0xf000` are exactly the pages after the signed code, i.e. the
+embedded signature; the constant `off 0x13000` is the same signature page of
+`xpcproxy`. They appear because `cs_debug=2` is set.
+
+Open question from this boot: the screen stayed black. That needs the
+`backboardd`/`SpringBoard` lines from the full log (or their exit status) to
+tell "has not drawn yet" from "started and died"; the observed window alone
+does not contain them.
+
 ## HakiOS driver references (2026-10-27)
 
 Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
