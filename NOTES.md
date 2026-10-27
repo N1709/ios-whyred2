@@ -212,6 +212,32 @@ continuous splash is still scanned out and the black UI is a userspace
 problem; if they do not, the MDSS/DSI/panel path has to be brought up before
 any UI can be visible.
 
+### 0176 image: the framebuffer bars (2026-10-27)
+
+CI run `40435834338` (commit `58412c7`) is green and its artifact verifies:
+
+```
+5,849,088 B  (ABL limit 6,291,456; margin 442,368)
+sha256 de0a5047352babc79bd93cdd1b53c905e7d997810f944691eefdf81a91863077
+driver 0176, sweetlog=1, sweetfbtest=1, cs_debug=2
+```
+
+saved as `/home/n1709/whyred-0176.img`. It is the diagnostic build (it
+predates the fast/diagnostic split), so the boot is slow but the bars appear
+early: `santoni_fb_test()` runs at the end of the SANTONI probe, before
+launchd. The strings `WHYRED FB: test pattern 4 bars` and the map-failure
+line are both in the payload.
+
+Reading the result:
+
+- four bars (red/green/blue/white) on the panel -> ABL's continuous splash is
+  still scanned out, so black UI later is a userspace/backboardd problem;
+- still black -> the panel or DSI is off after hand-off, and the whyred
+  display path (MDSS + NT36672 + backlight) has to be built before any UI can
+  be visible;
+- the same boot also shows whether 0175 removed the `installcoordinationd`
+  EACCES in the SYSTEM ring.
+
 ### Two images per run: fast and diagnostic (2026-10-27)
 
 Boot time on whyred is dominated by console output, not by disk or CPU: the
