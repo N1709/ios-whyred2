@@ -266,7 +266,7 @@ jobs:
           # once, early in BSD init: the console is on the UART and
           # kPEAcquireScreen clears the panel, so the bars are the only way
           # to see whether MDSS still scans the ABL splash out.
-          COMMON=emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1
+          COMMON="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1"
           COMMON="$COMMON launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1"
           # Diagnostic: cs_debug=2 prints the CD dump and the per-blob line for
           # every validated page (megabytes), and -enable_kprintf_spam adds the
@@ -310,12 +310,22 @@ jobs:
           build_mode "-log" "$DIAG" "$SPAM"
 
           # Prove each image carries the command line it claims: the fast one
-          # must not have the diagnostic switches.
+          # must not have the diagnostic switches. cs_enforcement_disable and
+          # unentitled_ios_sim_launch are not optional -- without them launchd
+          # dies for an unsealed root or a PLATFORM_IOS binary, so check them
+          # here instead of learning it from a black screen. This also caught
+          # an unquoted "COMMON=a b c" assignment that silently kept only "a".
           python3 tools/payload_cmdline.py --image images/shim-boot.img \
             --require rd=emmcroot0 --require emmcrw=1 --require sweetlog=1 \
-            --require sweetfbtest=1 --reject cs_debug=2 --reject=-enable_kprintf_spam
+            --require sweetfbtest=1 --require cs_enforcement_disable=1 \
+            --require unentitled_ios_sim_launch=1 \
+            --require launchd_unsecure_cache=1 \
+            --reject cs_debug=2 --reject=-enable_kprintf_spam
           python3 tools/payload_cmdline.py --image images/shim-boot-log.img \
-            --require rd=emmcroot0 --require cs_debug=2 --require sweetlog=1
+            --require rd=emmcroot0 --require cs_debug=2 --require sweetlog=1 \
+            --require cs_enforcement_disable=1 \
+            --require unentitled_ios_sim_launch=1 \
+            --require launchd_unsecure_cache=1
 
       - name: Collect the flashable image
         run: |

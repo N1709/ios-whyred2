@@ -544,7 +544,7 @@ python3 tools/check_patch.py "$P168" -q \
 grep -q 'ROOTDEV="${ROOTDEV:-md0}"' shim/build.sh
 grep -q 'rd=$ROOTDEV' shim/build.sh
 grep -q 'ROOTDEV: emmcroot0' .github/workflows/xnu.yml
-grep -q 'COMMON=emmcrw=1' .github/workflows/xnu.yml
+grep -q 'COMMON="emmcrw=1' .github/workflows/xnu.yml
 grep -q 'EXTRA_CMDLINE="$COMMON $2"' .github/workflows/xnu.yml
 # HFSX (case-sensitive HFS+) signs its volume header with HX, not BD.
 grep -q '0x58' tools/santoni-init.S
@@ -741,7 +741,29 @@ grep -q 'build_mode "-log"' .github/workflows/xnu.yml
 grep -q 'shim-boot-log.img' .github/workflows/xnu.yml
 grep -q -- '--reject cs_debug=2' .github/workflows/xnu.yml
 grep -q -- '--reject=-enable_kprintf_spam' .github/workflows/xnu.yml
+# The command line is assembled by shell assignments in the workflow. An
+# unquoted "COMMON=emmcrw=1 cs_enforcement_disable=1 ..." sets three shell
+# variables and leaves COMMON="emmcrw=1"; the 0177 images went out without
+# the two code-signing switches that way. Evaluate the lines the workflow
+# really runs, so quoting cannot be lost silently again.
+python3 - <<'PY'
+import subprocess
+lines = [l.strip() for l in open('.github/workflows/xnu.yml')
+         if l.strip().startswith(('COMMON=', 'DIAG=', 'SPAM='))]
+script = '\n'.join(lines) + '\nprintf "%s\\n" "$COMMON"\n'
+out = subprocess.run(['bash', '-c', script], capture_output=True,
+                     text=True, check=True).stdout
+need = ['emmcrw=1', 'cs_enforcement_disable=1',
+        'unentitled_ios_sim_launch=1', 'launchd_unsecure_cache=1',
+        'sweetlog=1', 'sweetfbtest=1']
+missing = [n for n in need if n not in out.split()]
+if missing:
+    raise SystemExit('COMMON lost %s -> %r' % (' '.join(missing), out))
+PY
+grep -q -- '--require cs_enforcement_disable=1' .github/workflows/xnu.yml
+grep -q -- '--require unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
 echo "ok   fast image has no cs_debug dump, log image keeps it"
+echo "ok   COMMON keeps every code-signing switch and the payload check requires it"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).
