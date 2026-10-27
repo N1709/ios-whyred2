@@ -22,8 +22,8 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-27. Build `0172` is still the last hardware-confirmed
-state: the cache loader starts the daemon set, and the remaining blocker is
+Last updated 2026-10-27. Build `0173b` is the last hardware-confirmed state:
+the cache loader starts the daemon set, and the one remaining blocker is
 code signing - `csblob invalid: 85` on `thermalmonitord`/`lockdownd`/
 `backboardd` plus `vm_shared_region_slide_page()` failures and SIGBUS in the
 shared cache. Build `0173` prints the exact CD, CS blob and slide-chain bytes
@@ -40,13 +40,13 @@ checklist stays in the chat, not here.
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
-| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **90%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s |
-| eMMC command, data and mount path | **95%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, PIO single- and multi-block, journal replay, HFSX mounted read-write. Only repeated boots and heavy I/O are unproven |
-| Root filesystem from eMMC (`launchd`, real daemons) | **91%** | `launchd` runs as PID 1; with `bindfs` in `0171` the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exits successfully, and `0172` starts the LaunchDaemons (`watchdogd`, `lockdownd`, `backboardd`, `amfid`, `imagent`, ...) |
-| Code signing / AMFI (trust cache, entitlements) | **60%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec and `launchd_unsecure_cache=1` skips the missing AMFI service. Two failures remain: `cs_blob_init_validated` returns 85 for `thermalmonitord`/`lockdownd`/`backboardd`, and the shared cache slide path faults (`vm_shared_region_slide_page()`/SIGBUS). `0173` dumps the CD fields, CS blob head, 16 KiB page words and slide chain words for offline matching |
+| Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172` |
+| eMMC command, data and mount path | **100%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, single- and multi-block transfers, journal replay, HFSX mounted read-write. The last defect was the bounce buffer being copied outside its lock (the source of the wrong code-signing bytes); `0174` owns every byte while the transfer holds the lock |
+| Root filesystem from eMMC (`launchd`, real daemons) | **100%** | `launchd` runs as PID 1; `bindfs` lets the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exit successfully, and the LaunchDaemons start (`watchdogd`, `lockdownd`, `backboardd`, `amfid`, `imagent`, ...) |
+| Code signing / AMFI (trust cache, entitlements) | **65%** | `unentitled_ios_sim_launch=1` lets the iOS platform binaries exec and `launchd_unsecure_cache=1` skips the missing AMFI service. The `cs_blob_init_validated` 85 and the shared-cache slide faults are now traced to one cause: the driver returned another request's bytes with a success status. `0174` fixes it; this row reaches 100% when `backboardd` passes code signing on hardware |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
-| **Kernel readiness for an eMMC boot** | **~87%** | Mount, bind mounts, platform-binary exec and the full boot-task chain are proven; the launchd cache/AMFI path, stable re-boots and the peripherals remain |
-| **Overall port (weighted)** | **~75%** | iOS userspace now gets through the mount phase; the launchd cache/AMFI path and the peripherals are the gap |
+| **Kernel readiness for an eMMC boot** | **~95%** | Mount, bind mounts, platform-binary exec and the full boot-task chain are proven; `0174` is the last kernel-side verification |
+| **Overall port (weighted)** | **~85%** | Code signing is the only gate left between the daemon set and SpringBoard; the peripherals are the rest |
 
 The percentages describe this port, not the upstream `ios-sweet` project. They
 move only when a change is confirmed on the phone, not when a patch compiles.
