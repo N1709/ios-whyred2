@@ -212,6 +212,32 @@ continuous splash is still scanned out and the black UI is a userspace
 problem; if they do not, the MDSS/DSI/panel path has to be brought up before
 any UI can be visible.
 
+### Two images per run: fast and diagnostic (2026-10-27)
+
+Boot time on whyred is dominated by console output, not by disk or CPU: the
+UART is 115200 baud (~11.5 KB/s) and `cs_debug=2` dumps the CD plus the
+per-blob line for every validated page, which is megabytes. With 0174 the
+code-signing diagnostics have done their job, so keeping them in the only
+available image made every boot several times slower than necessary.
+
+The package job now builds the kernel once and packs two images:
+
+| Image | Payload command line | Purpose |
+| --- | --- | --- |
+| `shim-boot.img` | `emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1` | fast boot; the console ring is still recorded |
+| `shim-boot-log.img` | the same plus `cs_debug=2` and `-enable_kprintf_spam` | full page dumps when a line is missing |
+
+`shim/build.sh` takes `KPRINTF_SPAM` (unset = spam, empty = quiet) so the
+command line is data, and `tools/payload_cmdline.py --reject` proves in the
+package job that the fast image carries no `cs_debug=2` and no spam. Both
+images are checked against the 6,291,456-byte ABL limit and against
+`SHA256SUMS` in `dist/`.
+
+This does not change what the persistent log is for: both images record the
+console to the SYSTEM ring, so a black-screen boot can still be read back with
+`tools/sweet-log-pull.sh`. Only the amount printed (and therefore both the
+UART time and the ring churn) differs.
+
 ### 0175 image (2026-10-27)
 
 CI run `40434115533` (commit `207f914`) is green. The artifact verifies as
