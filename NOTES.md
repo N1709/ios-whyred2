@@ -238,6 +238,31 @@ Reading the result:
 - the same boot also shows whether 0175 removed the `installcoordinationd`
   EACCES in the SYSTEM ring.
 
+### 0176 panicked: `io_submap` is only 8 MiB (2026-10-27)
+
+The 0176 boot never reached the bars. The decisive line is
+
+```
+kmem_alloc(...): failed with 3 @vm_kern.c:178
+```
+
+`vm_kern.c:177` is `__kmem_failed_panic()`, and 3 is `KERN_NO_SPACE`.
+`ml_io_map_wcomb()` ends in `io_map(...)`, which allocates from `io_submap`
+(`osfmk/arm/io_map.c`); that submap is `IO_MAP_SIZE` = 8 MiB for the whole
+kernel. The bars need `4320 * 2160` = 9,331,200 B = 8.9 MiB in one piece, so
+even an empty submap cannot satisfy the request, and `KMA_NOFAIL` turns the
+failure into a panic. No pixel was written.
+
+0177 maps through `ml_io_map_unmappable(phys, size, VM_WIMG_IO)`. That is the
+call `initialize_screen()` already uses for this framebuffer
+(`osfmk/console/video_console.c`) and it allocates from `kernel_map`, which
+has no 8 MiB ceiling. It also prints `PE_current_console()` (the base stays
+the physical address from boot_args; the geometry and stride come with it)
+and reads back one pixel per bar, so "the panel is dark" can be told apart
+from "the write never left the CPU". The test now runs after
+`santoni_log_start()`, so its lines reach the SYSTEM ring instead of only the
+UART.
+
 ### Two images per run: fast and diagnostic (2026-10-27)
 
 Boot time on whyred is dominated by console output, not by disk or CPU: the

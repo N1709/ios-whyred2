@@ -655,6 +655,29 @@ python3 tools/check_patch.py "$P176" -q \
 grep -q 'sweetfbtest=1' .github/workflows/xnu.yml
 echo "ok   0176 paints four bars into the ABL framebuffer under sweetfbtest=1"
 
+echo "== FB TEST: 0177 maps the bars from kernel_map, not io_submap =="
+P177="xnu/patches/0177-whyred-fb-test-kernel-map.patch"
+python3 tools/check_patch.py "$P177" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0177' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:ml_io_map_unmappable(WHYRED_FB_PHYS,' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:fb_size, VM_WIMG_IO);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:PE_current_console(&console);' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:#include <vm/memory_types.h>' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0176' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:extern vm_offset_t ml_io_map_wcomb'
+# The 0176 panic: io_submap is 8 MiB and a 1080x2160x32 mapping needs
+# 9,331,200 B, so kmem_alloc() panicked with KERN_NO_SPACE (3) before the
+# first pixel. Keep the numbers that prove the mismatch in the source.
+grep -q 'define WHYRED_FB_STRIDE        4320u' drivers/storage/santoni_sdhci.c
+test $((4320 * 2160)) -gt $((8 * 1024 * 1024))
+# The WHYRED FB lines are only in the SYSTEM ring if the flusher starts first.
+python3 - <<'PY'
+s = open('drivers/storage/santoni_sdhci.c').read()
+if s.index('\tsantoni_log_start();') > s.index('\tsantoni_fb_test();'):
+    raise SystemExit('santoni_fb_test() runs before the console log')
+PY
+echo "ok   0177 maps the bars from kernel_map and logs them"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

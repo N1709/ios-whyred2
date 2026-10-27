@@ -1,0 +1,115 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -51,6 +51,7 @@
+ #include <kern/clock.h>
+ #include <machine/machine_routines.h>
+ #include <arm/caches_internal.h>
++#include <vm/memory_types.h>
+ #include <vm/pmap.h>
+ #include <vm/vm_kern.h>
+ #include <pexpert/pexpert.h>
+@@ -2117,7 +2118,7 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("WHYRED SDHCI: driver 0176 (root \"%s\", writes %s; boot "
++	printf("WHYRED SDHCI: driver 0177 (root \"%s\", writes %s; boot "
+ 	    "args decide whether the HFS+ root comes from eMMC)\n",
+ 	    se.part, se.writable ? "enabled" : "read-only");
+ 
+@@ -4248,8 +4249,9 @@
+ 	    se.writable ? "writable (emmcrw=1)" : "read-only");
+ 
+ 	/* Private console log area on SYSTEM, if the partition is there. */
+-	santoni_fb_test();
+ 	santoni_log_start();
++	/* After the log: the WHYRED FB lines belong in the SYSTEM ring. */
++	santoni_fb_test();
+ 	return 0;
+ }
+ 
+@@ -4312,13 +4314,25 @@
+  * splash is still scanned out and a black UI is a userspace problem; no bars
+  * mean the panel is off and the display path must be brought up before any
+  * UI can be visible. Runs once, early in BSD init, long before backboardd.
++ *
++ * 0177: map it the way the console does. ml_io_map_wcomb() allocates from
++ * io_submap, which is only 8 MiB (IO_MAP_SIZE, osfmk/arm/io_map.c) and has
++ * no room for a 1080x2160x32 framebuffer: the 0176 boot panicked before the
++ * first pixel with "kmem_alloc(...): failed with 3" (KERN_NO_SPACE).
++ * ml_io_map_unmappable() allocates from kernel_map and is the call
++ * initialize_screen() itself uses for this framebuffer in
++ * osfmk/console/video_console.c. VM_WIMG_IO matches that mapping: this board
++ * config has no HAS_UCNORMAL_MEM, so the console maps the panel uncached
++ * device memory too.
+  */
+ #define WHYRED_FB_PHYS          0x9d400000ULL
+ #define WHYRED_FB_WIDTH         1080u
+ #define WHYRED_FB_HEIGHT        2160u
+ #define WHYRED_FB_STRIDE        4320u   /* bytes, 32bpp */
+ 
+-extern vm_offset_t ml_io_map_wcomb(vm_offset_t phys_addr, vm_size_t size);
++/* osfmk/arm/machine_routines.h, not exported to the BSD layer */
++extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
++    uint32_t flags);
+ 
+ static void
+ santoni_fb_test(void)
+@@ -4326,15 +4340,36 @@
+ 	static const uint32_t bars[4] = {
+ 		0xffe02020, 0xff20e020, 0xff2020e0, 0xffe8e8e8
+ 	};
++	PE_Video console;
+ 	uint32_t on = 0;
++	vm_size_t fb_size = (vm_size_t)WHYRED_FB_STRIDE * WHYRED_FB_HEIGHT;
++	volatile uint32_t *fb;
+ 
+ 	if (!PE_parse_boot_argn("sweetfbtest", &on, sizeof(on)) || !on) {
+ 		return;
+ 	}
+-	volatile uint32_t *fb = (volatile uint32_t *)ml_io_map_wcomb(
+-	    WHYRED_FB_PHYS, (vm_size_t)WHYRED_FB_STRIDE * WHYRED_FB_HEIGHT);
++
++	/*
++	 * PE_current_console() returns PE_state.video, whose v_baseAddr stays
++	 * the physical address ABL put in boot_args (pexpert/arm/pe_init.c);
++	 * the virtual mapping initialize_screen() made lives in vc_info and is
++	 * not exported. Print it so every boot shows which address is physical
++	 * and whether the geometry still matches the constants above.
++	 */
++	PE_current_console(&console);
++	printf("WHYRED FB: console base 0x%llx %llux%llu stride %llu depth "
++	    "%llu\n",
++	    (unsigned long long)console.v_baseAddr,
++	    (unsigned long long)console.v_width,
++	    (unsigned long long)console.v_height,
++	    (unsigned long long)console.v_rowBytes,
++	    (unsigned long long)console.v_depth);
++
++	fb = (volatile uint32_t *)ml_io_map_unmappable(WHYRED_FB_PHYS,
++	    fb_size, VM_WIMG_IO);
+ 	if (fb == NULL) {
+-		printf("WHYRED FB: test pattern map failed\n");
++		printf("WHYRED FB: test pattern map failed (%llu bytes)\n",
++		    (unsigned long long)fb_size);
+ 		return;
+ 	}
+ 	for (uint32_t y = 0; y < WHYRED_FB_HEIGHT; y++) {
+@@ -4344,9 +4379,15 @@
+ 			line[x] = bars[x / (WHYRED_FB_WIDTH / 4)];
+ 		}
+ 	}
+-	printf("WHYRED FB: test pattern 4 bars at 0x%llx (%ux%u, stride %u)\n",
++	printf("WHYRED FB: test pattern 4 bars at 0x%llx (%ux%u, stride %u, "
++	    "%llu B)\n",
+ 	    (unsigned long long)WHYRED_FB_PHYS, WHYRED_FB_WIDTH,
+-	    WHYRED_FB_HEIGHT, WHYRED_FB_STRIDE);
++	    WHYRED_FB_HEIGHT, WHYRED_FB_STRIDE, (unsigned long long)fb_size);
++	/* Read back one pixel per bar: proves the stores reached the bus even
++	 * when the panel stays dark. */
++	printf("WHYRED FB: readback %08x %08x %08x %08x\n",
++	    fb[0], fb[WHYRED_FB_WIDTH / 4], fb[WHYRED_FB_WIDTH / 2],
++	    fb[3 * WHYRED_FB_WIDTH / 4]);
+ }
+ 
+ struct santoni_log_header {
