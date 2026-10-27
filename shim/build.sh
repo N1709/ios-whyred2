@@ -145,6 +145,20 @@ python3 ../tools/mkbootimg.py \
 	--header_version 0 \
 	--cmdline "$CMDLINE"
 
+# Hand-over check. whyred's ABL refuses a single download over 6 MiB, and the
+# command line that decides which root is booted lives in the payload, not in
+# this header, so verify the image that will actually be flashed. 0173 was
+# handed over as an "iOS root" image that booted the ramdisk probe because the
+# payload still said rd=md0.
+img_size=$(wc -c < out/shim-boot.img)
+if [ "$img_size" -gt 6291456 ]; then
+	echo "error: out/shim-boot.img is $img_size bytes; whyred's ABL limit is 6291456" >&2
+	exit 1
+fi
+python3 ../tools/payload_cmdline.py --image out/shim-boot.img \
+	--require "rd=$ROOTDEV"
+python3 -c 'import hashlib,sys; d=open(sys.argv[1],"rb").read(); print("%s  %d bytes  sha256 %s" % (sys.argv[1], len(d), hashlib.sha256(d).hexdigest()))' out/shim-boot.img
+
 # Host render of the console layout
 $HOST_CC -O2 -Wall -I. $BOARD_DEFINE -o out/host_test console.c host_test.c && ./out/host_test
 
