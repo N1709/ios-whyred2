@@ -55,6 +55,12 @@ refused the area and the log looked empty. The header is now written before
 the first ring block and a header failure no longer stops the flusher; the
 pull tool can also decode a headerless ring.
 
+The 0177 UART capture settles the daemon question: `SpringBoard` execs, opens
+`AppleKeyStore` and `IOPMrootDomain` (`0x0`) and its AKS calls succeed, so
+the black screen is not a dead SpringBoard. Nothing has called
+`IOMobileFramebuffer` from `SpringBoard`/`backboardd` yet — only
+`thermalmonitord` — so the missing piece is still presentation.
+
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172`. `0177` adds the missing proof that the panel scans this framebuffer out after hand-off: four bars written by the kernel are visible. The boot screen is still black by design because the console is routed to the UART and `kPEAcquireScreen` clears the buffer |

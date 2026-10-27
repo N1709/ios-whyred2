@@ -371,6 +371,53 @@ like when the header is missing:
 # no SANTONILOG1 header (sector 0 is blank): salvaged 13312 bytes from the 26-block ring prefix
 ```
 
+### 0178 image and the 0177 UART: SpringBoard runs (2026-10-27)
+
+CI run `40449555251` (commit `8873f4b`) is green and both images verify:
+
+| File | Size | SHA-256 |
+| --- | --- | --- |
+| `shim-boot.img` (normal) | 5,849,088 B | `1a1cc482759ad38153335223ce8ea8f4dc28e33ca49582d403daa0dc5253d6cf` |
+| `shim-boot-log.img` | 5,849,088 B | `a7e613aacdcdf35bcb3f600702bacb3f4d408b12b2cf4b91025dc2343032dab8` |
+
+kept as `/home/n1709/whyred-0178.img` and `/home/n1709/whyred-0178-log.img`
+(446,368 B below the ABL limit). Both contain driver 0178, the header-first
+flusher and the `first flush ok` line; the normal one still carries no log
+switch.
+
+The UART capture of a 0177 log boot goes all the way into userspace, which
+closes the question the truncated ring left open:
+
+```
+hfs: mounted iOSRoot on device b(2, 0)
+SWEET: root volume is not authenticated (error 25); continuing unsealed
+load_init_program: attempting to load /sbin/launchd
+FIPSPOST_USER ... PASSED  (aes_ecb, aes_cbc, rsa_sig)
+... data-protection, finish-obliteration, commit-boot-mode, mount-phase-2,
+    init-with-data-volume, MSUEarlyBootTask, fips  -> every boot task
+exec backboardd, exec amfid, exec configd, exec lockdownd, exec wifid, ...
+SWEET AKS: keybagd sel 0 ... -> 0x0
+IOK SpringBoard: path IOService:/IOResources/AppleKeyStore -> AppleKeyStore
+IOK SpringBoard: open AppleKeyStore type 0 -> 0x0
+IOK SpringBoard: open IOPMrootDomain type 0 -> 0x0
+IOK SpringBoard: path IODeviceTree:/buttons -> IOPlatformDevice
+SWEET AKS: SpringBoard sel 0/35/7 ... -> 0x0
+```
+
+So `SpringBoard` is not missing and is not being killed: it execs, opens the
+keystore and `IOPMrootDomain`, and its AKS calls succeed. `driverkitd`
+crashes once (`reason ns 1 code 0x7`) and `ReportCrash` picks it up; that is
+one daemon and not the boot.
+
+What is still absent is any `SWEET FB:` line from `SpringBoard` or
+`backboardd`: the only IOMFB caller in the capture is `thermalmonitord`
+(selector 78). Nothing has swapped a surface yet, and the framebuffer still
+holds the four test bars until something clears it. The next check is whether
+the panel goes black because of a display-off request (auto-lock,
+`kSweetFBRequestPowerChange`); patch `0079` logs `SWEET FB: display off` for
+that, and `sweetfb_stayon=1` (`0085`) ignores it. The 0178 ring now records
+the whole boot, so one pull answers it.
+
 ### The 0177 artifact lost two switches (2026-10-27)
 
 The first 0177 run (`40440352903`) built, but its payload command line was
