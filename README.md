@@ -30,7 +30,12 @@ shared cache. Build `0173` prints the exact CD, CS blob and slide-chain bytes
 the kernel validates. The first `0173` image was packaged with `rd=md0` (the
 ramdisk probe), so its log could not reach the CS path; the corrected image is
 `/home/n1709/whyred-0173b.img` (5,853,184 B, sha256
-`d4c5aa9c...3eb246`), built with the iOS-root command line. The boot-stage
+`d4c5aa9c...3eb246`), built with the iOS-root command line. That boot reached
+code signing and proved the signature bytes on disk are correct: the kernel
+hashed bytes produced by a *different* request. The driver shares one bounce
+buffer and copied it out after dropping its lock, so a concurrent page-in or
+write could replace the data while the transfer still reported success. Build
+`0174` keeps that copy inside the transfer's critical section. The boot-stage
 checklist stays in the chat, not here.
 
 | Milestone | Progress | Notes |

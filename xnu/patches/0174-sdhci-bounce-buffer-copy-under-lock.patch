@@ -1,0 +1,107 @@
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -2116,7 +2116,7 @@
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("WHYRED SDHCI: driver 0173 (root \"%s\", writes %s; boot "
++	printf("WHYRED SDHCI: driver 0174 (root \"%s\", writes %s; boot "
+ 	    "args decide whether the HFS+ root comes from eMMC)\n",
+ 	    se.part, se.writable ? "enabled" : "read-only");
+ 
+@@ -3797,6 +3797,28 @@
+ 	return (uintptr_t)addr >= VM_MIN_KERNEL_ADDRESS;
+ }
+ 
++/*
++ * 0174: take the bounce buffer, and say once if another request already had
++ * it. Before this patch the lock was released before the copy, so overlap
++ * between two requests looked harmless while it silently swapped the data.
++ * This line in a boot log is the proof that the window was reachable.
++ */
++static void
++santoni_sdhci_bounce_lock(void)
++{
++	static bool contention_logged;
++
++	if (lck_mtx_try_lock(&santoni_sdhci_lock)) {
++		return;
++	}
++	if (!contention_logged) {
++		contention_logged = true;
++		printf("WHYRED SDHCI: bounce buffer already owned by another "
++		    "request; keeping the copy inside the transfer's lock\n");
++	}
++	lck_mtx_lock(&santoni_sdhci_lock);
++}
++
+ static void
+ santoni_sdhci_strategy(buf_t bp)
+ {
+@@ -3846,11 +3868,25 @@
+ 		uint32_t blocks = (skip + want + SDHCI_BLOCK - 1) / SDHCI_BLOCK;
+ 		char *bounce = (char *)(se.dma + DMA_BOUNCE);
+ 
++		/*
++		 * 0174: the bounce buffer is owned by the request that holds
++		 * the lock, and only by that request. It used to be released
++		 * right after the transfer and the caller's copy happened
++		 * afterwards; a second strategy() call could then refill the
++		 * bounce buffer before the first one copied it out, so the
++		 * caller got a different block with a success status. That is
++		 * exactly the shape of the code-signing failure: the expected
++		 * hash matched the file on disk while the kernel hashed bytes
++		 * from somewhere else, and a signature read came back as the
++		 * string table of a different file. The copy therefore stays
++		 * inside the same critical section as the transfer. A physio
++		 * buffer has its pages vslock()ed, so copyin()/copyout() under
++		 * the mutex cannot fault on this same device.
++		 */
+ 		if (rd) {
+-			lck_mtx_lock(&santoni_sdhci_lock);
++			santoni_sdhci_bounce_lock();
+ 			error = santoni_sdhci_read_blocks(se.first_block + lba,
+ 			    blocks, bounce);
+-			lck_mtx_unlock(&santoni_sdhci_lock);
+ 			if (!error) {
+ 				if (user) {
+ 					error = copyout(bounce + skip,
+@@ -3859,28 +3895,26 @@
+ 					memcpy(vaddr + done, bounce + skip, want);
+ 				}
+ 			}
++			lck_mtx_unlock(&santoni_sdhci_lock);
+ 		} else {
++			santoni_sdhci_bounce_lock();
+ 			if (skip || (want % SDHCI_BLOCK)) {
+-				lck_mtx_lock(&santoni_sdhci_lock);
+ 				error = santoni_sdhci_read_blocks(se.first_block + lba,
+ 				    blocks, bounce);
+-				lck_mtx_unlock(&santoni_sdhci_lock);
+-				if (error) {
+-					break;
+-				}
+ 			}
+-			if (user) {
+-				error = copyin((user_addr_t)(vaddr + done),
+-				    bounce + skip, want);
+-			} else {
+-				memcpy(bounce + skip, vaddr + done, want);
++			if (!error) {
++				if (user) {
++					error = copyin((user_addr_t)(vaddr + done),
++					    bounce + skip, want);
++				} else {
++					memcpy(bounce + skip, vaddr + done, want);
++				}
+ 			}
+ 			if (!error) {
+-				lck_mtx_lock(&santoni_sdhci_lock);
+ 				error = santoni_sdhci_write_blocks(
+ 				    se.first_block + lba, blocks, bounce);
+-				lck_mtx_unlock(&santoni_sdhci_lock);
+ 			}
++			lck_mtx_unlock(&santoni_sdhci_lock);
+ 		}
+ 		if (error) {
+ 			break;

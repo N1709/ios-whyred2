@@ -42,6 +42,38 @@ an iOS-root image.
 CSPAGE)|SHARED CACHE"` the log. 0172 remains the last hardware-confirmed state;
 this is forward, not a rollback.
 
+## 0174 (2026-10-27): the code-signing bytes came from another request
+
+The 0173b log proved the signatures on disk are fine and the kernel hashed
+bytes from somewhere else. Offline check: `nfcd`'s expected page-1 hash is
+exactly its CodeDirectory slot (`9cde5017...a621dfac`), while the "actual" hash
+matches **no** 4 KiB page of the file. The `CSBLOB` heads are not in the files
+either: `backboardd` printed `astEngagedPo`, which lives in the root image
+inside a `...lastEngagedPolicyTimeStamp...` string table, and `mtmergeprops`
+printed kernel log text (`d started\0%p`; `thread %d started` is a kernel
+string, and the root image does not contain it). So reads returned *success*
+with another producer's bytes.
+
+Cause: the driver has one 1 MiB bounce buffer for every request, and
+`santoni_sdhci_strategy()` dropped `santoni_sdhci_lock` after the transfer but
+copied out afterwards. A concurrent page-in (or a filesystem write staging
+into the same buffer) could refill the bounce buffer in that window, and the
+first caller then copied a different block with `error == 0`. The signature
+path makes it fatal: `vn_rdwr()` reports success, `cs_blob_init_validated()`
+gets a superblob that is not `CSMAGIC_EMBEDDED_SIGNATURE` (85 = EBADEXEC), so
+`launchd` clears the platform bit and panics on `fseventsd`.
+
+**0174** keeps the copy inside the same critical section as the transfer, in
+both directions, and prints one line the first time the bounce buffer is
+already owned (`WHYRED SDHCI: bounce buffer already owned by another request`).
+That line is the proof the old window was reachable. `copyin()`/`copyout()`
+under the mutex is safe here because a `B_PHYS` buffer has its pages
+`vslock()`ed by `physio()`.
+
+Decisive boot check: `driver 0174` present, plus **no** `csblob invalid`,
+`unable to create a validated cs_blob object` or `cs_validate_page ... !=`
+lines; `backboardd` should then pass code signing.
+
 ## HakiOS driver references (2026-10-27)
 
 Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
