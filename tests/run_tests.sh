@@ -615,7 +615,12 @@ python3 tools/extract_drivers.py --check
 echo "ok   driver mirrors are generated from the patches, not edited by hand"
 # The HakiOS references are byte-for-byte upstream; if one is edited it stops
 # being evidence of what the other port actually did.
-sha256sum -c drivers/hakios-SHA256SUMS --quiet
+if command -v sha256sum >/dev/null 2>&1; then
+	sha256sum -c drivers/hakios-SHA256SUMS --quiet
+else
+	# macOS runner: GNU coreutils is not installed yet at this step.
+	shasum -a 256 -c drivers/hakios-SHA256SUMS >/dev/null
+fi
 echo "ok   borrowed HakiOS driver references are unmodified"
 
 echo "== PAYLOAD: reject a wrong-machine kernel or DTB before the ABL does =="

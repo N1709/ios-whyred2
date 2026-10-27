@@ -55,7 +55,17 @@ jobs:
           # Unified-diff structure of every patch (a corrupt hunk made CI drop
           # 0143/0144) plus the three phase 4 host tests: SDHCI mock, hardened
           # GPT with the SYSTEM log fence, and the console log ring.
-          bash tests/run_tests.sh
+          #
+          # Republish the tail as ::error:: annotations: job logs need a
+          # token, but the annotations of a failed check are public, so a
+          # macOS-only failure can still be read back without one.
+          set -o pipefail
+          if ! bash tests/run_tests.sh 2>&1 | tee /tmp/host-tests.log; then
+            tail -25 /tmp/host-tests.log | while IFS= read -r line; do
+              printf '::error::%s\n' "${line//'%'/'%25'}"
+            done
+            exit 1
+          fi
 
       - name: Fetch build script
         run: |
