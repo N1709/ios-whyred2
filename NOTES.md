@@ -271,23 +271,46 @@ per-blob line for every validated page, which is megabytes. With 0174 the
 code-signing diagnostics have done their job, so keeping them in the only
 available image made every boot several times slower than necessary.
 
-The package job now builds the kernel once and packs two images:
+The package job now builds the kernel once and packs one or both images,
+chosen by the `build_mode` input on a manual run (`both` by default; a push
+always builds both):
 
 | Image | Payload command line | Purpose |
 | --- | --- | --- |
-| `shim-boot.img` | `emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1` | fast boot; the console ring is still recorded |
-| `shim-boot-log.img` | the same plus `cs_debug=2` and `-enable_kprintf_spam` | full page dumps when a line is missing |
+| `shim-boot.img` | `emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1` | normal boot: no `sweetlog` ring, no `cs_debug`, no kprintf spam |
+| `shim-boot-log.img` | the same plus `sweetlog=1 cs_debug=2 -enable_kprintf_spam` | full console ring on SYSTEM plus every validated page |
 
 `shim/build.sh` takes `KPRINTF_SPAM` (unset = spam, empty = quiet) so the
-command line is data, and `tools/payload_cmdline.py --reject` proves in the
-package job that the fast image carries no `cs_debug=2` and no spam. Both
-images are checked against the 6,291,456-byte ABL limit and against
+command line is data, and `tools/payload_cmdline.py` proves in the package
+job that the normal image has no log switch and the log image has all three.
+Both are checked against the 6,291,456-byte ABL limit and against
 `SHA256SUMS` in `dist/`.
 
-This does not change what the persistent log is for: both images record the
-console to the SYSTEM ring, so a black-screen boot can still be read back with
-`tools/sweet-log-pull.sh`. Only the amount printed (and therefore both the
-UART time and the ring churn) differs.
+The normal image therefore leaves no post-mortem behind: if its boot ends on
+a black screen, use the log image (or the UART) to see why. That is the
+trade the two modes make; `sweetlog=1` used to be in every image, so even a
+"normal" boot paid for the ring writes.
+
+### The 0177 artifact lost two switches (2026-10-27)
+
+The first 0177 run (`40440352903`) built, but its payload command line was
+
+```
+... whyred emmcrw=1 launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1
+```
+
+because the workflow had
+
+```sh
+COMMON=emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1
+```
+
+and in the shell that is three assignments, not one value: `COMMON` got
+`emmcrw=1` and the other two became unrelated variables. The artifact was
+discarded before flashing. `ca916f6` quotes the value, requires both switches
+in `payload_cmdline.py` for every image, and adds a host test that evaluates
+the workflow's `COMMON`/`DIAG`/`SPAM` lines so an unquoted assignment fails
+the build instead of the phone.
 
 ### 0175 image (2026-10-27)
 

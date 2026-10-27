@@ -169,14 +169,14 @@ fastboot reboot recovery
 
 The shim screen (red) shows `MMFR0`, the Gold hand-off and `SPEED silver=… gold=…` for 8 seconds, then XNU starts. whyred does not show an Apple logo: that logo is drawn by iBoot, which is not in this chain, and the kernel console is on the UART while `kPEAcquireScreen` clears the boot framebuffer. Until the display path is up the panel is black on purpose (see `NOTES.md`). To get back to fastboot, hold Power + Volume down.
 
-Every CI run publishes two images from the same kernel:
+A manual run ("Run workflow") has a `build_mode` choice — `both`, `normal` or `log`; a push builds both:
 
 | Image | Command line | Use |
 | --- | --- | --- |
-| `shim-boot.img` | `sweetlog=1 sweetfbtest=1`, no `cs_debug=2`, no kprintf spam | normal boot; console ring still recorded on SYSTEM |
-| `shim-boot-log.img` | the same plus `cs_debug=2 -enable_kprintf_spam` | when a line is missing from the fast image; several times slower at 115200 baud |
+| `shim-boot.img` | `sweetfbtest=1`, no `sweetlog`, no `cs_debug=2`, no kprintf spam | daily boot; nothing is recorded to the SYSTEM ring |
+| `shim-boot-log.img` | the same plus `sweetlog=1 cs_debug=2 -enable_kprintf_spam` | when a line is missing; records the 4 MiB SYSTEM ring and every validated code page, several times slower at 115200 baud |
 
-Both write the console to the 4 MiB SYSTEM ring, so the full boot can be pulled after a black-screen boot with `tools/sweet-log-pull.sh`.
+The log image writes the console to the 4 MiB SYSTEM ring, so its full boot can be pulled after a black-screen boot with `tools/sweet-log-pull.sh`. The normal image leaves the ring untouched and has no logging overhead.
 
 ### Debugging tips
 

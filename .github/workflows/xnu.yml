@@ -15,6 +15,14 @@ on:
       keep_going:
         description: make -k (collect all compile errors in one run)
         default: "true"
+      build_mode:
+        description: both / normal (no log capture) / log (ring + page dumps)
+        type: choice
+        options:
+          - both
+          - normal
+          - log
+        default: both
   push:
     branches: [main, santoni, lavender, whyred]
     paths:
@@ -256,24 +264,29 @@ jobs:
           # The iOS 16 binary has launchd_unsecure_cache= for exactly this
           # bring-up case: it skips the signature push and the AMFI lookup.
           #
+          # Normal mode is quiet on purpose: no console ring, no cs_debug
+          # page dumps, no kprintf spam. Log mode adds all three.
           # sweetlog=1 keeps the 4 MiB console ring on SYSTEM: the serial
           # scrollback only reaches the tail (launchd respawn loop), and the
           # backboardd/SpringBoard lines are at the start. Pull it from
-          # recovery with tools/sweet-log-pull.sh. Both images keep it; only
-          # the verbosity differs.
+          # recovery with tools/sweet-log-pull.sh.
           #
           # sweetfbtest=1 draws four colour bars into the boot framebuffer
           # once, early in BSD init: the console is on the UART and
           # kPEAcquireScreen clears the panel, so the bars are the only way
           # to see whether MDSS still scans the ABL splash out.
           COMMON="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1"
-          COMMON="$COMMON launchd_unsecure_cache=1 sweetlog=1 sweetfbtest=1"
-          # Diagnostic: cs_debug=2 prints the CD dump and the per-blob line for
-          # every validated page (megabytes), and -enable_kprintf_spam adds the
-          # rest. At 115200 baud that is the biggest single cost in boot time,
-          # so it is not in the fast image.
-          DIAG="cs_debug=2"
+          COMMON="$COMMON launchd_unsecure_cache=1 sweetfbtest=1"
+          # Log mode: sweetlog=1 records every console character to the 4 MiB
+          # ring on SYSTEM, cs_debug=2 prints the CD dump and the per-blob
+          # line for every validated page (megabytes), and
+          # -enable_kprintf_spam adds the rest. At 115200 baud that is the
+          # biggest single cost in boot time, so none of it is in the normal
+          # image.
+          DIAG="sweetlog=1 cs_debug=2"
           SPAM="-enable_kprintf_spam"
+          # Manual runs choose which image(s) to build; a push builds both.
+          MODE="${{ inputs.build_mode || 'both' }}"
 
           mkdir -p images
           build_mode() { # suffix extra spam
@@ -306,50 +319,66 @@ jobs:
             cp shim/out/shim-boot.img "images/shim-boot$1.img"
           }
 
-          build_mode ""    ""     ""
-          build_mode "-log" "$DIAG" "$SPAM"
+          case "$MODE" in
+            both)   build_mode ""     ""     ""
+                    build_mode "-log" "$DIAG" "$SPAM" ;;
+            normal) build_mode ""     ""     "" ;;
+            log)    build_mode "-log" "$DIAG" "$SPAM" ;;
+            *)      echo "::error::unknown build_mode '$MODE'"; exit 1 ;;
+          esac
 
-          # Prove each image carries the command line it claims: the fast one
-          # must not have the diagnostic switches. cs_enforcement_disable and
-          # unentitled_ios_sim_launch are not optional -- without them launchd
-          # dies for an unsealed root or a PLATFORM_IOS binary, so check them
-          # here instead of learning it from a black screen. This also caught
-          # an unquoted "COMMON=a b c" assignment that silently kept only "a".
-          python3 tools/payload_cmdline.py --image images/shim-boot.img \
-            --require rd=emmcroot0 --require emmcrw=1 --require sweetlog=1 \
-            --require sweetfbtest=1 --require cs_enforcement_disable=1 \
-            --require unentitled_ios_sim_launch=1 \
-            --require launchd_unsecure_cache=1 \
-            --reject cs_debug=2 --reject=-enable_kprintf_spam
-          python3 tools/payload_cmdline.py --image images/shim-boot-log.img \
-            --require rd=emmcroot0 --require cs_debug=2 --require sweetlog=1 \
-            --require cs_enforcement_disable=1 \
-            --require unentitled_ios_sim_launch=1 \
-            --require launchd_unsecure_cache=1
+          # Prove each image carries the command line it claims. The switches
+          # that keep the unsealed iOS root alive are required in every image:
+          # cs_enforcement_disable=1, unentitled_ios_sim_launch=1 and
+          # launchd_unsecure_cache=1. The normal image must not carry the log
+          # switches (sweetlog, cs_debug, kprintf spam); the log image must.
+          for img in images/*.img; do
+            python3 tools/payload_cmdline.py --image "$img" \
+              --require rd=emmcroot0 --require emmcrw=1 \
+              --require cs_enforcement_disable=1 \
+              --require unentitled_ios_sim_launch=1 \
+              --require launchd_unsecure_cache=1 --require sweetfbtest=1
+          done
+          if [ -f images/shim-boot.img ]; then
+            echo "verifying the normal image carries no log capture"
+            python3 tools/payload_cmdline.py --image images/shim-boot.img \
+              --reject sweetlog=1 --reject cs_debug=2 \
+              --reject=-enable_kprintf_spam
+          fi
+          if [ -f images/shim-boot-log.img ]; then
+            echo "verifying the log image carries the ring and the dumps"
+            python3 tools/payload_cmdline.py --image images/shim-boot-log.img \
+              --require sweetlog=1 --require cs_debug=2 \
+              --require=-enable_kprintf_spam
+          fi
 
       - name: Collect the flashable image
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp images/shim-boot.img images/shim-boot-log.img dist/
-          (cd dist && sha256sum shim-boot.img shim-boot-log.img > SHA256SUMS)
+          cp images/*.img dist/
+          (cd dist && sha256sum *.img > SHA256SUMS)
           cat > dist/FLASH.txt <<'EOF'
           whyred (Redmi Note 5 / Note 5 Pro) iOS boot images
           ==================================================
 
-          Both load the same XNU kernel from the kernel artifact of this CI run
-          and continue from the iOS HFSX root on eMMC. They differ only in how
-          much the kernel prints.
+          Every image loads the same XNU kernel from the kernel artifact of
+          this CI run and continues from the iOS HFSX root on eMMC. They
+          differ only in how much the kernel records.
 
-          shim-boot.img      fast: no cs_debug=2 page dumps, no kprintf spam.
-                             Console output still goes to the UART and to the
-                             4 MiB console ring on SYSTEM (sweetlog=1).
+          shim-boot.img      normal: no console ring, no cs_debug=2 page
+                             dumps, no kprintf spam. The console still goes
+                             to the UART. This is the image to boot daily.
 
-          shim-boot-log.img  diagnostic: cs_debug=2 and -enable_kprintf_spam.
-                             Every validated code page is dumped, so the UART
-                             at 115200 baud makes the boot several times
-                             slower. Use it when a line is missing from the
-                             fast image, not for daily use.
+          shim-boot-log.img  diagnostic: sweetlog=1 keeps a 4 MiB console
+                             ring on SYSTEM, cs_debug=2 dumps every validated
+                             code page and -enable_kprintf_spam adds the
+                             rest. Several times slower at 115200 baud. Use
+                             it when a line is missing, then pull the ring
+                             from recovery with tools/sweet-log-pull.sh.
+
+          A manual "Run workflow" chooses which of the two to build
+          (build_mode: both / normal / log). A push builds both.
 
           Both draw four colour bars into the boot framebuffer once, early in
           BSD init (sweetfbtest=1), so a lit panel proves MDSS still scans the

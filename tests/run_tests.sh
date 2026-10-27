@@ -554,7 +554,7 @@ P169="xnu/patches/0169-sdhci-name-the-code-signing-build.patch"
 python3 tools/check_patch.py "$P169" -q \
 	--added-contains 'bsd/dev/santoni_sdhci.c:driver 0169' \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0168'
-grep -q 'DIAG="cs_debug=2"' .github/workflows/xnu.yml
+grep -q 'DIAG="sweetlog=1 cs_debug=2"' .github/workflows/xnu.yml
 grep -q 'cs_enforcement_disable=1 unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
 echo "ok   0169 enables cs_debug and cs_enforcement_disable for the root boot"
 
@@ -732,15 +732,21 @@ echo "ok   zip_partial proves an entry before calling it the kernel"
 python3 tests/test_payload_cmdline.py >/dev/null
 echo "ok   payload_cmdline reads the line the shim really uses, not boot.img"
 
-echo "== IMAGES: the workflow builds a fast and a diagnostic image =="
-# Both come from the same kernel; only the payload command line and the
-# kprintf spam knob differ. The fast image must not carry cs_debug=2: those
-# page dumps cost megabytes of 115200-baud UART time.
+echo "== IMAGES: manual runs choose normal / log / both =="
+# Both images come from the same kernel; the normal one must carry no log
+# capture at all (no sweetlog ring, no cs_debug page dumps, no kprintf spam)
+# and the log one must carry all three. The switches that keep the unsealed
+# root alive belong to both.
 grep -q 'KPRINTF_SPAM=' shim/build.sh
 grep -q 'build_mode "-log"' .github/workflows/xnu.yml
 grep -q 'shim-boot-log.img' .github/workflows/xnu.yml
-grep -q -- '--reject cs_debug=2' .github/workflows/xnu.yml
+grep -q 'case "$MODE" in' .github/workflows/xnu.yml
+grep -q 'build_mode:' .github/workflows/xnu.yml
+grep -q -- '- normal' .github/workflows/xnu.yml
+grep -q -- '--reject sweetlog=1 --reject cs_debug=2' .github/workflows/xnu.yml
 grep -q -- '--reject=-enable_kprintf_spam' .github/workflows/xnu.yml
+grep -q -- '--require sweetlog=1 --require cs_debug=2' .github/workflows/xnu.yml
+grep -q 'DIAG="sweetlog=1 cs_debug=2"' .github/workflows/xnu.yml
 # The command line is assembled by shell assignments in the workflow. An
 # unquoted "COMMON=emmcrw=1 cs_enforcement_disable=1 ..." sets three shell
 # variables and leaves COMMON="emmcrw=1"; the 0177 images went out without
@@ -755,14 +761,18 @@ out = subprocess.run(['bash', '-c', script], capture_output=True,
                      text=True, check=True).stdout
 need = ['emmcrw=1', 'cs_enforcement_disable=1',
         'unentitled_ios_sim_launch=1', 'launchd_unsecure_cache=1',
-        'sweetlog=1', 'sweetfbtest=1']
+        'sweetfbtest=1']
 missing = [n for n in need if n not in out.split()]
 if missing:
     raise SystemExit('COMMON lost %s -> %r' % (' '.join(missing), out))
+# The normal image must not record a console ring: sweetlog moved to DIAG.
+if 'sweetlog=1' in out.split():
+    raise SystemExit('COMMON carries sweetlog=1: the normal image would '
+                     'still capture a log')
 PY
 grep -q -- '--require cs_enforcement_disable=1' .github/workflows/xnu.yml
 grep -q -- '--require unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
-echo "ok   fast image has no cs_debug dump, log image keeps it"
+echo "ok   normal image has no log capture, log image keeps ring and dumps"
 echo "ok   COMMON keeps every code-signing switch and the payload check requires it"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
