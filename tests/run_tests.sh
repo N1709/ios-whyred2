@@ -753,6 +753,11 @@ shim = [int(x, 16) for x in re.findall(r'0x([0-9a-fA-F]{2})',
 assert kern == shim, (len(kern), len(shim))
 PY
 echo "ok   0182 paints the shim's own mark after the fbcon clear"
+# dxb only warns when `git apply --check` rejects a patch, so the workflow
+# fails the build itself. The guard has to name every series it now depends on,
+# or a skipped 018x ships a kernel without the logo and the ring fix.
+grep -q '018\[0-9\]' .github/workflows/xnu.yml
+echo "ok   0182 a skipped 018x patch fails the build instead of shipping"
 
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
