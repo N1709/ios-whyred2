@@ -22,7 +22,29 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-28. `0179` boots the same userspace as `0178`, and the
+Last updated 2026-10-28. **The iOS lock screen is on the panel.** With the
+`0182` kernel the phone boots past the data-migration spinner into
+SpringBoard's lock screen: the Apple mark holds through the kernel boot, then
+the first iOS frame replaces it and the UI stays up (`e77`, first boot of
+`0180`+`0181`+`0182`). That closes the original goal of this port - the iOS UI
+is visible on whyred's own panel, from RAM, without touching a boot partition.
+
+What the lock screen does **not** have is input. On whyred the HID services are
+registered (`SWEET HID: touch registered`, `backboardd` opens
+`SweetHIDTouch`) but nothing feeds them: `bsd/dev/sweet_touch.c` and
+`bsd/dev/sweet_i2c1.c` are compiled only for `ARM64_BOARD_CONFIG_SWEET`
+(topaz), so on whyred `SweetHIDTouch` is an empty digitizer. The facts a
+driver needs, recovered from the whyred vendor DTS: touch sits on BLSP1 QUP1
+I2C (`0x0c175000`, SDM636), Novatek `0x62` (IRQ GPIO 67, reset GPIO 66,
+VDDIO PM660 LDO11) or Synaptics DSX `0x20` depending on the panel variant
+(tianma/huaxing vs shenchao). None of the buses that address it exist in this
+kernel yet - no TLMM GPIO, no BLSP I2C, no PM660 SPMI on the whyred side.
+
+There is also no GPU driver: `backboardd` composites in software into the
+`IOSurface` that `AppleCLCD` scans out, so the UI is correct but slow.
+That is a separate project from the one this README tracks (panel + kernel).
+
+`0179` boots the same userspace as `0178`, and the
 `SWEET` ring finally shows the presentation path end to end:
 `exec backboardd` → `exec SpringBoard` → `backboardd` creates IOSurfaces →
 `SWEET FB: display on` → `swap 3/4/7 layer 0 surface 3 1080x2160` → the
@@ -143,7 +165,7 @@ move only when a change is confirmed on the phone, not when a patch compiles.
 | Storage | eMMC 5.1 (`sdhc_1` at `0x0c0c4000`, Qualcomm SDCC v5) |
 | Framebuffer | `0x9d400000`, 1080x2160, 32-bit `a8r8g8b8`, stride 4320 bytes |
 | Power / Reset | PS_HOLD `0x010ac000`, IMEM restart reason `0x146bf65c` |
-| Touch | Novatek NT36672 (not enabled in this kernel build yet) |
+| Touch | Novatek NT36672 at `0x62` (or Synaptics DSX at `0x20` on the shenchao panel) on BLSP1 QUP1 I2C `0x0c175000`; IRQ GPIO 67, reset GPIO 66, VDDIO PM660 LDO11. **Not enabled**: whyred has no TLMM/GPIO, BLSP I2C or PM660 SPMI driver in this kernel yet |
 
 ## How it boots
 
@@ -263,7 +285,15 @@ The log image writes the console to the 4 MiB SYSTEM ring, so its full boot can 
 
 ## Roadmap
 
-1. **Touch**: whyred uses Novatek NT36672 (I²C, panel variants tianma/huaxing/td4310), not lavender's FocalTech. Port the NT36672 driver from the whyred vendor kernel into the XNU I²C/HID path.
+1. **Touch**: whyred uses Novatek NT36672 at `0x62` on BLSP1 QUP1 I2C
+   (`0x0c175000`, IRQ GPIO 67, reset GPIO 66, VDDIO PM660 LDO11); the
+   shenchao panel uses Synaptics DSX at `0x20` on the same bus. Three
+   pieces do not exist on the whyred side yet and have to come before the
+   NT36xxx protocol: a TLMM GPIO driver (`0x01000000`), a BLSP QUP I2C
+   master (GCC `BLSP1_AHB` + `QUP1_I2C_APPS` clocks, not the GENI FIFO the
+   topaz driver uses), and PM660 SPMI for LDO11. `sweet_hid_touch()` and
+   `SweetHIDTouch` are already shared with the topaz port and need no
+   change.
 2. **Buttons**: power and volume keys on the PM660/PM660L PON block, volume up on a PMIC GPIO.
 3. **Smoother display**: higher `sweetfb_hz`; check whether the Gold cores run at a low clock without cpufreq (the shim's speed probe) and raise it if so.
 4. **Narrow the GIC fix** to the register that actually matters, then move it into XNU.
