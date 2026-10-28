@@ -35,6 +35,7 @@
  * the first swap on (it still reaches the persistent log; panics draw).
  */
 #include "SweetSurface.h"
+#include "SweetAppleLogo.h"
 
 extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
 extern "C" void sweet_console_retarget(vm_offset_t va);   /* osfmk/console/video_console.c */
@@ -259,6 +260,42 @@ public:
 
 OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
 
+/*
+ * The shim paints this mark before it jumps, but the XNU console clears the
+ * boot framebuffer during its own start, so the mark survives only for the
+ * blink between the jump and that clear. Paint it again here, once the panel
+ * memory is mapped, and (with sweetfb_noconsole=1) mute the console from this
+ * point: the panel then shows the Apple mark for the whole kernel boot
+ * instead of a wall of text, until the first iOS frame replaces it.
+ */
+static void
+sweet_draw_apple_logo(uintptr_t pixels, uint32_t width, uint32_t height,
+    uint32_t stride)
+{
+	if (pixels == 0 || width < SWEET_APPLE_LOGO_W || height < SWEET_APPLE_LOGO_H) {
+		return;
+	}
+	volatile uint32_t *fb = (volatile uint32_t *)pixels;
+	uint32_t x0 = (width - SWEET_APPLE_LOGO_W) / 2;
+	uint32_t y0 = (height - SWEET_APPLE_LOGO_H) / 2;
+
+	for (uint32_t y = 0; y < height; y++) {
+		volatile uint32_t *line = fb + (uint64_t)y * (stride / 4);
+		for (uint32_t x = 0; x < width; x++) {
+			line[x] = 0;
+		}
+	}
+	for (uint32_t y = 0; y < SWEET_APPLE_LOGO_H; y++) {
+		volatile uint32_t *line = fb + (uint64_t)(y0 + y) * (stride / 4) + x0;
+		const uint8_t *row = &sweet_apple_logo[y * (SWEET_APPLE_LOGO_W / 8)];
+		for (uint32_t x = 0; x < SWEET_APPLE_LOGO_W; x++) {
+			if (row[x / 8] & (0x80 >> (x % 8))) {
+				line[x] = 0xffffffff;
+			}
+		}
+	}
+}
+
 bool
 AppleCLCD::start(IOService *provider)
 {
@@ -304,6 +341,18 @@ AppleCLCD::start(IOService *provider)
 	if (fVsync == NULL || fWorkLoop->addEventSource(fVsync) != kIOReturnSuccess) {
 		IOLog("SWEET FB: no vsync timer\n");
 		return false;
+	}
+	/*
+	 * With the console hidden, clear the panel and paint the boot mark now,
+	 * then mute the console: the mark stays until the first iOS frame.
+	 * Without the boot-arg nothing changes (the console still owns the
+	 * panel and 0067 mutes it at the first swap).
+	 */
+	int quiet = 0;
+	if (PE_parse_boot_argn("sweetfb_noconsole", &quiet, sizeof(quiet)) && quiet != 0) {
+		sweet_draw_apple_logo(fPixels, fWidth, fHeight, fRowBytes);
+		sweet_console_muted = 1;
+		IOLog("SWEET FB: boot mark drawn, console muted until iOS presents\n");
 	}
 #if !defined(ARM64_BOARD_CONFIG_SANTONI) && !defined(ARM64_BOARD_CONFIG_LAVENDER)
 	fVig0 = (volatile uint32_t *)ml_io_map(0x05e05000, 0x1000);

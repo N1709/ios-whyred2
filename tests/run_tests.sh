@@ -734,6 +734,26 @@ python3 tools/check_patch.py "$P181" -q \
 	--added-lacks 'bsd/dev/santoni_sdhci.c:stopping '
 echo "ok   0181 keeps flushing when the card is busy"
 
+echo "== MARK: 0182 keeps the Apple mark through the kernel boot =="
+P182="xnu/patches/0182-sweet-boot-mark-in-kernel.patch"
+python3 tools/check_patch.py "$P182" -q \
+	--added-contains 'iokit/Kernel/arm/SweetAppleLogo.h:SWEET_APPLE_LOGO_W 208' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:boot mark drawn, console muted' \
+	--added-contains 'iokit/Kernel/arm/SweetFramebuffer.cpp:sweet_console_muted = 1'
+# The kernel must draw the same 208x256 mark the shim draws: a second
+# hand-edited copy of the artwork is not evidence of the ported one.
+python3 - <<'PY'
+import re
+patch = open('xnu/patches/0182-sweet-boot-mark-in-kernel.patch', encoding='utf-8').read()
+sec = patch.split('diff --git a/iokit/Kernel/arm/SweetAppleLogo.h')[1].split('diff --git')[0]
+kern = [int(x, 16) for line in sec.splitlines() if line.startswith('+')
+        and not line.startswith('+++') for x in re.findall(r'0x([0-9a-fA-F]{2})', line)]
+shim = [int(x, 16) for x in re.findall(r'0x([0-9a-fA-F]{2})',
+        open('shim/apple_logo.h', encoding='utf-8').read())]
+assert kern == shim, (len(kern), len(shim))
+PY
+echo "ok   0182 paints the shim's own mark after the fbcon clear"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

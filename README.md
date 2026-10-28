@@ -56,7 +56,11 @@ the first swap while the SYSTEM ring keeps the text. `disable_kprintf_output`
 was assumed to do this; it does nothing here, because this kernel has no
 boot-arg by that name - only the symbol. The Apple logo from lavender
 (`92f8e72`) is ported with whyred's own Y computed from the panel height, not
-lavender's hard-coded 800.
+lavender's hard-coded 800. The shim's mark only survives the blink between
+the jump and the XNU fbcon clear, so `0182` paints the same 208x256 bitmap
+again in `AppleCLCD::start()` and mutes the console there when
+`sweetfb_noconsole=1`: the panel then shows the mark for the whole kernel
+boot, until the first iOS frame replaces it.
 
 `0179`'s local panic was not the kernel: the hand-built images carried
 `ignition_level=1 rootrw=1 wdt_*`, which makes libignition search a preboot
