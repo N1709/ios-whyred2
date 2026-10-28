@@ -13,6 +13,7 @@ char _shim_end[4096] __attribute__((aligned(4096)));
 volatile uint32_t *con_fb = NULL;
 
 void con_clear(uint32_t bg) { (void)bg; }
+void con_draw_apple_logo(void) {}
 void con_skip(void) {}
 void con_rewind(int n) { (void)n; }
 void con_str(const char *label, const char *s) { (void)label; (void)s; }

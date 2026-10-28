@@ -256,6 +256,13 @@ assert mkadt.BOARDS['lavender']['panel_h'] == 2340
 PY
 echo "ok   0148 adds WHYRED, enables libpthread/HFS, and sets a 1080x2160 ADT"
 
+# The canvas in the ADT is what iOS lays out for. mkadt.py defaults to the
+# iPhone X canvas unless --native is passed, and backboardd then creates
+# 1125x2436 surfaces while the panel is 1080x2160: SpringBoard runs, the screen
+# stays black. lavender's build already passes --native; whyred must too.
+grep -q 'mkadt.py out/\$BOARD_LC.adt --board "\$BOARD_LC" --native' shim/build.sh
+echo "ok   the ADT canvas is the panel itself (mkadt.py --native)"
+
 # mockfs is the only filesystem that can mount the executable ram disk, and
 # sweet_hfs the only one for the iOS root. Missing them from FILESYS_BASE made
 # vfs_mountroot() return ENODEV (19) on every mount attempt: santoni shipped
@@ -790,6 +797,40 @@ grep -q -- '--reject sweetlog=1 --reject cs_debug=2' .github/workflows/xnu.yml
 grep -q -- '--reject=-enable_kprintf_spam' .github/workflows/xnu.yml
 grep -q -- '--require sweetlog=1 --require cs_debug=2' .github/workflows/xnu.yml
 grep -q 'DIAG="sweetlog=1 cs_debug=2"' .github/workflows/xnu.yml
+# Display profile: the normal image keeps the boot log off the panel (so the
+# graphical boot and the Apple logo stay visible) and the log image keeps
+# printing, because the ring and the UART are the only diagnostics there is.
+# ignition_level= is rejected on every image: dyld's libignition then misses
+# the shared cache and pid 1 dies with "no dyld cache" (NOTES 0029j/0029k).
+grep -Fq 'KPRINTF_MUTE="${KPRINTF_MUTE:-0}"' shim/build.sh
+grep -Fq 'DISPLAY_ARGS="disable_kprintf_output=1 sweetfb_stayon=1 sweetfb_hz=60"' shim/build.sh
+grep -Fq 'DISPLAY_ARGS="disable_kprintf_output=0"' shim/build.sh
+grep -Fq 'KPRINTF_MUTE="$4"' .github/workflows/xnu.yml
+# The panel console is a separate switch from the mute: disable_kprintf_output
+# is inert in this kernel, so the only thing that really stops the console
+# being drawn over the GUI is sweetfb_noconsole=1 (patch 0067). A manual run
+# picks text or hidden, and the built image must carry exactly that.
+grep -Fq 'PANEL_NOCONSOLE="${PANEL_NOCONSOLE:-0}"' shim/build.sh
+grep -Fq 'DISPLAY_ARGS="$DISPLAY_ARGS sweetfb_noconsole=1"' shim/build.sh
+grep -Fq 'PANEL_NOCONSOLE="$5"' .github/workflows/xnu.yml
+grep -Fq 'panel_console:' .github/workflows/xnu.yml
+grep -Fq -- '--require sweetfb_noconsole=1' .github/workflows/xnu.yml
+grep -Fq -- '--reject sweetfb_noconsole=1' .github/workflows/xnu.yml
+grep -Fq 'build_mode ""     ""     ""     1 "$NOCONSOLE"' .github/workflows/xnu.yml
+grep -Fq -- '--require disable_kprintf_output=1' .github/workflows/xnu.yml
+grep -Fq -- '--require disable_kprintf_output=0' .github/workflows/xnu.yml
+grep -Fq -- "--reject 'ignition_level='" .github/workflows/xnu.yml
+grep -Fq 'build_mode "-log" "$DIAG" "$SPAM" 0' .github/workflows/xnu.yml
+grep -Fq 'build_mode ""     ""     ""     1' .github/workflows/xnu.yml
+# Only the normal image may mute the framebuffer console.
+python3 - <<'PY'
+wf = open('.github/workflows/xnu.yml').read()
+normal = wf.split('if [ -f images/shim-boot.img ]; then', 1)[1].split('\n          fi', 1)[0]
+log = wf.split('if [ -f images/shim-boot-log.img ]; then', 1)[1].split('\n          fi', 1)[0]
+assert 'disable_kprintf_output=1' in normal, 'normal image is not muted'
+assert 'disable_kprintf_output=1' not in log, 'log image must not be muted'
+print('ok   the normal image mutes the panel, the log image still prints')
+PY
 # The command line is assembled by shell assignments in the workflow. An
 # unquoted "COMMON=emmcrw=1 cs_enforcement_disable=1 ..." sets three shell
 # variables and leaves COMMON="emmcrw=1"; the 0177 images went out without

@@ -23,6 +23,13 @@ on:
           - normal
           - log
         default: both
+      panel_console:
+        description: text (console drawn over the GUI) / hidden (sweetfb_noconsole=1)
+        type: choice
+        options:
+          - text
+          - hidden
+        default: text
   push:
     branches: [main, santoni, lavender, whyred]
     paths:
@@ -275,6 +282,13 @@ jobs:
           # once, early in BSD init: the console is on the UART and
           # kPEAcquireScreen clears the panel, so the bars are the only way
           # to see whether MDSS still scans the ABL splash out.
+          #
+          # The normal image also carries the display profile of the lavender
+          # image that reached the lockscreen: sweetfb_stayon=1 and
+          # sweetfb_hz=60 (both parsed by this kernel). disable_kprintf_output
+          # comes from that same command line; it is inert here - this kernel
+          # has no boot-arg by that name - and is kept only so the line
+          # matches the one known to boot.
           COMMON="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1"
           COMMON="$COMMON launchd_unsecure_cache=1 sweetfbtest=1"
           # Log mode: sweetlog=1 records every console character to the 4 MiB
@@ -287,12 +301,23 @@ jobs:
           SPAM="-enable_kprintf_spam"
           # Manual runs choose which image(s) to build; a push builds both.
           MODE="${{ inputs.build_mode || 'both' }}"
+          # Console on the panel: hidden stops drawing it on the first GUI
+          # swap (patch 0067), so the panel shows backboardd's IOSurfaces
+          # instead of scrolling kprintf text. The ring keeps the text either
+          # way, so a hidden-console boot is still diagnosable afterwards.
+          if [ "${{ inputs.panel_console || 'text' }}" = hidden ]; then
+            NOCONSOLE=1
+          else
+            NOCONSOLE=0
+          fi
 
           mkdir -p images
-          build_mode() { # suffix extra spam
+          # suffix extra cmdline spam mute(1=keep the log off the panel)
+          # noconsole(1=stop drawing the console over the GUI)
+          build_mode() { # suffix extra spam mute noconsole
             rm -rf shim/out
-            EXTRA_CMDLINE="$COMMON $2" KPRINTF_SPAM="$3" \
-              bash shim/build.sh "$KERNEL"
+            EXTRA_CMDLINE="$COMMON $2" KPRINTF_SPAM="$3" KPRINTF_MUTE="$4" \
+              PANEL_NOCONSOLE="$5" bash shim/build.sh "$KERNEL"
             # First pass produces the uncompressed Image; whyred's ABL rejects a
             # single download over 6 MiB, and gzip -9 lands at ~6.31 MB, so
             # compress that Image with zopfli and pack it in a second pass.
@@ -302,8 +327,9 @@ jobs:
             # pass packs a gzip -9 Image (6.54 MB) - exactly the failure this
             # job exists to prevent.
             test -s shim/out/Image.z.gz
-            EXTRA_CMDLINE="$COMMON $2" KPRINTF_SPAM="$3" \
-              IMAGE_GZ="$PWD/shim/out/Image.z.gz" bash shim/build.sh "$KERNEL"
+            EXTRA_CMDLINE="$COMMON $2" KPRINTF_SPAM="$3" KPRINTF_MUTE="$4" \
+              PANEL_NOCONSOLE="$5" IMAGE_GZ="$PWD/shim/out/Image.z.gz" \
+              bash shim/build.sh "$KERNEL"
 
             # The image only boots if the storage fixes and the ram-disk root
             # are in it: fail here instead of on the phone. bindfs must be in
@@ -320,10 +346,10 @@ jobs:
           }
 
           case "$MODE" in
-            both)   build_mode ""     ""     ""
-                    build_mode "-log" "$DIAG" "$SPAM" ;;
-            normal) build_mode ""     ""     "" ;;
-            log)    build_mode "-log" "$DIAG" "$SPAM" ;;
+            both)   build_mode ""     ""     ""     1 "$NOCONSOLE"
+                    build_mode "-log" "$DIAG" "$SPAM" 0 "$NOCONSOLE" ;;
+            normal) build_mode ""     ""     ""     1 "$NOCONSOLE" ;;
+            log)    build_mode "-log" "$DIAG" "$SPAM" 0 "$NOCONSOLE" ;;
             *)      echo "::error::unknown build_mode '$MODE'"; exit 1 ;;
           esac
 
@@ -338,18 +364,48 @@ jobs:
               --require cs_enforcement_disable=1 \
               --require unentitled_ios_sim_launch=1 \
               --require launchd_unsecure_cache=1 --require sweetfbtest=1
+            # ignition_level=<n> makes dyld's libignition search for the shared
+            # cache somewhere our root does not have it: level 0 skips the
+            # dyld_cache stage and level 1 searches System/Library/Caches/
+            # com.apple.dyld instead of the cryptexes. Either way ignition
+            # fails, the cache never maps and pid 1 dies with "no dyld cache".
+            # The default level 0x5 is what reached SpringBoard in 0174-0178.
+            python3 tools/payload_cmdline.py --image "$img" \
+              --reject 'ignition_level='
+            # The panel switch must match the run that was asked for; a
+            # hidden-console image that still draws text looks exactly like
+            # the bug it is meant to rule out.
+            if [ "$NOCONSOLE" = 1 ]; then
+              python3 tools/payload_cmdline.py --image "$img" \
+                --require sweetfb_noconsole=1
+            else
+              python3 tools/payload_cmdline.py --image "$img" \
+                --reject sweetfb_noconsole=1
+            fi
           done
           if [ -f images/shim-boot.img ]; then
             echo "verifying the normal image carries no log capture"
             python3 tools/payload_cmdline.py --image images/shim-boot.img \
               --reject sweetlog=1 --reject cs_debug=2 \
               --reject=-enable_kprintf_spam
+            # ...and keeps the boot log off the panel so the graphical boot
+            # (and the Apple logo) stays visible.
+            echo "verifying the normal image mutes the framebuffer console"
+            python3 tools/payload_cmdline.py --image images/shim-boot.img \
+              --require disable_kprintf_output=1 \
+              --require sweetfb_stayon=1 --require sweetfb_hz=60
           fi
           if [ -f images/shim-boot-log.img ]; then
             echo "verifying the log image carries the ring and the dumps"
             python3 tools/payload_cmdline.py --image images/shim-boot-log.img \
               --require sweetlog=1 --require cs_debug=2 \
               --require=-enable_kprintf_spam
+            # The diagnostic image must print: its whole point is the UART and
+            # the ring, so it keeps today's command line exactly.
+            echo "verifying the log image still prints everything"
+            python3 tools/payload_cmdline.py --image images/shim-boot-log.img \
+              --require disable_kprintf_output=0 \
+              --reject sweetfb_stayon=1 --reject sweetfb_hz=60
           fi
 
       - name: Collect the flashable image

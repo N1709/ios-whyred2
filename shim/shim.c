@@ -282,7 +282,14 @@ void secondary_main(uint64_t idx)
 void shim_main(uint64_t dtb)
 {
 	stage = "loader";
-	con_clear(RED);
+	/*
+	 * The Apple boot mark (ported from the lavender shim, 92f8e72)
+	 * replaces the red fill: it is the same "the shim is alive" marker,
+	 * drawn as the 208x256 white mark on a cleared panel. Everything
+	 * printed below still lands on top of it, so the diagnostics are
+	 * unchanged; the loader repaints a clean mark just before it jumps.
+	 */
+	con_draw_apple_logo();
 	con_str("SHIM", BOARD_NAME " bare-metal shim (" BOARD_SOC ")");
 
 	uint64_t mmfr0 = rsr("id_aa64mmfr0_el1");

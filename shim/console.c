@@ -5,6 +5,7 @@
  */
 #include "console.h"
 #include "font.h"
+#include "apple_logo.h"
 
 #define SCALE		3
 #define CH_W		(8 * SCALE)
@@ -103,4 +104,31 @@ void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint
 		put_str(col, buf, WHITE);
 	}
 	row++;
+}
+
+/*
+ * The boot mark, ported from the lavender shim (92f8e72). It is a 1-bit
+ * 208x256 bitmap: every set bit becomes one white pixel on a cleared panel,
+ * so the frame the shim hands to XNU reads as the Apple boot logo instead of
+ * a red diagnostic screen. Y is derived from the board panel height rather
+ * than lavender's hard-coded 800, so whyred (2160 rows) and lavender (2340
+ * rows) both centre it.
+ */
+void con_draw_apple_logo(void)
+{
+	const int start_x = (FB_W - APPLE_LOGO_W) / 2;
+	const int start_y = (FB_H - APPLE_LOGO_H) / 2;
+
+	con_clear(0x00000000); /* OLED pure black */
+
+	for (int y = 0; y < APPLE_LOGO_H; y++) {
+		volatile uint32_t *line = con_fb + (start_y + y) *
+		    (FB_STRIDE / 4) + start_x;
+		const uint8_t *row_bytes = &apple_logo_bitmap[y *
+		    (APPLE_LOGO_W / 8)];
+		for (int x = 0; x < APPLE_LOGO_W; x++) {
+			if (row_bytes[x / 8] & (0x80 >> (x % 8)))
+				line[x] = WHITE; /* solid Apple white */
+		}
+	}
 }

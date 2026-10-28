@@ -22,8 +22,46 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
-Last updated 2026-10-27. Build `0177` is the last hardware-confirmed state:
-it draws four colour bars (red/green/blue/white) into the ABL framebuffer
+Last updated 2026-10-28. `0179` boots the same userspace as `0178`, and the
+`SWEET` ring finally shows the presentation path end to end:
+`exec backboardd` → `exec SpringBoard` → `backboardd` creates IOSurfaces →
+`SWEET FB: display on` → `swap 3/4/7 layer 0 surface 3 1080x2160` → the
+lock-screen daemons (`donotdisturbd`, `chronod`, `passd`, `liveactivitiesd`)
+start. So SpringBoard is neither dead nor looping; it runs and spawns its
+lock-screen services.
+
+The panel stayed black because of the **canvas in the ADT**, not the kernel:
+`tools/mkadt.py` publishes the iPhone X canvas (1125x2436) unless `--native`
+is passed, and `shim/build.sh` called it without that flag. iOS therefore laid
+the UI out for 1125x2436 while the panel and `AppleCLCD` are 1080x2160; the
+log shows `backboardd create id 2 1125x2436` next to `id 3 1080x2160`, and the
+three frames it presented never matched the panel. lavender already builds its
+ADT with `--native`; whyred did not. The ADT now carries 1080x2160 for both
+`canvas-*` and the `sweet-fbcon` node (verified byte-wise: the old blob holds
+1125/2436, the new one only 1080/2160). Hardware confirmation is the next boot.
+
+Two switches were added for this. `panel_console=hidden` on a manual run (or
+`PANEL_NOCONSOLE=1` by hand) adds `sweetfb_noconsole=1`, which stops drawing
+the kernel console over the GUI on the first swap while the SYSTEM ring keeps
+the text. `disable_kprintf_output` was assumed to do this; it does nothing
+here, because this kernel has no boot-arg by that name - only the symbol.
+The Apple logo from lavender (`92f8e72`) is ported with whyred's own Y
+computed from the panel height, not lavender's hard-coded 800.
+
+`0179`'s local panic was not the kernel: the hand-built images carried
+`ignition_level=1 rootrw=1 wdt_*`, which makes libignition search a preboot
+volume that does not exist (`ignition boot failed`) and pid 1 then dies with no
+dyld cache. CI never had those switches; `payload_cmdline.py` now rejects
+`ignition_level=` on every image so a hand build cannot reintroduce it.
+
+Known tool defect: the console flusher (`0143`) still stops on the first
+ring-block write error. `fsck` reads the same card for minutes, a `CMD24` into
+that traffic times out, and the tail of the log - the only place the late
+`exec` lines live - is never written. A truncated ring is a measurement limit,
+not evidence about the boot.
+
+`0177` is the previous hardware-confirmed display state: it draws four colour
+bars (red/green/blue/white) into the ABL framebuffer
 at `0x9d400000` during the SANTONI probe, before `launchd`, and they appear
 on the panel. That settles the display question — MDSS/DSI keep scanning the
 boot framebuffer out after hand-off, so the black boot screen is the UART
@@ -40,10 +78,10 @@ returned bytes produced by a *different* request, because it copied the
 shared bounce buffer after dropping its lock. `0174` keeps the copy inside
 the transfer's critical section.
 
-One thing still separates that daemon set from a usable screen: nothing
-presents into the framebuffer yet. The panel is proven alive, so the next
-work is userspace presentation (`backboardd`/`SpringBoard` opening
-`AppleCLCD`) rather than an MDSS/DSI driver. Separately,
+One thing still separated that daemon set from a usable screen: nothing
+presented into the framebuffer yet. `0179` closed that - `backboardd`
+presents 1080x2160 frames - and the remaining gap is the canvas geometry
+described at the top of this section. Separately,
 `installcoordinationd` failed with `NSPOSIXErrorDomain 13` creating its data
 directory, the same EACCES that SWEET fixed by dropping `config_ext_resolver`
 (`0057`); `0175` does that for WHYRED/LAVENDER. The boot-stage checklist
@@ -57,16 +95,16 @@ pull tool can also decode a headerless ring.
 
 The 0177 UART capture settles the daemon question: `SpringBoard` execs, opens
 `AppleKeyStore` and `IOPMrootDomain` (`0x0`) and its AKS calls succeed, so
-the black screen is not a dead SpringBoard. Nothing has called
-`IOMobileFramebuffer` from `SpringBoard`/`backboardd` yet — only
-`thermalmonitord` — so the missing piece is still presentation.
+the black screen is not a dead SpringBoard. `0179` then showed
+`backboardd` creating surfaces and presenting them, which moved the missing
+piece from "presentation" to "the canvas the frames are drawn for".
 
 | Milestone | Progress | Notes |
 | --- | --- | --- |
 | Kernel boots, console, framebuffer, userspace `init` as PID 1 | **100%** | Gold cores, GICv3, timers, `AppleCLCD` at 1080x2160, ramdisk init runs as PID 1 and ticks every 5 s. Proven on hardware since `0172`. `0177` adds the missing proof that the panel scans this framebuffer out after hand-off: four bars written by the kernel are visible. The boot screen is still black by design because the console is routed to the UART and `kPEAcquireScreen` clears the buffer |
 | eMMC command, data and mount path | **100%** | 8-bit HS, EXT_CSD, GPT, 58.2 GiB, single- and multi-block transfers, journal replay, HFSX mounted read-write. The last defect was the bounce buffer being copied outside its lock (the source of the wrong code-signing bytes); `0174` owns every byte while the transfer holds the lock |
 | Root filesystem from eMMC (`launchd`, real daemons) | **100%** | `launchd` runs as PID 1; `bindfs` lets the whole boot-task chain (`mount-phase-1`, `mount-phase-2`, `fips`, ...) exit successfully, and the LaunchDaemons start (`watchdogd`, `lockdownd`, `backboardd`, `amfid`, `imagent`, ...) |
-| Code signing / AMFI (trust cache, entitlements) | **85%** | `0174` is confirmed on hardware: `SpringBoard` (a platform binary) execs, queries IOPMrootDomain and its `SWEET AKS` calls return `0x0`, with no `csblob invalid`. Remaining for 100%: the same proof in the full `sweetlog` ring for `backboardd`, and removing the `unentitled_ios_sim_launch` / `launchd_unsecure_cache` bring-up switches |
+| Code signing / AMFI (trust cache, entitlements) | **90%** | Confirmed on hardware: `SpringBoard` (a platform binary) execs, queries IOPMrootDomain and its `SWEET AKS` calls return `0x0`, with no `csblob invalid`. `0179` adds the same proof for `backboardd` in the full `sweetlog` ring (`exec backboardd`, IOSurface create/present). Remaining for 100%: removing the `unentitled_ios_sim_launch` / `launchd_unsecure_cache` bring-up switches |
 | Daily-driver usable (touch, Wi-Fi, sound, battery) | **15%** | NT36672 touch, WCN3990 Wi-Fi and ADSP audio are still untouched |
 | **Kernel readiness for an eMMC boot** | **100%** | Mount, bind mounts, platform-binary exec, the full boot-task chain and `SpringBoard` are proven on hardware by `0174`; `0175` only removes a permission bug on the userspace side |
 | **Overall port (weighted)** | **~90%** | The kernel and the panel scan-out are done; what is left is userspace presentation (`backboardd`/`SpringBoard` opening `AppleCLCD`) and the peripherals |

@@ -261,6 +261,13 @@ const char *loader_boot(uintptr_t dtb)
 	for (uintptr_t paddr = p->phys_base; paddr < top; paddr += line)
 		__asm__ volatile("dc cvac, %0" : : "r"(paddr) : "memory");
 
+	/*
+	 * Last frame the shim paints: a clean Apple mark on black, so the
+	 * panel shows the boot logo instead of the diagnostic text at the
+	 * moment XNU takes the framebuffer over (lavender 92f8e72).
+	 */
+	con_draw_apple_logo();
+
 	/* Invalidate I-cache, barrier, and jump with x0 = boot_args PA */
 	__asm__ volatile("dsb sy; ic iallu; dsb sy; isb" ::: "memory");
 	((xnu_entry_t)entry_pa)(ba_pa);

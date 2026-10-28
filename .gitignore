@@ -21,3 +21,6 @@ __pycache__/
 --dump
 video_frames/
 video_frames_2/
+
+# Local boot images built from a CI kernel (see tools/fetch-ci-kernel.sh)
+images/

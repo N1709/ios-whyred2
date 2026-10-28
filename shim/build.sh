@@ -86,7 +86,30 @@ EXTRA_CMDLINE="${EXTRA_CMDLINE:-}"
 # Unset means "spam", so a hand build keeps the old command line.
 KPRINTF_SPAM="${KPRINTF_SPAM--enable_kprintf_spam}"
 [ -n "$KPRINTF_SPAM" ] && KPRINTF_SPAM="$KPRINTF_SPAM "
-CMDLINE="debug=0x14e serial=3 disable_kprintf_output=0 ${KPRINTF_SPAM}sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
+# Display profile, ported from the lavender image that reached the lockscreen
+# (lavender e72d3a5). With disable_kprintf_output=0 the framebuffer console
+# repaints the boot log over the graphical boot, so the panel shows scrolling
+# text and never the Apple logo; KPRINTF_MUTE=1 keeps the log off the panel and
+# adds sweetfb_stayon=1 (do not blank mid-boot) and sweetfb_hz=60. The SYSTEM
+# ring still records everything: 0143 appends in _cnputs before the mute check.
+# KPRINTF_MUTE=0 keeps today's exact command line, so a hand build and the
+# diagnostic image are unchanged; only the workflow sets it to 1.
+KPRINTF_MUTE="${KPRINTF_MUTE:-0}"
+if [ "$KPRINTF_MUTE" = 1 ]; then
+	DISPLAY_ARGS="disable_kprintf_output=1 sweetfb_stayon=1 sweetfb_hz=60"
+else
+	DISPLAY_ARGS="disable_kprintf_output=0"
+fi
+# PANEL_NOCONSOLE=1 stops drawing the kernel console over the GUI from the
+# first AppleCLCD swap on (patch 0067). disable_kprintf_output would be the
+# obvious switch, but this kernel has no boot-arg of that name: the symbol is
+# there and nothing parses the string, so it changes nothing on the panel.
+# sweetfb_noconsole is parsed, and the console text still reaches the SYSTEM
+# ring (0143 appends in _cnputs before the mute check), so diagnostics are
+# not lost. Unset keeps the console on the panel.
+PANEL_NOCONSOLE="${PANEL_NOCONSOLE:-0}"
+[ "$PANEL_NOCONSOLE" = 1 ] && DISPLAY_ARGS="$DISPLAY_ARGS sweetfb_noconsole=1"
+CMDLINE="debug=0x14e serial=3 $DISPLAY_ARGS ${KPRINTF_SPAM}sweetfb_native=1 sweetcpufreq=0 sweetbattery=0 rd=$ROOTDEV -v keepsyms=1 $BOARD_LC $EXTRA_CMDLINE"
 
 # Ensure a minimal ramdisk.bin is always present
 if command -v cpio >/dev/null 2>&1; then
@@ -100,7 +123,11 @@ if [ -n "$PAYLOAD" ]; then
 	magic=$(python3 -c "import sys; f=open(sys.argv[1],'rb'); b=f.read(4); print(b.hex())" "$PAYLOAD" 2>/dev/null || true)
 	if [ "$magic" = "cffaedfe" ] || [ "$magic" = "feedfacf" ]; then
 		echo "Detected raw Mach-O kernel ($PAYLOAD). Generating ADT and packing with mkpayload.py..."
-		python3 ../tools/mkadt.py out/$BOARD_LC.adt --board "$BOARD_LC"
+		# --native: the canvas advertised to iOS must be the panel we
+		# actually scan out. Without it mkadt.py publishes the iPhone X
+		# canvas (1125x2436), backboardd then creates 1125x2436 surfaces,
+		# and the 1080x2160 panel stays black while SpringBoard "runs".
+		python3 ../tools/mkadt.py out/$BOARD_LC.adt --board "$BOARD_LC" --native
 		python3 ../tools/mkpayload.py "$PAYLOAD" out/$BOARD_LC.adt out/payload.bin --cmdline "$CMDLINE" --ramdisk out/init.macho
 	fi
 fi
