@@ -30,23 +30,33 @@ lock-screen daemons (`donotdisturbd`, `chronod`, `passd`, `liveactivitiesd`)
 start. So SpringBoard is neither dead nor looping; it runs and spawns its
 lock-screen services.
 
-The panel stayed black because of the **canvas in the ADT**, not the kernel:
-`tools/mkadt.py` publishes the iPhone X canvas (1125x2436) unless `--native`
-is passed, and `shim/build.sh` called it without that flag. iOS therefore laid
-the UI out for 1125x2436 while the panel and `AppleCLCD` are 1080x2160; the
-log shows `backboardd create id 2 1125x2436` next to `id 3 1080x2160`, and the
-three frames it presented never matched the panel. lavender already builds its
-ADT with `--native`; whyred did not. The ADT now carries 1080x2160 for both
+The ADT canvas is now the panel: `tools/mkadt.py` published the iPhone X
+canvas (1125x2436) unless `--native` is passed, and `shim/build.sh` called it
+without that flag. The blob on the phone now carries 1080x2160 for both
 `canvas-*` and the `sweet-fbcon` node (verified byte-wise: the old blob holds
-1125/2436, the new one only 1080/2160). Hardware confirmation is the next boot.
+1125/2436, the new one only 1080/2160). Hardware shows the limit of that fix:
+`backboardd` still creates `id 2 1125x2436` next to `id 3 1080x2160`. Those
+1125 surfaces come from userland (SpringBoard lays out for the iPhone X it
+believes it is running on), not from the ADT; the surface actually presented
+is `id 3`, 1080x2160. So geometry is no longer the blocker.
 
-Two switches were added for this. `panel_console=hidden` on a manual run (or
-`PANEL_NOCONSOLE=1` by hand) adds `sweetfb_noconsole=1`, which stops drawing
-the kernel console over the GUI on the first swap while the SYSTEM ring keeps
-the text. `disable_kprintf_output` was assumed to do this; it does nothing
-here, because this kernel has no boot-arg by that name - only the symbol.
-The Apple logo from lavender (`92f8e72`) is ported with whyred's own Y
-computed from the panel height, not lavender's hard-coded 800.
+What remains is that the new image presents only **three frames**
+(`swap 3/4/7`) and then stops. The panel shows the data-migration spinner and
+nothing moves. Two measurements must not be confused with that state: the
+later ring (`/tmp/whyred-e76.txt`) was pulled from an **older hand-built
+image** - its `boot-args` line has `cs_debug=2 -enable_kprintf_spam` and no
+`sweetfb_stayon` / `sweetfb_noconsole` / `sweetfb_hz` - so its console text
+over the GUI and its `display off` belong to that image. The new image's ring
+(`/tmp/whyred-e75.txt`) says `display off ignored (sweetfb_stayon)` and its
+console is muted, as intended.
+
+`panel_console=hidden` on a manual run (or `PANEL_NOCONSOLE=1` by hand) adds
+`sweetfb_noconsole=1`, which stops drawing the kernel console over the GUI on
+the first swap while the SYSTEM ring keeps the text. `disable_kprintf_output`
+was assumed to do this; it does nothing here, because this kernel has no
+boot-arg by that name - only the symbol. The Apple logo from lavender
+(`92f8e72`) is ported with whyred's own Y computed from the panel height, not
+lavender's hard-coded 800.
 
 `0179`'s local panic was not the kernel: the hand-built images carried
 `ignition_level=1 rootrw=1 wdt_*`, which makes libignition search a preboot
@@ -54,11 +64,17 @@ volume that does not exist (`ignition boot failed`) and pid 1 then dies with no
 dyld cache. CI never had those switches; `payload_cmdline.py` now rejects
 `ignition_level=` on every image so a hand build cannot reintroduce it.
 
-Known tool defect: the console flusher (`0143`) still stops on the first
-ring-block write error. `fsck` reads the same card for minutes, a `CMD24` into
-that traffic times out, and the tail of the log - the only place the late
-`exec` lines live - is never written. A truncated ring is a measurement limit,
-not evidence about the boot.
+Two kernel defects kept that state unmeasurable. `0180` answers
+`DKIOCSYNCHRONIZE` on the SDHCI root: HFS calls it before advancing the journal
+head, the driver fell through to `return ENOTTY`, and every checkpoint printed
+`jnl: b(2, 0): flushing fs disk buffer returned 0x19` (0x19 is `ENOTTY`). The
+card cache is never enabled, so returning success is honest. `0181` makes the
+console flusher (`0143`) retry a busy card instead of stopping: `fsck` reads
+the same card for minutes, a `CMD24` into that traffic times out, and the old
+code returned, leaving the tail of the boot - the only place the late `exec`
+lines live - out of the ring for good. The next boot with `sweetlog=1` can now
+say whether `backboardd` really stops after three frames or whether the log
+was simply truncated.
 
 `0177` is the previous hardware-confirmed display state: it draws four colour
 bars (red/green/blue/white) into the ABL framebuffer

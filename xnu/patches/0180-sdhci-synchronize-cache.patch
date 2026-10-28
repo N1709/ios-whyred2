@@ -1,0 +1,34 @@
+diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
+index 6af4c74..dea4fc7 100644
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -2118,7 +2118,7 @@ sdhci_take_over(void)
+ 	 * Name the build in the log. Matching a boot log to a patch by
+ 	 * guessing from its messages has already cost flash cycles.
+ 	 */
+-	printf("WHYRED SDHCI: driver 0179 (root \"%s\", writes %s; boot "
++	printf("WHYRED SDHCI: driver 0180 (root \"%s\", writes %s; boot "
+ 	    "args decide whether the HFS+ root comes from eMMC)\n",
+ 	    se.part, se.writable ? "enabled" : "read-only");
+ 
+@@ -4016,6 +4016,20 @@ santoni_sdhci_ioctl(__unused dev_t dev, u_long cmd, caddr_t data,
+ 	case DKIOCGETMAXSEGMENTCOUNTWRITE:
+ 		*o = 1;
+ 		return 0;
++	case DKIOCSYNCHRONIZE:
++	case DKIOCSYNCHRONIZECACHE:
++		/*
++		 * HFS asks for this barrier before it advances the journal
++		 * head (write_journal_header). Returning ENOTTY (0x19) made
++		 * every checkpoint print
++		 * "jnl: b(2, 0): flushing fs disk buffer returned 0x19".
++		 *
++		 * This driver never sets EXT_CSD CACHE_CTRL, so the card's
++		 * write cache stays disabled and a CMD25 transfer is already
++		 * in the media when it completes: there is nothing left to
++		 * flush. A RAM-disk (rd=md0) build answers the same way.
++		 */
++		return 0;
+ 	default:
+ 		return ENOTTY;
+ 	}

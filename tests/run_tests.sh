@@ -713,6 +713,27 @@ if t.index('ring write failed') > hdr:
 PY
 echo "ok   0178 labels the log area first and survives a header failure"
 
+echo "== SYNC: 0180 answers DKIOCSYNCHRONIZE instead of ENOTTY =="
+P180="xnu/patches/0180-sdhci-synchronize-cache.patch"
+python3 tools/check_patch.py "$P180" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:case DKIOCSYNCHRONIZE:' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:case DKIOCSYNCHRONIZECACHE:' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:driver 0179'
+# HFS calls VNOP_IOCTL(jdev, DKIOCSYNCHRONIZE) before it advances the
+# journal head. The driver fell through to "default: return ENOTTY", so every
+# checkpoint printed "jnl: b(2, 0): flushing fs disk buffer returned 0x19"
+# (0x19 is ENOTTY). The card cache is never enabled, so success is honest.
+grep -q 'DKIOCSYNCHRONIZE' xnu/patches/0030-sweet-ufs-writes.patch
+echo "ok   0180 turns the journal's cache barrier into a success"
+
+echo "== LOG 0181: a ring write error retries instead of truncating =="
+P181="xnu/patches/0181-sdhci-log-flusher-retry.patch"
+python3 tools/check_patch.py "$P181" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:ring write failed' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:retrying' \
+	--added-lacks 'bsd/dev/santoni_sdhci.c:stopping '
+echo "ok   0181 keeps flushing when the card is busy"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
