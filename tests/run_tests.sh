@@ -906,8 +906,7 @@ script = '\n'.join(lines) + '\nprintf "%s\\n" "$COMMON"\n'
 out = subprocess.run(['bash', '-c', script], capture_output=True,
                      text=True, check=True).stdout
 need = ['emmcrw=1', 'cs_enforcement_disable=1',
-        'unentitled_ios_sim_launch=1', 'launchd_unsecure_cache=1',
-        'sweetfbtest=1']
+        'unentitled_ios_sim_launch=1', 'launchd_unsecure_cache=1']
 missing = [n for n in need if n not in out.split()]
 if missing:
     raise SystemExit('COMMON lost %s -> %r' % (' '.join(missing), out))
@@ -918,8 +917,13 @@ if 'sweetlog=1' in out.split():
 PY
 grep -q -- '--require cs_enforcement_disable=1' .github/workflows/xnu.yml
 grep -q -- '--require unentitled_ios_sim_launch=1' .github/workflows/xnu.yml
+# The four-bar scanout probe is a workflow choice now: off by default, on for
+# a diagnostic run, and the payload check must follow the same choice.
+grep -q 'fb_test_pattern:' .github/workflows/xnu.yml
+grep -q -- '--require sweetfbtest=1' .github/workflows/xnu.yml
+grep -q -- '--reject sweetfbtest=1' .github/workflows/xnu.yml
 echo "ok   normal image has no log capture, log image keeps ring and dumps"
-echo "ok   COMMON keeps every code-signing switch and the payload check requires it"
+echo "ok   the colour-bar probe is an off/on workflow input"
 
 # Optional deep check: if a patched XNU source tree is provided, the three
 # patches must also apply to it as-is (git apply --check).

@@ -30,6 +30,13 @@ on:
           - text
           - hidden
         default: text
+      fb_test_pattern:
+        description: on (four colour bars prove the panel scans out) / off (clean panel)
+        type: choice
+        options:
+          - "off"
+          - "on"
+        default: "off"
   push:
     branches: [main, santoni, lavender, whyred]
     paths:
@@ -279,18 +286,26 @@ jobs:
           # recovery with tools/sweet-log-pull.sh.
           #
           # sweetfbtest=1 draws four colour bars into the boot framebuffer
-          # once, early in BSD init: the console is on the UART and
-          # kPEAcquireScreen clears the panel, so the bars are the only way
-          # to see whether MDSS still scans the ABL splash out.
+          # once, early in BSD init. They were the only proof that MDSS still
+          # scans the ABL splash out; now that the lock screen is on the panel
+          # they are just visual noise, so the workflow default is off.
+          # Set fb_test_pattern=on to bring the scanout probe back.
           #
           # The normal image also carries the display profile of the lavender
           # image that reached the lockscreen: sweetfb_stayon=1 and
           # sweetfb_hz=60 (both parsed by this kernel). disable_kprintf_output
           # comes from that same command line; it is inert here - this kernel
-          # has no boot-arg by that name - and is kept only so the line
+          # has no boot-arg of that name - and is kept only so the line
           # matches the one known to boot.
           COMMON="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1"
-          COMMON="$COMMON launchd_unsecure_cache=1 sweetfbtest=1"
+          FB_TEST="${{ inputs.fb_test_pattern || 'off' }}"
+          FB_ARG=""
+          FB_VERIFY="--reject sweetfbtest=1"
+          if [ "$FB_TEST" = "on" ]; then
+            FB_ARG="sweetfbtest=1"
+            FB_VERIFY="--require sweetfbtest=1"
+          fi
+          COMMON="$COMMON launchd_unsecure_cache=1 $FB_ARG"
           # Log mode: sweetlog=1 records every console character to the 4 MiB
           # ring on SYSTEM, cs_debug=2 prints the CD dump and the per-blob
           # line for every validated page (megabytes), and
@@ -363,7 +378,7 @@ jobs:
               --require rd=emmcroot0 --require emmcrw=1 \
               --require cs_enforcement_disable=1 \
               --require unentitled_ios_sim_launch=1 \
-              --require launchd_unsecure_cache=1 --require sweetfbtest=1
+              --require launchd_unsecure_cache=1 $FB_VERIFY
             # ignition_level=<n> makes dyld's libignition search for the shared
             # cache somewhere our root does not have it: level 0 skips the
             # dyld_cache stage and level 1 searches System/Library/Caches/

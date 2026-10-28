@@ -273,10 +273,12 @@ A manual run ("Run workflow") has a `build_mode` choice — `both`, `normal` or 
 
 | Image | Command line | Use |
 | --- | --- | --- |
-| `shim-boot.img` | `sweetfbtest=1`, no `sweetlog`, no `cs_debug=2`, no kprintf spam | daily boot; nothing is recorded to the SYSTEM ring |
+| `shim-boot.img` | no `sweetfbtest` (the four-bar scanout probe is opt-in), no `sweetlog`, no `cs_debug=2`, no kprintf spam | daily boot; nothing is recorded to the SYSTEM ring |
 | `shim-boot-log.img` | the same plus `sweetlog=1 cs_debug=2 -enable_kprintf_spam` | when a line is missing; records the 4 MiB SYSTEM ring and every validated code page, several times slower at 115200 baud |
 
 The log image writes the console to the 4 MiB SYSTEM ring, so its full boot can be pulled after a black-screen boot with `tools/sweet-log-pull.sh`. The normal image leaves the ring untouched and has no logging overhead.
+
+`fb_test_pattern` (a manual-run choice, default `off`) adds `sweetfbtest=1`: four colour bars written into the boot framebuffer before BSD init. It was the scanout proof before the lock screen existed; turn it on only to check that MDSS still scans ABL's splash out.
 
 ### Debugging tips
 
