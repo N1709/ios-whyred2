@@ -759,6 +759,22 @@ echo "ok   0182 paints the shim's own mark after the fbcon clear"
 grep -q '018\[0-9\]' .github/workflows/xnu.yml
 echo "ok   0182 a skipped 018x patch fails the build instead of shipping"
 
+echo "== SWIPE: 0183 proves the digitizer path without touch hardware =="
+P183="xnu/patches/0183-sweet-hid-synthetic-swipe.patch"
+python3 tools/check_patch.py "$P183" -q \
+	--added-contains 'iokit/Kernel/arm/hid/SweetHID.cpp:sweetouchtest' \
+	--added-contains 'iokit/Kernel/arm/hid/SweetHID.cpp:synthetic swipe' \
+	--added-contains 'iokit/Kernel/arm/hid/SweetHID.cpp:touch(0, true, 540, 2390)'
+# The touch has to begin inside the edge band touch() marks FromEdgeTip
+# (y > 2399 - 48), or UIKit will not treat the swipe as the home gesture.
+python3 - <<'PY'
+import re
+src = open('xnu/patches/0183-sweet-hid-synthetic-swipe.patch', encoding='utf-8').read()
+assert '2399-48' in src or 'SWEET_TOUCH_EDGE_PX' in src
+assert '2390' in src and '540' in src
+PY
+echo "ok   0183 starts the swipe in the bottom edge band"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
