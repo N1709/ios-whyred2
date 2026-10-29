@@ -21,6 +21,7 @@ Boot-args:
 | --- | --- |
 | `sweetouchi2c=1` | run the probe (scan `0x08`..`0x77`, read the three chip-ID bytes of every address that ACKs) |
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms first |
+| `sweetouchwait=SECONDS` | hold the panel with the result (default 15 s, 0 = continue at once) |
 
 Without `sweetouchreset` the probe never writes GPIO 66/67, so the log also
 reports the state ABL handed over (`rst cfg/io`, `irq cfg/io`).

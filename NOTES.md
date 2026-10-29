@@ -23,7 +23,9 @@ GPIO with the internal pull-up, bit-bangs I2C at ~50 kHz, scans `0x08`..`0x77`
 and reads page 0 / register 0 (three chip-ID bytes) from every address that
 ACKs. `sweetouchreset=1` additionally drives reset (GPIO 66) low 10 ms and high
 60 ms first; the default probe does not write GPIO 66/67, so the log keeps the
-bootloader hand-off state (`rst cfg/io`, `irq cfg/io`).
+bootloader hand-off state (`rst cfg/io`, `irq cfg/io`). After the scan it holds
+the panel for `sweetouchwait` seconds (default 15, max 60) so the result is
+readable before the first iOS frame clears the console.
 
 Hardware recorded for the next steps: Novatek answers at `0x62` in bootloader
 mode and `0x01` once firmware runs, Synaptics at `0x20`; BLSP1 QUP1 at

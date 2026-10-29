@@ -299,7 +299,7 @@ int
 santoni_touch_probe(void)
 {
 	vm_offset_t south, north;
-	uint32_t on = 0, pulse = 0;
+	uint32_t on = 0, pulse = 0, wait;
 	uint8_t id[3];
 	int addr, acks = 0, pulsed;
 	uint32_t rst_cfg, rst_io, irq_cfg, irq_io;
@@ -369,6 +369,22 @@ santoni_touch_probe(void)
 
 	printf("WHYRED TOUCH: scan done, %d address(es) acknowledged; sda %d "
 	    "scl %d\n", acks, pin_read(&touch_sda), pin_read(&touch_scl));
+
+	/*
+	 * Hold the panel so the answer is readable without a serial cable:
+	 * the first iOS frame clears the console, and these lines print
+	 * minutes before it. sweetouchwait=SECONDS overrides the 15 s hold,
+	 * 0 continues immediately.
+	 */
+	wait = 15;
+	(void)PE_parse_boot_argn("sweetouchwait", &wait, sizeof(wait));
+	if (wait) {
+		if (wait > 60) {
+			wait = 60;
+		}
+		printf("WHYRED TOUCH: holding the panel %u s\n", wait);
+		delay((int)(wait * 1000000u));
+	}
 	return acks ? 0 : ENXIO;
 }
 
