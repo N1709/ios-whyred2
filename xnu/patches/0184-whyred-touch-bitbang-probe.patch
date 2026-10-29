@@ -46,10 +46,10 @@ index 52b1170..8431933 100644
  
 diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 new file mode 100644
-index 0000000..7d33048
+index 0000000..913cb7b
 --- /dev/null
 +++ b/bsd/dev/santoni_touch.c
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,383 @@
 +/*
 + * WHYRED touch bring-up, step 1: does the panel's touch controller answer on
 + * the BLSP1 QUP1 bus at all?
@@ -66,7 +66,8 @@ index 0000000..7d33048
 + * window per pin, CTRL at +0x0 (mux bits 2..5, pull bits 0..1, drive bits
 + * 6..8, output enable bit 9) and IO at +0x4 (bit 0 pad level, bit 1 driven
 + * value). GPIO 2/3 live in the SOUTH tile (TLMM + 0x100000); the reset/IRQ
-+ * pair lives in NORTH (TLMM + 0x900000). The internal pull-up is used
++ * pair lives in NORTH (TLMM + 0x900000), both relative to the vendor
++ * pinctrl@03000000 window. The internal pull-up is used
 + * because whyred has no external pull resistors on this bus.
 + *
 + * Boot-args:
@@ -94,7 +95,7 @@ index 0000000..7d33048
 +extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
 +    uint32_t flags);
 +
-+#define WHYRED_TLMM_BASE	0x03400000ULL
++#define WHYRED_TLMM_BASE	0x03000000ULL	/* vendor DTS: pinctrl@03000000 */
 +#define WHYRED_TLMM_SOUTH	0x00100000u	/* GPIO 0..15 */
 +#define WHYRED_TLMM_NORTH	0x00900000u	/* GPIO 66..67 */
 +

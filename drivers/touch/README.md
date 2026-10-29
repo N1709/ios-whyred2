@@ -4,9 +4,11 @@
   FHD video panels; some whyred units ship a Shenchao panel with a Synaptics
   controller. whyred has no external pull resistors on the bus.
 - **Bus:** BLSP1 QUP1 (`0x0c175000`, GIC SPI 95), SDA GPIO 2, SCL GPIO 3
-  (TLMM SOUTH tile, physical `0x03502000` / `0x03503000`).
+  (TLMM SOUTH tile, physical `0x03102000` / `0x03103000`).
+- **TLMM:** `pinctrl@03000000` (vendor DTS); SOUTH tile at `+0x100000`,
+  NORTH tile at `+0x900000`
 - **Sideband:** reset GPIO 66, IRQ GPIO 67 (TLMM NORTH tile, physical
-  `0x03d42000` / `0x03d43000`), VDDIO PM660 LDO11.
+  `0x03942000` / `0x03943000`), VDDIO PM660 LDO11.
 - **Addresses:** Novatek answers at `0x62` while its bootloader runs and at
   `0x01` once firmware runs; Synaptics answers at `0x20`.
 - **Code:** `santoni_touch.c` (patch 0184) is step 1 only: TLMM GPIO plus

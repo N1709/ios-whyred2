@@ -17,7 +17,8 @@ revert image.
 **0184** (`xnu/patches/0184-whyred-touch-bitbang-probe.patch`) adds
 `bsd/dev/santoni_touch.c`, called once from `santoni_sdhci_init()` when
 boot-arg `sweetouchi2c=1` is present. It maps the TLMM SOUTH/NORTH tiles
-(`0x03500000` / `0x03d00000`), re-muxes GPIO 2 (SDA) and GPIO 3 (SCL) to plain
+(`0x03100000` / `0x03900000`, relative to the vendor
+`pinctrl@03000000` window; the first draft wrongly used `0x03400000`), re-muxes GPIO 2 (SDA) and GPIO 3 (SCL) to plain
 GPIO with the internal pull-up, bit-bangs I2C at ~50 kHz, scans `0x08`..`0x77`
 and reads page 0 / register 0 (three chip-ID bytes) from every address that
 ACKs. `sweetouchreset=1` additionally drives reset (GPIO 66) low 10 ms and high

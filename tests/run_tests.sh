@@ -793,6 +793,9 @@ python3 - <<'PY'
 src = open('xnu/patches/0184-whyred-touch-bitbang-probe.patch', encoding='utf-8').read()
 assert 'sweetouchreset' in src
 assert '"sweetouchi2c", &on' in src
+# whyred's vendor DTS puts TLMM at 0x03000000; 0x03400000 would point at
+# the CENTER tile and write an unrelated pad.
+assert '0x03000000' in src and '0x03400000' not in src
 PY
 echo "ok   0184 scans on sweetouchi2c and pulses reset only on request"
 
