@@ -1,5 +1,44 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0187/0188 (2026-10-29): the synaptics read does not address
+
+**0187 result (ring pulled 2026-10-29):** the DSX protocol from the vendor
+driver still does not read registers.
+
+```
+dsx fn 34 query 2700 cmd 09 ctrl 00 data 21
+dsx fn 01 query 2f26 cmd 0d ctrl 04 data 01
+dsx f01 [0x2f26] 0f 15 c7 11 ...
+dsx manufacturer 15 product "..." build 051f09
+no F12 data base, cannot poll touch
+```
+
+The tell is the sequence: `0x00e9` returns `27 00 09 00 21 34` and the next
+entry (`0x00e3`) returns `2f 26 0d 04 01 01`, i.e. the byte stream continues
+instead of restarting at the lower address, and the first entry decodes as
+function `0x34`. Entry `0x00e9` is by definition F01 (function `0x01`), so the
+address byte is not taking effect; the chip streams. 0186's "version" read at
+`0x0000` returned exactly the same first eight bytes, which fits: both reads
+start wherever the chip's pointer sits.
+
+**0188** (read-only) separates the remaining causes in one boot:
+
+- bit-bang becomes open-drain: drive low, release high, `scl_release()` waits
+  up to 2 ms for the line to rise, so a slave that holds SCL low while it
+  fetches a register is respected instead of overridden by a push-pull high;
+- `sweetouchreset` uses the DT values (`reset-active-ms = 20`,
+  `reset-delay-ms = 200`) plus a 50 ms settle, in case ABL leaves the part in
+  a non-app state;
+- read matrix: same address twice (repeat vs advance), `0x00e9` with one and
+  with two address bytes, `0x00e8`/`0x00ea`, page 1, and no page select;
+- IRQ GPIO 67 is watched during the touch poll and every level change is
+  logged; an edge proves the controller runs and scans even if every read is
+  still wrong.
+
+Image: `sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweetouchreset=1
+sweetouchtouch=30`. Read it with `tools/sweet-touch-answer.sh` after booting
+the whyred recovery.
+
 ## 0184 (2026-10-29): first touch step - bit-banged I2C probe on whyred
 
 **State:** whyred reaches the iOS lock screen with

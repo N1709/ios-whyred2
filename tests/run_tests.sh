@@ -858,6 +858,32 @@ assert 'dsx_write' not in src
 PY
 echo "ok   0187 page-selects, reads the PDT at 0x00e9 and polls F12"
 
+echo "== TOUCH: 0188 turns the reads into a diagnostic matrix =="
+P188="xnu/patches/0188-whyred-touch-open-drain-diag.patch"
+python3 tools/check_patch.py "$P188" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:scl_release(void)' \
+	--added-contains 'bsd/dev/santoni_touch.c:TOUCH_LINE_WAIT_US' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_read_ex(uint8_t addr' \
+	--added-contains 'bsd/dev/santoni_touch.c:diag same address twice' \
+	--added-contains 'bsd/dev/santoni_touch.c:reset pulse low 20 ms, high 200 ms' \
+	--added-contains 'bsd/dev/santoni_touch.c:delay(250000);' \
+	--added-contains 'bsd/dev/santoni_touch.c:edge %d' \
+	--added-contains 'bsd/dev/santoni_touch.c:poll %u s data'
+python3 - <<'PY'
+src = open('xnu/patches/0188-whyred-touch-open-drain-diag.patch', encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# High is always a release, never a push-pull drive.
+assert 'pin_out(&touch_sda, 1)' not in body
+assert 'pin_out(&touch_scl, 1)' not in body
+assert body.count('scl_release();') >= 6
+# Both address widths are exercised, and the page select is optional.
+assert 'diag 00e9 a2' in body and 'diag 00e9 a2 nopage' in body
+assert 'diag page1 0000 a1' in body
+PY
+echo "ok   0188 releases the lines, times reset and runs the read matrix"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

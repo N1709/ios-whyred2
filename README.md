@@ -23,6 +23,24 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
+**2026-10-29 - 0187 and 0188: the read is the problem, not the address.**
+`0187` replaced the RMI4 read with the Synaptics DSX one the vendor driver
+uses (page select `0xFF <page>`, then one address byte, then a repeated
+start). The result was still wrong, and the way it is wrong is the useful
+part: reading `0x00e9` returns `27 00 09 00 21 34` and then `0x00e3`
+continues the same stream with `2f 26 0d 04 01 01` instead of starting a new
+page-table entry, and the first slot decodes as function `0x34` - the slot at
+`0x00e9` always holds F01. So the address phase is not taking effect at all.
+`0188` stops guessing and answers four questions in one boot, read-only:
+does reading the same address twice repeat or advance; does a two-byte address
+(the 0186 protocol) behave differently; does `0x00e8`/`0x00ea` shift the
+answer; and does `0xFF <page>` reach page 1? It also makes the bit-bang
+open-drain (release high, wait for the line) so a controller holding SCL low
+while it fetches a register is no longer overridden, drives reset with the
+timings the DT asks for (20 ms low, 200 ms high), and watches IRQ GPIO 67
+during the touch poll: a level change proves the controller is scanning even
+if I2C reads stay broken.
+
 **2026-10-29 - whyred's touch controller answers.** Patch `0184` bit-bangs the
 BLSP1 I2C bus as plain TLMM GPIO (SDA 2 / SCL 3) and scans every address. The
 SYSTEM ring, pulled after a `fastboot boot` of the whyred recovery with
@@ -316,18 +334,23 @@ The Shenchao variant is the Synaptics one.
 
 Patch `0184` (`bsd/dev/santoni_touch.c`) re-muxes the two bus lines as GPIO
 and bit-bangs I2C, because neither a TLMM GPIO driver nor a QUP I2C master
-exists in this kernel yet. `0186` adds an RMI4 read (two-byte register
-address, no page-select prefix) and a read-only identification pass: version
-register `0x0000`, the six-byte function descriptor table at `0x000e`, then
-the F01 query block (manufacturer and product string, ASCII) and F12's
-query/control/data bases for 2D touch.
+exists in this kernel yet. `0186` guessed RMI4 (two-byte register address at
+`0x000e`); `0187` switched to the protocol the vendor driver actually uses
+(page select `0xFF <page>`, one address byte, table at `0x00e9`), and both
+returned the same continuous byte stream, one that shifts with the read
+history instead of with the address. `0188` therefore treats the read itself
+as the suspect: it makes SCL open-drain with clock-stretch waiting, pulses
+reset with the DT timings, and runs a read-only matrix (same address twice,
+one vs two address bytes, `0x00e8`/`0x00ea`, page 1, no page select) plus an
+IRQ witness on GPIO 67 during the F12 poll.
 
 | Boot-arg | Effect |
 | --- | --- |
 | `sweetouchi2c=1` | run the probe: scan `0x08`..`0x77`, then dump the RMI4 identification |
-| `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms before the scan |
+| `sweetouchreset=1` | additionally drive reset (GPIO 66) per the DT: low 20 ms, high 200 ms, then 50 ms settle before the scan |
 | `sweetouchwait=SECONDS` | hold the boot after the scan (default 15 s, 0 = no hold, max 60); the panel is usually muted by then, so prefer the ring |
-| `sweetouchtouch=SECONDS` | poll F12 touch data for that long: top band of the panel is blue while waiting, green on the first change, and every change goes to the ring (max 60) |
+| `sweetouchtouch=SECONDS` | poll F12 touch data for that long: top band of the panel is blue while waiting, green on the first change or IRQ edge, and every change goes to the ring (max 60) |
+| (automatic) | before identification, 0188 prints the read matrix: `diag 0000 a1 #1/#2`, `diag 00e9 a1/a2`, `diag 00e8 a1`, `diag 00ea a1`, `diag 00e9 a2 nopage`, `diag page1 0000 a1` |
 | `sweetouchhalt=1` | paint the answer into the scanout buffer and stop the boot there (top quarter: white = first ack `0x01`, yellow = `0x62`, cyan = `0x20`, magenta = other, red = none; bottom green if anything answered) |
 
 Without `sweetouchreset` the probe does not write GPIO 66/67, so the log also
@@ -404,7 +427,9 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0157 | Try SDMA before PIO for EXT_CSD, reject all-zero FIFO blocks and validate REV/STRUCTURE/SEC_COUNT before keeping a setup |
 | 0184 | Bit-bang BLSP1 I2C on TLMM GPIO 2/3 and scan the touch addresses (found `0x20`) |
 | 0185 | Paint the probe answer into the scanout buffer and halt; the console is muted at the framebuffer hand-off |
-| 0186 | RMI4 identification at `0x20`: version, function table, F01/F12 query blocks (read-only) |
+| 0186 | RMI4 identification at `0x20`: version, function table, F01/F12 query blocks (read-only) - wrong protocol |
+| 0187 | Synaptics DSX protocol (page select at `0xFF`, PDT at `0x00e9`) plus an F12 data poll - still a shifted stream |
+| 0188 | Open-drain bit-bang with clock-stretch wait, DT reset timing, read matrix, IRQ edge witness |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

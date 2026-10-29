@@ -20,11 +20,12 @@ Boot-args:
 | Arg | Effect |
 | --- | --- |
 | `sweetouchi2c=1` | run the probe (scan `0x08`..`0x77`, read the three chip-ID bytes of every address that ACKs) |
-| `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms first |
+| `sweetouchreset=1` | drive reset (GPIO 66) per the DT: low 20 ms, high 200 ms, 50 ms settle |
 | `sweetouchwait=SECONDS` | hold the panel with the result (default 15 s, 0 = continue at once) |
 | `sweetouchhalt=1` | diagnostic: paint the answer into the scanout buffer and stop the boot there |
 | (always, with `sweetouchi2c=1`) | after the scan: DSX page table (from `0x00e9`), F01 query (manufacturer, product, build) and F12 bases at `0x20` |
-| `sweetouchtouch=SECONDS` | poll F12 data; top band goes blue -> green on the first change (max 60 s) |
+| `sweetouchtouch=SECONDS` | poll F12 data; top band goes blue -> green on the first change or IRQ edge (max 60 s) |
+| (automatic) | 0188 read matrix: `diag 0000 a1 #1/#2`, `diag 00e9 a1/a2`, `diag 00e8 a1`, `diag 00ea a1`, `diag 00e9 a2 nopage`, `diag page1 0000 a1` |
 
 Without `sweetouchreset` the probe never writes GPIO 66/67, so the log also
 reports the state ABL handed over (`rst cfg/io`, `irq cfg/io`).

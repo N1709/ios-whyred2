@@ -152,6 +152,16 @@ pin_read(struct touch_pin *p)
 	return (tlmm_rd(p->io) & 1u) != 0;
 }
 
+/*
+ * Open-drain bit-bang. Only ever drive a line low; release it (input with
+ * the internal pull-up) for a high. A push-pull high would fight a slave
+ * that holds SCL low to stretch the clock - and a Synaptics controller does
+ * stretch while it fetches a register - so every high is a release followed
+ * by a wait for the line to actually rise. A timeout keeps a stuck bus from
+ * hanging the boot.
+ */
+#define TOUCH_LINE_WAIT_US	2000
+
 static void
 bb_delay(void)
 {
@@ -159,26 +169,68 @@ bb_delay(void)
 }
 
 static void
+sda_low(void)
+{
+	pin_out(&touch_sda, 0);
+}
+
+static void
+scl_low(void)
+{
+	pin_out(&touch_scl, 0);
+}
+
+static int
+sda_release(void)
+{
+	int i;
+
+	pin_in(&touch_sda);
+	for (i = 0; i < TOUCH_LINE_WAIT_US; i++) {
+		if (pin_read(&touch_sda)) {
+			return 1;
+		}
+		delay(1);
+	}
+	return 0;
+}
+
+static int
+scl_release(void)
+{
+	int i;
+
+	pin_in(&touch_scl);
+	for (i = 0; i < TOUCH_LINE_WAIT_US; i++) {
+		if (pin_read(&touch_scl)) {
+			return 1;
+		}
+		delay(1);
+	}
+	return 0;
+}
+
+static void
 i2c_start(void)
 {
-	pin_out(&touch_sda, 1);
+	sda_release();
 	bb_delay();
-	pin_out(&touch_scl, 1);
+	scl_release();
 	bb_delay();
-	pin_out(&touch_sda, 0);
+	sda_low();
 	bb_delay();
-	pin_out(&touch_scl, 0);
+	scl_low();
 	bb_delay();
 }
 
 static void
 i2c_stop(void)
 {
-	pin_out(&touch_sda, 0);
+	sda_low();
 	bb_delay();
-	pin_out(&touch_scl, 1);
+	scl_release();
 	bb_delay();
-	pin_out(&touch_sda, 1);
+	sda_release();
 	bb_delay();
 }
 
@@ -189,19 +241,23 @@ i2c_write(uint8_t byte)
 	int bit, ack;
 
 	for (bit = 7; bit >= 0; bit--) {
-		pin_out(&touch_sda, (byte >> bit) & 1);
+		if ((byte >> bit) & 1) {
+			sda_release();
+		} else {
+			sda_low();
+		}
 		bb_delay();
-		pin_out(&touch_scl, 1);
+		scl_release();
 		bb_delay();
-		pin_out(&touch_scl, 0);
+		scl_low();
 		bb_delay();
 	}
-	pin_in(&touch_sda);
+	sda_release();
 	bb_delay();
-	pin_out(&touch_scl, 1);
+	scl_release();
 	bb_delay();
 	ack = !pin_read(&touch_sda);
-	pin_out(&touch_scl, 0);
+	scl_low();
 	bb_delay();
 	return ack;
 }
@@ -212,28 +268,24 @@ i2c_read(int ack)
 	uint8_t value = 0;
 	int bit;
 
-	pin_in(&touch_sda);
+	sda_release();
 	bb_delay();
 	for (bit = 0; bit < 8; bit++) {
-		pin_out(&touch_scl, 1);
+		scl_release();
 		bb_delay();
 		value = (uint8_t)((value << 1) | (pin_read(&touch_sda) ? 1 : 0));
-		pin_out(&touch_scl, 0);
+		scl_low();
 		bb_delay();
 	}
 	if (ack) {
-		pin_out(&touch_sda, 0);
-	} else {
-		pin_in(&touch_sda);
+		sda_low();
 	}
 	bb_delay();
-	pin_out(&touch_scl, 1);
+	scl_release();
 	bb_delay();
-	pin_out(&touch_scl, 0);
+	scl_low();
 	bb_delay();
-	if (ack) {
-		pin_in(&touch_sda);
-	}
+	sda_release();
 	return value;
 }
 
@@ -247,11 +299,11 @@ i2c_clear_bus(void)
 {
 	int i, pulsed = 0;
 
-	pin_in(&touch_sda);
+	sda_release();
 	for (i = 0; i < 9 && !pin_read(&touch_sda); i++) {
-		pin_out(&touch_scl, 1);
+		scl_release();
 		bb_delay();
-		pin_out(&touch_scl, 0);
+		scl_low();
 		bb_delay();
 		pulsed++;
 	}
@@ -333,23 +385,28 @@ nvt_read(uint8_t addr, uint8_t page, uint8_t reg, uint8_t *buf, int len)
 #define DSX_PRODUCT_ID_SIZE	10
 
 static int
-dsx_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
+dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
+    int use_page, int addr_bytes)
 {
 	int i, ok = 1;
 
-	/* page select: 0xFF <page>, then the low address byte */
-	i2c_start();
-	ok &= i2c_write((uint8_t)(addr << 1));
-	ok &= i2c_write(0xff);
-	ok &= i2c_write((uint8_t)((reg >> 8) & 0xff));
-	if (!ok) {
+	if (use_page) {
+		/* page select: 0xFF <page> */
+		i2c_start();
+		ok &= i2c_write((uint8_t)(addr << 1));
+		ok &= i2c_write(0xff);
+		ok &= i2c_write((uint8_t)((reg >> 8) & 0xff));
 		i2c_stop();
-		return EIO;
+		if (!ok) {
+			return EIO;
+		}
 	}
-	i2c_stop();
 
 	i2c_start();
 	ok &= i2c_write((uint8_t)(addr << 1));
+	if (addr_bytes == 2) {
+		ok &= i2c_write((uint8_t)((reg >> 8) & 0xff));
+	}
 	ok &= i2c_write((uint8_t)(reg & 0xff));
 	if (!ok) {
 		i2c_stop();
@@ -366,6 +423,13 @@ dsx_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
 	}
 	i2c_stop();
 	return 0;
+}
+
+/* The vendor driver's read: page select, then one address byte. */
+static int
+dsx_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
+{
+	return dsx_read_ex(addr, reg, buf, len, 1, 1);
 }
 
 /* Hex plus printable text: the product and build strings are ASCII. */
@@ -470,17 +534,90 @@ dsx_identify(struct dsx_funcs *f)
 static void panel_band(uint32_t colour);
 
 /*
+ * 0187 could not read the page descriptor table: reading 0x00e9 and then
+ * 0x00e3 returned one continuous byte stream (0x00e9 -> 27 00 09 00 21 34,
+ * 0x00e3 -> 2f 26 0d 04 01 01), and the "first" PDT entry decoded as
+ * function 0x34, which cannot be the entry at 0x00e9 - that slot always holds
+ * F01. Either the address phase is not taking effect or the chip is in a
+ * state where it only streams. This diagnostic answers both questions in one
+ * boot, read-only:
+ *
+ *   same address twice      does the second read repeat or advance?
+ *   0x00e9, one byte        the vendor driver's protocol
+ *   0x00e9, two bytes       the RMI4 protocol 0186 used
+ *   0x00e8 / 0x00ea         off-by-one check on the same protocol
+ *   0x00e9, no page select  page select itself may be the problem
+ *   page 1, 0x0000          does 0xFF <page> reach a different page?
+ */
+static void
+dsx_diag(void)
+{
+	uint8_t a[8], b[8];
+	int i, same = 1;
+
+	if (dsx_read_ex(DSX_ADDR, 0x0000, a, sizeof(a), 1, 1) == 0) {
+		dsx_dump("diag 0000 a1 #1", 0x0000, a, sizeof(a));
+	} else {
+		printf("WHYRED TOUCH: diag 0000 a1 #1 read failed\n");
+	}
+	delay(2000);
+	if (dsx_read_ex(DSX_ADDR, 0x0000, b, sizeof(b), 1, 1) == 0) {
+		dsx_dump("diag 0000 a1 #2", 0x0000, b, sizeof(b));
+	} else {
+		printf("WHYRED TOUCH: diag 0000 a1 #2 read failed\n");
+	}
+	for (i = 0; i < (int)sizeof(a); i++) {
+		if (a[i] != b[i]) {
+			same = 0;
+		}
+	}
+	printf("WHYRED TOUCH: diag same address twice -> %s\n",
+	    same ? "repeated" : "advanced");
+
+	if (dsx_read_ex(DSX_ADDR, 0x00e9, a, 6, 1, 1) == 0) {
+		dsx_dump("diag 00e9 a1", 0x00e9, a, 6);
+	}
+	if (dsx_read_ex(DSX_ADDR, 0x00e9, a, 6, 1, 2) == 0) {
+		dsx_dump("diag 00e9 a2", 0x00e9, a, 6);
+	}
+	if (dsx_read_ex(DSX_ADDR, 0x00e8, a, 6, 1, 1) == 0) {
+		dsx_dump("diag 00e8 a1", 0x00e8, a, 6);
+	}
+	if (dsx_read_ex(DSX_ADDR, 0x00ea, a, 6, 1, 1) == 0) {
+		dsx_dump("diag 00ea a1", 0x00ea, a, 6);
+	}
+	if (dsx_read_ex(DSX_ADDR, 0x00e9, a, 6, 0, 2) == 0) {
+		dsx_dump("diag 00e9 a2 nopage", 0x00e9, a, 6);
+	}
+	if (dsx_read_ex(DSX_ADDR, 0x0100, a, 6, 1, 1) == 0) {
+		dsx_dump("diag page1 0000 a1", 0x0100, a, 6);
+	}
+}
+
+/*
  * Read F12's 2D data block and report every change. The layout is not
  * assumed: the first sample is the idle snapshot, and a difference in any of
  * the eleven bytes means the controller is reporting something. The top band
  * is blue while nothing is seen and turns green on the first change, so the
  * panel itself answers "does the digitizer see my finger?" without a console.
  */
+static struct touch_pin touch_irq;
+static int touch_irq_ready;
+
+static void
+touch_irq_setup(vm_offset_t north)
+{
+	if (!touch_irq_ready) {
+		pin_setup(&touch_irq, north, WHYRED_IRQ);
+		touch_irq_ready = 1;
+	}
+}
+
 static void
 dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
 {
 	uint8_t idle[11], b[11];
-	int i, touched = 0;
+	int i, touched = 0, irq_level, irq_edges = 0;
 
 	if (!f->found_f12 || !f->f12_data) {
 		printf("WHYRED TOUCH: no F12 data base, cannot poll touch\n");
@@ -496,11 +633,27 @@ dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
 	printf("WHYRED TOUCH: polling F12 0x%04x for %u s; idle %02x %02x %02x "
 	    "%02x %02x\n", f->f12_data, seconds, idle[0], idle[1], idle[2],
 	    idle[3], idle[4]);
+	irq_level = touch_irq_ready ? pin_read(&touch_irq) : 1;
+	printf("WHYRED TOUCH: irq %d at start\n", irq_level);
 	panel_band(0xff2040e0);		/* blue: waiting for a finger */
 
 	for (i = 0; i < (int)(seconds * 50); i++) {
 		int changed = 0;
 
+		if (touch_irq_ready) {
+			int level = pin_read(&touch_irq);
+
+			if (level != irq_level) {
+				irq_edges++;
+				printf("WHYRED TOUCH: irq %d -> %d (edge %d)\n",
+				    irq_level, level, irq_edges);
+				irq_level = level;
+				if (!touched) {
+					touched = 1;
+					panel_band(0xff20e020);
+				}
+			}
+		}
 		if (dsx_read(DSX_ADDR, f->f12_data, b, sizeof(b)) != 0) {
 			printf("WHYRED TOUCH: F12 data read failed\n");
 			break;
@@ -521,6 +674,12 @@ dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
 				touched = 1;
 				panel_band(0xff20e020);	/* green: seen */
 			}
+		} else if (i % 50 == 0) {
+			/* Once a second: prove the poll is alive and show
+			 * what the chip reports while nobody touches it. */
+			printf("WHYRED TOUCH: poll %u s data %02x %02x %02x %02x "
+			    "%02x irq %d\n", i / 50, b[0], b[1], b[2], b[3],
+			    b[4], irq_level);
 		}
 		delay(20000);
 	}
@@ -677,12 +836,16 @@ santoni_touch_probe(void)
 	if (PE_parse_boot_argn("sweetouchreset", &pulse, sizeof(pulse)) && pulse) {
 		struct touch_pin rst;
 
+		/* whyred's DT: synaptics,reset-active-ms = 20,
+		 * synaptics,reset-delay-ms = 200; the controller boots its
+		 * firmware during that delay, so wait before any read. */
 		pin_setup(&rst, north, WHYRED_RST);
 		pin_out(&rst, 0);
-		delay(10000);
+		delay(20000);
 		pin_out(&rst, 1);
-		delay(60000);
-		printf("WHYRED TOUCH: reset pulse low 10 ms, high 60 ms\n");
+		delay(250000);
+		printf("WHYRED TOUCH: reset pulse low 20 ms, high 200 ms + "
+		    "50 ms settle\n");
 	}
 
 	for (addr = 0x08; addr <= 0x77; addr++) {
@@ -713,6 +876,8 @@ santoni_touch_probe(void)
 	    "scl %d\n", acks, pin_read(&touch_sda), pin_read(&touch_scl));
 
 	if (saw_rmi) {
+		touch_irq_setup(north);
+		dsx_diag();
 		dsx_identify(&dsx);
 		touch_s = 0;
 		if (PE_parse_boot_argn("sweetouchtouch", &touch_s,
