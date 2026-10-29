@@ -819,6 +819,25 @@ assert src.index('panel_report(acks, first_ack)') < src.index('for (;;)')
 PY
 echo "ok   0185 paints the ack code into the scanout buffer, then halts"
 
+echo "== TOUCH: 0186 speaks RMI4 to the address that answered (0x20) =="
+P186="xnu/patches/0186-whyred-touch-rmi4-identify.patch"
+python3 tools/check_patch.py "$P186" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:#define RMI_ADDR' \
+	--added-contains 'bsd/dev/santoni_touch.c:rmi_read(uint8_t addr' \
+	--added-contains 'bsd/dev/santoni_touch.c:RMI_FUNCTION_TABLE' \
+	--added-contains 'bsd/dev/santoni_touch.c:rmi_identify();' \
+	--added-lacks 'bsd/dev/santoni_touch.c:sweetouchtest'
+python3 - <<'PY'
+src = open('xnu/patches/0186-whyred-touch-rmi4-identify.patch', encoding='utf-8').read()
+# The ring answered at 0x20, so the dump must target that address and must
+# not fall through to the Novatek page protocol for it.
+assert '#define RMI_ADDR\t\t0x20' in src
+assert 'if (addr == RMI_ADDR)' in src
+# Identification must stay read-only: no control-register write in 0186.
+assert 'rmi_write' not in src
+PY
+echo "ok   0186 reads version, function table and F01/F12 at 0x20"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

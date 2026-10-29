@@ -26,6 +26,11 @@
  *                     controller held in reset
  *   sweetouchwait=N   hold the panel with the result for N seconds after
  *                     the scan (default 15, 0 continues at once, max 60)
+ * The 0184 ring showed exactly one acknowledging address, 0x20. That is a
+ * Synaptics part, not the Novatek 0x62/0x01 pair, so 0186 adds a real RMI4
+ * read (two-byte register address, no page prefix), dumps the version
+ * register, the function descriptor table and the F01/F12 query blocks.
+ *
  *   sweetouchhalt=1   diagnostic: paint the answer on the panel and stop
  *                     the boot there, repeating the result line forever.
  *                     The console stops reaching the panel somewhere around
@@ -304,6 +309,110 @@ nvt_read(uint8_t addr, uint8_t page, uint8_t reg, uint8_t *buf, int len)
 }
 
 /*
+ * Synaptics RMI4 over I2C: the register address is two bytes, most
+ * significant first, with no page-select prefix (unlike Novatek's 0xFF
+ * page write). whyred answered at 0x20, so this is the protocol to speak.
+ */
+static int
+rmi_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
+{
+	int i, ok = 1;
+
+	i2c_start();
+	ok &= i2c_write((uint8_t)(addr << 1));
+	ok &= i2c_write((uint8_t)(reg >> 8));
+	ok &= i2c_write((uint8_t)(reg & 0xff));
+	if (!ok) {
+		i2c_stop();
+		return EIO;
+	}
+	i2c_start();
+	ok &= i2c_write((uint8_t)((addr << 1) | 1));
+	if (!ok) {
+		i2c_stop();
+		return EIO;
+	}
+	for (i = 0; i < len; i++) {
+		buf[i] = i2c_read(i + 1 < len);
+	}
+	i2c_stop();
+	return 0;
+}
+
+/* Hex plus printable text: product and firmware strings are ASCII. */
+static void
+rmi_dump(const char *what, uint16_t reg, const uint8_t *b, int len)
+{
+	char text[48];
+	int i;
+
+	printf("WHYRED TOUCH: rmi %s [0x%04x]", what, reg);
+	for (i = 0; i < len; i++) {
+		printf(" %02x", b[i]);
+	}
+	printf(" |");
+	for (i = 0; i < len && i < (int)sizeof(text) - 1; i++) {
+		text[i] = (b[i] >= 0x20 && b[i] < 0x7f) ? (char)b[i] : '.';
+	}
+	text[i] = 0;
+	printf("%s|\n", text);
+}
+
+#define RMI_ADDR		0x20
+#define RMI_FUNCTION_TABLE	0x000e	/* six bytes per entry */
+#define RMI_MAX_FUNCTIONS	12
+
+/*
+ * Read-only identification: no control register is written, so a wrong
+ * guess cannot wedge the controller. F01 is the device control function
+ * (manufacturer and product ID in its query block), F12 is 2D touch.
+ */
+static void
+rmi_identify(void)
+{
+	uint8_t b[24];
+	uint16_t f01_query = 0, f12_query = 0, f12_ctrl = 0, f12_data = 0;
+	int i;
+
+	if (rmi_read(RMI_ADDR, 0x0000, b, 8) != 0) {
+		printf("WHYRED TOUCH: rmi version read failed\n");
+		return;
+	}
+	rmi_dump("version", 0x0000, b, 8);
+
+	for (i = 0; i < RMI_MAX_FUNCTIONS; i++) {
+		uint16_t reg = (uint16_t)(RMI_FUNCTION_TABLE + i * 6);
+
+		if (rmi_read(RMI_ADDR, reg, b, 6) != 0) {
+			break;
+		}
+		if (!b[0] && !b[1] && !b[2] && !b[3] && !b[4] && !b[5]) {
+			break;	/* null entry ends the table */
+		}
+		printf("WHYRED TOUCH: rmi fn %02x query %02x%02x cmd %02x ctrl "
+		    "%02x data %02x\n", b[5] & 0x3f, b[0], b[1], b[2], b[3], b[4]);
+		if ((b[5] & 0x3f) == 0x01) {
+			f01_query = (uint16_t)((b[0] << 8) | b[1]);
+		} else if ((b[5] & 0x3f) == 0x12) {
+			f12_query = (uint16_t)((b[0] << 8) | b[1]);
+			f12_ctrl = b[3];
+			f12_data = b[4];
+		}
+	}
+
+	if (f01_query && rmi_read(RMI_ADDR, f01_query, b, 16) == 0) {
+		rmi_dump("f01", f01_query, b, 16);
+	}
+	if (f12_query) {
+		if (rmi_read(RMI_ADDR, f12_query, b, 12) == 0) {
+			rmi_dump("f12q", f12_query, b, 12);
+		}
+		printf("WHYRED TOUCH: rmi f12 ctrl 0x%04x data 0x%04x\n",
+		    f12_ctrl, f12_data);
+	}
+}
+
+/*
  * whyred's panel scanout buffer, same constants santoni_fb_test() uses
  * (bsd/dev/santoni_sdhci.c). Painting here is independent of the console:
  * the four-bar test proved writes to this address reach the panel.
@@ -371,7 +480,7 @@ santoni_touch_probe(void)
 	uint32_t on = 0, pulse = 0, wait, halt;
 	uint8_t id[3] = { 0, 0, 0 };
 	uint8_t first_ack = 0;
-	int addr, acks = 0, pulsed;
+	int addr, acks = 0, pulsed, saw_rmi = 0;
 	uint32_t rst_cfg, rst_io, irq_cfg, irq_io;
 
 	if (touch_probe_done) {
@@ -432,6 +541,12 @@ santoni_touch_probe(void)
 			first_ack = (uint8_t)addr;
 		}
 		printf("WHYRED TOUCH: ack 0x%02x\n", addr);
+		if (addr == RMI_ADDR) {
+			/* Synaptics: the Novatek page protocol would only
+			 * return noise, the RMI4 dump below is the real ID. */
+			saw_rmi = 1;
+			continue;
+		}
 		if (nvt_read((uint8_t)addr, 0x00, 0x00, id, sizeof(id)) == 0) {
 			printf("WHYRED TOUCH: id 0x%02x %02x %02x %02x\n", addr,
 			    id[0], id[1], id[2]);
@@ -442,6 +557,10 @@ santoni_touch_probe(void)
 
 	printf("WHYRED TOUCH: scan done, %d address(es) acknowledged; sda %d "
 	    "scl %d\n", acks, pin_read(&touch_sda), pin_read(&touch_scl));
+
+	if (saw_rmi) {
+		rmi_identify();
+	}
 
 	/*
 	 * Hold the panel so the answer is readable without a serial cable:

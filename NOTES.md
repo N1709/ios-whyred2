@@ -27,6 +27,31 @@ bootloader hand-off state (`rst cfg/io`, `irq cfg/io`). After the scan it holds
 the panel for `sweetouchwait` seconds (default 15, max 60) so the result is
 readable before the first iOS frame clears the console.
 
+**ANSWER (2026-10-29, from the SYSTEM ring pulled after `fastboot boot`
+OrangeFox):** the probe ran and the bus is healthy. Exact lines:
+
+```
+WHYRED TOUCH: tlmm south 0xfffffe300db4c000 north 0xfffffe300db5c000;
+              rst cfg 000003c3 io 00000003; irq cfg 00000001 io 00000001
+WHYRED TOUCH: sda2 ctl 000000c3 scl3 ctl 000000c3; idle sda 1 scl 1
+WHYRED TOUCH: ack 0x20
+WHYRED TOUCH: id 0x20 27 00 09
+WHYRED TOUCH: scan done, 1 address(es) acknowledged; sda 1 scl 1
+WHYRED TOUCH: holding the panel 30 s
+```
+
+So: exactly one address answers, **0x20 - a Synaptics-style part, not Novatek
+0x62/0x01**. Reset hand-off is released and driven high (CTRL `0x3c3` = mux
+GPIO, pull-up, drive 7, OE=1; IO `0x3` = output high), IRQ is an input reading
+high (CTRL `0x1` = mux GPIO, no pull, OE=0; IO `0x1`). The internal pull-up is
+enough at ~50 kHz (`idle sda 1 scl 1`). The `27 00 09` bytes came from a
+Novatek-style 16-bit-register read, so they are not yet a trustworthy
+Synaptics product ID; the next step is a real RMI4 read.
+
+The `holding the panel 30 s` line is present, so the hold did happen - it was
+simply invisible, which confirms the 0185 diagnosis (console muted at the
+framebuffer hand-off).
+
 **0185 (2026-10-29, `fb226e6`): the answer is painted, not printed.** The
 built kernel was checked with `llvm-objdump`: `_santoni_sdhci_probe+0x2164`
 does `bl _santoni_touch_probe` right after the four-bar test, on the normal
@@ -41,7 +66,8 @@ yellow = `0x62`, cyan = `0x20`, magenta = other address, red = none; the rest
 of the screen is green when at least one address answered, else red.
 
 Built but not booted: `images/shim-boot-touch-probe-bars60.img` (0184,
-`sweetouchwait=60`). The accurate route is instead to pull the 4 MiB SYSTEM
+`sweetouchwait=60`); the halt image is no longer the blocking step now that
+the ring has been read. The accurate route is instead to pull the 4 MiB SYSTEM
 ring (`sweetlog=1` is on every image) from a recovery boot and read the exact
 probe lines. A whyred recovery is available at
 `/home/n1709/Downloads/Telegram Desktop/OrangeFox-R11.1-Stable-whyred/recovery.img`

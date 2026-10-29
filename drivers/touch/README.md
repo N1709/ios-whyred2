@@ -23,6 +23,7 @@ Boot-args:
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms first |
 | `sweetouchwait=SECONDS` | hold the panel with the result (default 15 s, 0 = continue at once) |
 | `sweetouchhalt=1` | diagnostic: paint the answer into the scanout buffer and stop the boot there |
+| (always, with `sweetouchi2c=1`) | after the scan: RMI4 version register, function table and F01/F12 query dump at `0x20` |
 
 Without `sweetouchreset` the probe never writes GPIO 66/67, so the log also
 reports the state ABL handed over (`rst cfg/io`, `irq cfg/io`).
