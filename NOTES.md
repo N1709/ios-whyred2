@@ -27,6 +27,28 @@ bootloader hand-off state (`rst cfg/io`, `irq cfg/io`). After the scan it holds
 the panel for `sweetouchwait` seconds (default 15, max 60) so the result is
 readable before the first iOS frame clears the console.
 
+**0185 (2026-10-29, `fb226e6`): the answer is painted, not printed.** The
+built kernel was checked with `llvm-objdump`: `_santoni_sdhci_probe+0x2164`
+does `bl _santoni_touch_probe` right after the four-bar test, on the normal
+path (the only predecessors are the two `cbz` after
+`PE_parse_boot_argn("sweetfbtest")`, so both the bars and the no-bars path
+reach it). The probe therefore runs, but its `printf` lines never reach the
+panel: console text stops being drawn around the framebuffer hand-off, which
+is why the 30 s and 60 s holds were never seen. `sweetouchhalt=1` now paints
+the result into the scanout buffer (`0x9d400000`, the same surface the visible
+bars use) and stops the boot there: top quarter white = first ack `0x01`,
+yellow = `0x62`, cyan = `0x20`, magenta = other address, red = none; the rest
+of the screen is green when at least one address answered, else red.
+
+Built but not booted: `images/shim-boot-touch-probe-bars60.img` (0184,
+`sweetouchwait=60`). The accurate route is instead to pull the 4 MiB SYSTEM
+ring (`sweetlog=1` is on every image) from a recovery boot and read the exact
+probe lines. A whyred recovery is available at
+`/home/n1709/Downloads/Telegram Desktop/OrangeFox-R11.1-Stable-whyred/recovery.img`
+(33,792,000 B, sha256 `db24b85511d7...`, confirms `qcom,sdm636-mtp` and
+`whyred_*` camera nodes), boot with `fastboot boot` only - never flash, never
+format data.
+
 Hardware recorded for the next steps: Novatek answers at `0x62` in bootloader
 mode and `0x01` once firmware runs, Synaptics at `0x20`; BLSP1 QUP1 at
 `0x0c175000`, GIC SPI 95, clocks `BLSP1_AHB` + `QUP1_I2C_APPS`, VDDIO PM660
