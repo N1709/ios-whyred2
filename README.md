@@ -18,11 +18,34 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 | Storage | eMMC 5.1 host controller (Qualcomm SDHC v5 at `0x0c0c4000`, GIC SPI 110) at **8-bit high-speed** (CMD6 BUS_WIDTH=8 + HS_TIMING=1), EXT_CSD valid (122,142,720 sectors = 58.2 GiB), GPT parsed. A 16.0 GiB HFSX volume in `userdata` **mounts read-write** as `emmcroot0`; single-block and multi-block (`CMD18`/`CMD25` + `AUTO_CMD12`) transfers and the HFS+ journal replay have all run on hardware |
 | iOS userland | iPhone X 16.7.16 root filesystem on eMMC; `launchd` is loaded from the HFSX root and starts. It is then killed by code signing (`CS_KILLED`), so the root volume is mounted but not yet trusted |
 | Display | Kernel IOSurface + IOMobileFramebuffer (`AppleCLCD`); software CoreAnimation into ABL's continuous splash framebuffer at `0x9d400000` (1080×2160 32-bit `a8r8g8b8`). `0177` proves on hardware that MDSS/DSI still scan that memory out after hand-off: four colour bars written by the kernel appear on the panel |
+| Touch | Controller **answers at Synaptics `0x20`** on BLSP1 I2C (probe 0184, RMI4 ID 0186); nothing is fed into `SweetHIDTouch` yet, so the lock screen still ignores touch |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
 ## Progress
 
-Last updated 2026-10-28. **The iOS lock screen is on the panel.** With the
+**2026-10-29 - whyred's touch controller answers.** Patch `0184` bit-bangs the
+BLSP1 I2C bus as plain TLMM GPIO (SDA 2 / SCL 3) and scans every address. The
+SYSTEM ring, pulled after a `fastboot boot` of the whyred recovery with
+`tools/sweet-touch-answer.sh`, has the answer:
+
+```
+WHYRED TOUCH: rst cfg 000003c3 io 00000003; irq cfg 00000001 io 00000001
+WHYRED TOUCH: sda2 ctl 000000c3 scl3 ctl 000000c3; idle sda 1 scl 1
+WHYRED TOUCH: ack 0x20
+WHYRED TOUCH: scan done, 1 address(es) acknowledged; sda 1 scl 1
+```
+
+So the controller is powered, out of reset (reset pad is an output driven
+high, IRQ is an input idling high) and answering; the "no power / held in
+reset" branch is dead. `0x20` is the Synaptics address, so **this unit is not
+the Novatek `0x62`/`0x01` variant**. `0185` explains why none of this was
+ever visible: the console stops being drawn at the framebuffer hand-off, so
+the result is now painted into the scanout buffer instead of printed. `0186`
+adds a read-only RMI4 identification pass (version register, function
+descriptor table, F01 and F12 query blocks) to learn the product string and
+the F12 control/data addresses before anything enables reporting.
+
+Last updated 2026-10-29. **The iOS lock screen is on the panel.** With the
 `0182` kernel the phone boots past the data-migration spinner into
 SpringBoard's lock screen: the Apple mark holds through the kernel boot, then
 the first iOS frame replaces it and the UI stays up (`e77`, first boot of
@@ -282,25 +305,40 @@ The log image writes the console to the 4 MiB SYSTEM ring, so its full boot can 
 
 ### Touch (whyred)
 
-The panel's controller is a Novatek NT36672 at I2C `0x62` while its bootloader
-runs and `0x01` once firmware runs; the Shenchao variant answers at `0x20`.
-The bus is BLSP1 QUP1 with SDA GPIO 2 / SCL GPIO 3 (TLMM SOUTH), reset GPIO 66
-and IRQ GPIO 67 (TLMM NORTH). There is no touch driver and no I2C-controller
-driver yet, so patch 0184 adds a read-mostly probe (`bsd/dev/santoni_touch.c`):
-it re-muxes the two bus lines as GPIO, bit-bangs I2C at ~50 kHz, scans
-`0x08`..`0x77` and reads the Novatek page-0 chip ID.
+Measured on this phone, not assumed: the controller answers at I2C **`0x20`
+(Synaptics)** on BLSP1 QUP1, SDA GPIO 2 / SCL GPIO 3 (TLMM SOUTH), reset GPIO
+66 and IRQ GPIO 67 (TLMM NORTH). The 0184 boot recorded `rst cfg 000003c3 io
+00000003` (GPIO output, driven high - ABL hands it over out of reset), `irq
+cfg 00000001 io 00000001` (input, idling high) and `idle sda 1 scl 1`: the
+internal pull-up is enough at ~50 kHz. Novatek `0x62`/`0x01` does not answer
+on this unit; the Tianma/Huaxing variants are where that address is expected.
+The Shenchao variant is the Synaptics one.
+
+Patch `0184` (`bsd/dev/santoni_touch.c`) re-muxes the two bus lines as GPIO
+and bit-bangs I2C, because neither a TLMM GPIO driver nor a QUP I2C master
+exists in this kernel yet. `0186` adds an RMI4 read (two-byte register
+address, no page-select prefix) and a read-only identification pass: version
+register `0x0000`, the six-byte function descriptor table at `0x000e`, then
+the F01 query block (manufacturer and product string, ASCII) and F12's
+query/control/data bases for 2D touch.
 
 | Boot-arg | Effect |
 | --- | --- |
-| `sweetouchi2c=1` | run the probe; the log lists every acknowledging address and its chip-ID bytes |
+| `sweetouchi2c=1` | run the probe: scan `0x08`..`0x77`, then dump the RMI4 identification |
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms before the scan |
-| `sweetouchwait=SECONDS` | hold the boot with the result on the panel (default 15 s, 0 = no hold, max 60) |
-| `sweetouchhalt=1` | diagnostic: paint the answer on the panel and stop the boot there (no console needed) |
+| `sweetouchwait=SECONDS` | hold the boot after the scan (default 15 s, 0 = no hold, max 60); the panel is usually muted by then, so prefer the ring |
+| `sweetouchhalt=1` | paint the answer into the scanout buffer and stop the boot there (top quarter: white = first ack `0x01`, yellow = `0x62`, cyan = `0x20`, magenta = other, red = none; bottom green if anything answered) |
 
 Without `sweetouchreset` the probe does not write GPIO 66/67, so the log also
-records the reset/IRQ pad state ABL handed over. Nothing is published to
-`IOHIDDevice`: this answers "is the controller powered, out of reset and
-answering?" before the QUP engine and the HID report path are worth writing.
+records the reset/IRQ pad state ABL handed over.
+
+**Reading the result without a serial cable.** Every test image carries
+`sweetlog=1`, so the 4 MiB console ring on SYSTEM keeps the probe lines even
+though the panel stops drawing them. Boot the whyred recovery with
+`fastboot boot` (never flash, never format), then run
+`tools/sweet-touch-answer.sh`: it pulls the ring and prints only the
+`WHYRED TOUCH` lines plus the boot landmarks. That is how the `ack 0x20`
+above was read.
 
 ### Debugging tips
 
@@ -309,15 +347,13 @@ answering?" before the QUP engine and the HID report path are worth writing.
 
 ## Roadmap
 
-1. **Touch**: whyred uses Novatek NT36672 at `0x62` on BLSP1 QUP1 I2C
-   (`0x0c175000`, IRQ GPIO 67, reset GPIO 66, VDDIO PM660 LDO11); the
-   shenchao panel uses Synaptics DSX at `0x20` on the same bus. Three
-   pieces do not exist on the whyred side yet and have to come before the
-   NT36xxx protocol: a TLMM GPIO driver (`0x01000000`), a BLSP QUP I2C
-   master (GCC `BLSP1_AHB` + `QUP1_I2C_APPS` clocks, not the GENI FIFO the
-   topaz driver uses), and PM660 SPMI for LDO11. `sweet_hid_touch()` and
-   `SweetHIDTouch` are already shared with the topaz port and need no
-   change.
+1. **Touch**: the controller answers at Synaptics `0x20` on BLSP1 QUP1 I2C
+   (`0x0c175000`, IRQ GPIO 67, reset GPIO 66, VDDIO PM660 LDO11). 0184/0186
+   prove the bus and identify the chip with bit-banged GPIO; next is F12
+   reporting (poll the data registers or take the IRQ), then the QUP I2C
+   master (GCC `BLSP1_AHB` + `QUP1_I2C_APPS`) and PM660 SPMI for LDO11 so the
+   bit-bang can be retired. `sweet_hid_touch()` and `SweetHIDTouch` are
+   already shared with the topaz port and need no change.
 2. **Buttons**: power and volume keys on the PM660/PM660L PON block, volume up on a PMIC GPIO.
 3. **Smoother display**: higher `sweetfb_hz`; check whether the Gold cores run at a low clock without cpufreq (the shim's speed probe) and raise it if so.
 4. **Narrow the GIC fix** to the register that actually matters, then move it into XNU.
@@ -365,6 +401,9 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0155 | Poll `PRESENT_STATE` for data-ready and transfer-complete; this core does not latch those bits in `INT_STATUS` |
 | 0156 | Fix `PRESENT_STATE[11:8]` (active = 9/8), drain a stuck `DAT_INHIBIT`, keep `AUTO_CMD12` paths, skip CMD5 in TRAN |
 | 0157 | Try SDMA before PIO for EXT_CSD, reject all-zero FIFO blocks and validate REV/STRUCTURE/SEC_COUNT before keeping a setup |
+| 0184 | Bit-bang BLSP1 I2C on TLMM GPIO 2/3 and scan the touch addresses (found `0x20`) |
+| 0185 | Paint the probe answer into the scanout buffer and halt; the console is muted at the framebuffer hand-off |
+| 0186 | RMI4 identification at `0x20`: version, function table, F01/F12 query blocks (read-only) |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.
@@ -375,7 +414,7 @@ other devices.
 - GICv3 at `0x17a00000` (redistributors `0x17b00000`, 8 PEs, stride `0x20000`), virtual timer INTID 19, physical timer INTID 18, 19.2 MHz.
 - eMMC 5.1 SDCC v5 at `0x0c0c4000`, GIC SPI 110.
 - Panel: 1080×2160 DSI video mode, continuous splash at `0x9d400000` (`cont_splash_mem` in the vendor DTS), 32-bit `a8r8g8b8`, stride 4320.
-- Touch: Novatek NT36672 (not yet enabled).
+- Touch: **Synaptics at I2C `0x20`** on this unit (bus verified by 0184: `ack 0x20`, `idle sda 1 scl 1`, reset released). Novatek NT36672 at `0x62`/`0x01` is the other panel variant. No report path into HID yet.
 - Vendor DTS source: [LineageOS/android_kernel_xiaomi_sdm660](https://github.com/LineageOS/android_kernel_xiaomi_sdm660), `arch/arm64/boot/dts/vendor/qcom/xiaomi/longcheer/whyred/`.
 
 ## Credits

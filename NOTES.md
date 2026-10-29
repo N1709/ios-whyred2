@@ -52,6 +52,19 @@ The `holding the panel 30 s` line is present, so the hold did happen - it was
 simply invisible, which confirms the 0185 diagnosis (console muted at the
 framebuffer hand-off).
 
+**0186 (2026-10-29, `e68f93c`): RMI4 identification.** Since `0x20` is the
+Synaptics address, the Novatek page protocol was the wrong read. `0186` adds
+`rmi_read()` (two-byte register address, MSB first, no page write) and a
+read-only `rmi_identify()`: version register `0x0000` (8 bytes), the
+six-byte function descriptor table at `0x000e` up to 12 entries, then the F01
+query block (16 bytes, product string is ASCII) and the F12 query block (12
+bytes) plus its control/data bases. Nothing is written to a control register,
+so a wrong guess cannot wedge the chip. Image to boot:
+`sweetouchi2c=1 sweetouchwait=10` on the proven `sweetfbtest=1` profile; read
+the result with `tools/sweet-touch-answer.sh` after `fastboot boot` of the
+OrangeFox whyred recovery. Next: enable F12 reporting, then feed the points
+to `sweet_hid_touch()`.
+
 **0185 (2026-10-29, `fb226e6`): the answer is painted, not printed.** The
 built kernel was checked with `llvm-objdump`: `_santoni_sdhci_probe+0x2164`
 does `bl _santoni_touch_probe` right after the four-bar test, on the normal
