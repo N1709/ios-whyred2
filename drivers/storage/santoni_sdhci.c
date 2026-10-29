@@ -62,6 +62,9 @@
 
 static void santoni_log_start(void);
 static void santoni_fb_test(void);
+#if defined(ARM64_BOARD_CONFIG_WHYRED)
+extern int santoni_touch_probe(void);
+#endif
 
 extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
 /* osfmk/arm/machine_routines.h, not exported to the BSD layer */
@@ -2118,7 +2121,7 @@ sdhci_take_over(void)
 	 * Name the build in the log. Matching a boot log to a patch by
 	 * guessing from its messages has already cost flash cycles.
 	 */
-	printf("WHYRED SDHCI: driver 0181 (root \"%s\", writes %s; boot "
+	printf("WHYRED SDHCI: driver 0184 (root \"%s\", writes %s; boot "
 	    "args decide whether the HFS+ root comes from eMMC)\n",
 	    se.part, se.writable ? "enabled" : "read-only");
 
@@ -4310,6 +4313,10 @@ santoni_sdhci_init(void)
 	santoni_log_start();
 	/* After the log: the WHYRED FB lines belong in the SYSTEM ring. */
 	santoni_fb_test();
+#if defined(ARM64_BOARD_CONFIG_WHYRED)
+	/* Boot-arg sweetouchi2c=1: does the touch controller answer at all? */
+	santoni_touch_probe();
+#endif
 	return 0;
 }
 

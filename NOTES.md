@@ -1,5 +1,39 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 0184 (2026-10-29): first touch step - bit-banged I2C probe on whyred
+
+**State:** whyred reaches the iOS lock screen with
+`images/shim-boot-noconsole-log.img` (0182), `images/shim-boot-swipe.img`
+(0183 + `sweetouchtest=20`, four colour bars) and
+`images/shim-boot-swipe-control.img` was built but not booted. The panel is
+not touch-sensitive and the power/volume keys do nothing: whyred still has no
+touch driver, no I2C-controller driver and no PM660 PON (SPMI) key driver.
+The four colour bars are now a workflow input (`fb_test_pattern`, default
+`off`); images built without them (`shim-boot-swipe-clean.img`,
+`shim-boot-swipe-clean-z.img`) stalled at the iOS progress bar, which is a
+userland hang, not a kernel panic - but it is unexplained, so `0182` stays the
+revert image.
+
+**0184** (`xnu/patches/0184-whyred-touch-bitbang-probe.patch`) adds
+`bsd/dev/santoni_touch.c`, called once from `santoni_sdhci_init()` when
+boot-arg `sweetouchi2c=1` is present. It maps the TLMM SOUTH/NORTH tiles
+(`0x03500000` / `0x03d00000`), re-muxes GPIO 2 (SDA) and GPIO 3 (SCL) to plain
+GPIO with the internal pull-up, bit-bangs I2C at ~50 kHz, scans `0x08`..`0x77`
+and reads page 0 / register 0 (three chip-ID bytes) from every address that
+ACKs. `sweetouchreset=1` additionally drives reset (GPIO 66) low 10 ms and high
+60 ms first; the default probe does not write GPIO 66/67, so the log keeps the
+bootloader hand-off state (`rst cfg/io`, `irq cfg/io`).
+
+Hardware recorded for the next steps: Novatek answers at `0x62` in bootloader
+mode and `0x01` once firmware runs, Synaptics at `0x20`; BLSP1 QUP1 at
+`0x0c175000`, GIC SPI 95, clocks `BLSP1_AHB` + `QUP1_I2C_APPS`, VDDIO PM660
+LDO11, IRQ GPIO 67.
+
+**Test image (pending):** kernel from CI run of this commit, packed with
+`EXTRA_CMDLINE="... sweetouchi2c=1"` and booted with `fastboot boot`. One
+question: does any address ACK? `0 ack` with `sda 1 scl 1` points at power
+(LDO11) or reset; `0 ack` with `sda 0` points at a stuck bus.
+
 ## 0173 build fix (2026-10-27): the first image booted the ramdisk probe
 
 The log from `/home/n1709/whyred-0173.img` is the **ramdisk probe**, not the

@@ -280,6 +280,26 @@ The log image writes the console to the 4 MiB SYSTEM ring, so its full boot can 
 
 `fb_test_pattern` (a manual-run choice, default `off`) adds `sweetfbtest=1`: four colour bars written into the boot framebuffer before BSD init. It was the scanout proof before the lock screen existed; turn it on only to check that MDSS still scans ABL's splash out.
 
+### Touch (whyred)
+
+The panel's controller is a Novatek NT36672 at I2C `0x62` while its bootloader
+runs and `0x01` once firmware runs; the Shenchao variant answers at `0x20`.
+The bus is BLSP1 QUP1 with SDA GPIO 2 / SCL GPIO 3 (TLMM SOUTH), reset GPIO 66
+and IRQ GPIO 67 (TLMM NORTH). There is no touch driver and no I2C-controller
+driver yet, so patch 0184 adds a read-mostly probe (`bsd/dev/santoni_touch.c`):
+it re-muxes the two bus lines as GPIO, bit-bangs I2C at ~50 kHz, scans
+`0x08`..`0x77` and reads the Novatek page-0 chip ID.
+
+| Boot-arg | Effect |
+| --- | --- |
+| `sweetouchi2c=1` | run the probe; the log lists every acknowledging address and its chip-ID bytes |
+| `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms before the scan |
+
+Without `sweetouchreset` the probe does not write GPIO 66/67, so the log also
+records the reset/IRQ pad state ABL handed over. Nothing is published to
+`IOHIDDevice`: this answers "is the controller powered, out of reset and
+answering?" before the QUP engine and the HID report path are worth writing.
+
 ### Debugging tips
 
 - Stack samples (`SMP name[pid] slide S mh M` then `SMP name tN pc .. bt ..`): symbolicate shared-cache addresses with `ipsw dyld a2s dyld_shared_cache_arm64 <addr - S>`.

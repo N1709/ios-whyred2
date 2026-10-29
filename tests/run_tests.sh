@@ -775,6 +775,27 @@ assert '2390' in src and '540' in src
 PY
 echo "ok   0183 starts the swipe in the bottom edge band"
 
+echo "== TOUCH: 0184 bit-bangs the BLSP1 I2C bus and scans the addresses =="
+P184="xnu/patches/0184-whyred-touch-bitbang-probe.patch"
+python3 tools/check_patch.py "$P184" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:PE_parse_boot_argn("sweetouchi2c"' \
+	--added-contains 'bsd/dev/santoni_touch.c:WHYRED_TLMM_BASE' \
+	--added-contains 'bsd/dev/santoni_touch.c:WHYRED_SDA' \
+	--added-contains 'bsd/dev/santoni_touch.c:WHYRED_SCL' \
+	--added-contains 'bsd/dev/santoni_touch.c:i2c_write((uint8_t)(addr << 1))' \
+	--added-contains 'bsd/dev/santoni_touch.c:santoni_touch_probe(void)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_touch_probe();' \
+	--added-contains 'bsd/conf/files:bsd/dev/santoni_touch.c' \
+	--added-lacks 'bsd/dev/santoni_touch.c:sweetouchtest'
+# The default probe must not touch the reset pad: the log is supposed to
+# describe the hand-off, and a reset pulse is a separate boot-arg.
+python3 - <<'PY'
+src = open('xnu/patches/0184-whyred-touch-bitbang-probe.patch', encoding='utf-8').read()
+assert 'sweetouchreset' in src
+assert '"sweetouchi2c", &on' in src
+PY
+echo "ok   0184 scans on sweetouchi2c and pulses reset only on request"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
