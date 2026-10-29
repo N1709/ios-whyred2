@@ -800,6 +800,25 @@ assert '0x03000000' in src and '0x03400000' not in src
 PY
 echo "ok   0184 scans on sweetouchi2c and pulses reset only on request"
 
+echo "== TOUCH: 0185 paints the answer where the console no longer reaches =="
+P185="xnu/patches/0185-whyred-touch-answer-panel.patch"
+python3 tools/check_patch.py "$P185" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:sweetouchhalt' \
+	--added-contains 'bsd/dev/santoni_touch.c:panel_report(acks, first_ack)' \
+	--added-contains 'bsd/dev/santoni_touch.c:0x9d400000' \
+	--added-lacks 'bsd/dev/santoni_touch.c:sweetouchtest'
+# The paint must target the same scanout address the visible four-bar test
+# writes; a different address would be off-screen and prove nothing.
+python3 - <<'PY'
+src = open('xnu/patches/0185-whyred-touch-answer-panel.patch', encoding='utf-8').read()
+assert 'WHYRED_FB_PHYS\t\t0x9d400000ULL' in src
+assert 'WHYRED_FB_STRIDE\t4320u' in src
+# The halt must come after the paint: a halt before it stops the boot with
+# the old screen still showing and answers nothing.
+assert src.index('panel_report(acks, first_ack)') < src.index('for (;;)')
+PY
+echo "ok   0185 paints the ack code into the scanout buffer, then halts"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

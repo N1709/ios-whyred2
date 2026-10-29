@@ -295,6 +295,7 @@ it re-muxes the two bus lines as GPIO, bit-bangs I2C at ~50 kHz, scans
 | `sweetouchi2c=1` | run the probe; the log lists every acknowledging address and its chip-ID bytes |
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms before the scan |
 | `sweetouchwait=SECONDS` | hold the boot with the result on the panel (default 15 s, 0 = no hold, max 60) |
+| `sweetouchhalt=1` | diagnostic: paint the answer on the panel and stop the boot there (no console needed) |
 
 Without `sweetouchreset` the probe does not write GPIO 66/67, so the log also
 records the reset/IRQ pad state ABL handed over. Nothing is published to

@@ -24,6 +24,14 @@
  *                     60 ms before the scan; use it only in the boot that
  *                     asks whether the bootloader hand-off left the
  *                     controller held in reset
+ *   sweetouchwait=N   hold the panel with the result for N seconds after
+ *                     the scan (default 15, 0 continues at once, max 60)
+ *   sweetouchhalt=1   diagnostic: paint the answer on the panel and stop
+ *                     the boot there, repeating the result line forever.
+ *                     The console stops reaching the panel somewhere around
+ *                     the framebuffer hand-off, so the answer is written
+ *                     straight into the scanout buffer instead of relying
+ *                     on printf being visible.
  *
  * The probe is read-mostly on purpose: with no reset pulse it does not touch
  * GPIO 66/67 at all, so the log still describes the state ABL handed over.
@@ -295,12 +303,74 @@ nvt_read(uint8_t addr, uint8_t page, uint8_t reg, uint8_t *buf, int len)
 	return 0;
 }
 
+/*
+ * whyred's panel scanout buffer, same constants santoni_fb_test() uses
+ * (bsd/dev/santoni_sdhci.c). Painting here is independent of the console:
+ * the four-bar test proved writes to this address reach the panel.
+ *
+ * Colour code, top quarter of the screen:
+ *   white    first ack 0x01  Novatek running firmware
+ *   yellow   first ack 0x62  Novatek still in bootloader
+ *   cyan     first ack 0x20  Synaptics panel
+ *   magenta  some other address answered
+ *   red      nothing acknowledged
+ * Bottom three quarters: green if at least one address answered, else red.
+ */
+#define WHYRED_FB_PHYS		0x9d400000ULL
+#define WHYRED_FB_WIDTH		1080u
+#define WHYRED_FB_HEIGHT	2160u
+#define WHYRED_FB_STRIDE	4320u	/* bytes, 32 bpp */
+
+static uint32_t
+panel_code(int acks, uint8_t first)
+{
+	if (acks <= 0) {
+		return 0xffe02020;	/* red */
+	}
+	switch (first) {
+	case 0x01:
+		return 0xffffffff;	/* white */
+	case 0x62:
+		return 0xffffff20;	/* yellow */
+	case 0x20:
+		return 0xff20e0e0;	/* cyan */
+	default:
+		return 0xffff20ff;	/* magenta */
+	}
+}
+
+static int
+panel_report(int acks, uint8_t first)
+{
+	vm_size_t size = (vm_size_t)WHYRED_FB_STRIDE * WHYRED_FB_HEIGHT;
+	uint32_t code = panel_code(acks, first);
+	uint32_t body = acks > 0 ? 0xff20e020 : 0xffe02020;
+	volatile uint32_t *fb;
+
+	fb = (volatile uint32_t *)ml_io_map_unmappable(WHYRED_FB_PHYS, size,
+	    VM_WIMG_IO);
+	if (fb == NULL) {
+		return ENOMEM;
+	}
+	for (uint32_t y = 0; y < WHYRED_FB_HEIGHT; y++) {
+		volatile uint32_t *line = fb + (uint64_t)y *
+		    (WHYRED_FB_STRIDE / 4);
+		uint32_t px = (y < WHYRED_FB_HEIGHT / 4) ? code : body;
+
+		for (uint32_t x = 0; x < WHYRED_FB_WIDTH; x++) {
+			line[x] = px;
+		}
+	}
+	return 0;
+}
+
 int
 santoni_touch_probe(void)
 {
 	vm_offset_t south, north;
-	uint32_t on = 0, pulse = 0, wait;
-	uint8_t id[3];
+	uint32_t on = 0, pulse = 0, wait, halt;
+	uint8_t id[3] = { 0, 0, 0 };
+	uint8_t first_ack = 0;
 	int addr, acks = 0, pulsed;
 	uint32_t rst_cfg, rst_io, irq_cfg, irq_io;
 
@@ -358,6 +428,9 @@ santoni_touch_probe(void)
 			continue;
 		}
 		acks++;
+		if (acks == 1) {
+			first_ack = (uint8_t)addr;
+		}
 		printf("WHYRED TOUCH: ack 0x%02x\n", addr);
 		if (nvt_read((uint8_t)addr, 0x00, 0x00, id, sizeof(id)) == 0) {
 			printf("WHYRED TOUCH: id 0x%02x %02x %02x %02x\n", addr,
@@ -376,6 +449,26 @@ santoni_touch_probe(void)
 	 * minutes before it. sweetouchwait=SECONDS overrides the 15 s hold,
 	 * 0 continues immediately.
 	 */
+	/*
+	 * sweetouchhalt=1: repeat the result forever instead of booting on.
+	 * The panel is the only output on this phone, so a boot that keeps
+	 * scrolling is easy to miss; a halted boot can be read at leisure and
+	 * then powered off. Diagnostic images only.
+	 */
+	halt = 0;
+	if (PE_parse_boot_argn("sweetouchhalt", &halt, sizeof(halt)) && halt) {
+		if (panel_report(acks, first_ack) != 0) {
+			printf("WHYRED TOUCH: panel paint failed\n");
+		}
+		for (;;) {
+			printf("WHYRED TOUCH: RESULT acks=%d first=0x%02x sda=%d "
+			    "scl=%d id=%02x%02x%02x\n", acks, first_ack,
+			    pin_read(&touch_sda), pin_read(&touch_scl), id[0],
+			    id[1], id[2]);
+			delay(2000000);
+		}
+	}
+
 	wait = 15;
 	(void)PE_parse_boot_argn("sweetouchwait", &wait, sizeof(wait));
 	if (wait) {
