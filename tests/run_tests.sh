@@ -838,6 +838,26 @@ assert 'rmi_write' not in src
 PY
 echo "ok   0186 reads version, function table and F01/F12 at 0x20"
 
+echo "== TOUCH: 0187 speaks Synaptics DSX and polls F12 =="
+P187="xnu/patches/0187-whyred-touch-dsx-protocol.patch"
+python3 tools/check_patch.py "$P187" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:DSX_PDT_START' \
+	--added-contains 'bsd/dev/santoni_touch.c:i2c_write(0xff)' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_identify(&dsx)' \
+	--added-contains 'bsd/dev/santoni_touch.c:sweetouchtouch' \
+	--added-lacks 'bsd/dev/santoni_touch.c:sweetouchtest'
+python3 - <<'PY'
+src = open('xnu/patches/0187-whyred-touch-dsx-protocol.patch', encoding='utf-8').read()
+# The vendor driver selects a page with 0xFF <page> then writes the low
+# address byte; the 0186 two-byte address wrote into register 0x00.
+assert 'DSX_PDT_START\t\t0x00e9' in src
+assert 'DSX_F01_QUERY_LEN\t21' in src
+# Identification must stay read-only: the only 0xFF write is the page select.
+assert src.count('i2c_write(0xff)') == 1
+assert 'dsx_write' not in src
+PY
+echo "ok   0187 page-selects, reads the PDT at 0x00e9 and polls F12"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

@@ -1,0 +1,378 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+index 61152b8..81c43f6 100644
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -31,6 +31,9 @@
+  * read (two-byte register address, no page prefix), dumps the version
+  * register, the function descriptor table and the F01/F12 query blocks.
+  *
++ *   sweetouchtouch=N  poll F12 touch data for N seconds: the top band of
++ *                     the panel is blue while waiting and turns green on the
++ *                     first change, and every change is written to the ring
+  *   sweetouchhalt=1   diagnostic: paint the answer on the panel and stop
+  *                     the boot there, repeating the result line forever.
+  *                     The console stops reaching the panel somewhere around
+@@ -309,18 +312,44 @@ nvt_read(uint8_t addr, uint8_t page, uint8_t reg, uint8_t *buf, int len)
+ }
+ 
+ /*
+- * Synaptics RMI4 over I2C: the register address is two bytes, most
+- * significant first, with no page-select prefix (unlike Novatek's 0xFF
+- * page write). whyred answered at 0x20, so this is the protocol to speak.
++ * Synaptics DSX over I2C. The vendor driver
++ * (drivers/input/touchscreen/synaptics_dsx/synaptics_dsx_i2c.c) selects a
++ * page with a two-byte write 0xFF <page>, then writes the low address byte
++ * and reads the data with a repeated start. The earlier RMI4 guess (two
++ * address bytes, no 0xFF) was wrong: it wrote the second address byte into
++ * register 0x00 of the chip.
++ *
++ * Register map used here, from synaptics_dsx_core.h: the page descriptor
++ * table starts at 0x00E9 and steps down by 6 bytes per entry; each entry is
++ * query base (2 bytes, big endian), command base, control base, data base and
++ * a function number in the low six bits of the last byte.
+  */
++#define DSX_ADDR		0x20
++#define DSX_PDT_START		0x00e9
++#define DSX_PDT_END		0x00d0
++#define DSX_PDT_ENTRY_SIZE	0x0006
++#define DSX_F01_QUERY_LEN	21
++#define DSX_PRODUCT_ID_OFFSET	11
++#define DSX_PRODUCT_ID_SIZE	10
++
+ static int
+-rmi_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
++dsx_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
+ {
+ 	int i, ok = 1;
+ 
++	/* page select: 0xFF <page>, then the low address byte */
++	i2c_start();
++	ok &= i2c_write((uint8_t)(addr << 1));
++	ok &= i2c_write(0xff);
++	ok &= i2c_write((uint8_t)((reg >> 8) & 0xff));
++	if (!ok) {
++		i2c_stop();
++		return EIO;
++	}
++	i2c_stop();
++
+ 	i2c_start();
+ 	ok &= i2c_write((uint8_t)(addr << 1));
+-	ok &= i2c_write((uint8_t)(reg >> 8));
+ 	ok &= i2c_write((uint8_t)(reg & 0xff));
+ 	if (!ok) {
+ 		i2c_stop();
+@@ -339,14 +368,14 @@ rmi_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
+ 	return 0;
+ }
+ 
+-/* Hex plus printable text: product and firmware strings are ASCII. */
++/* Hex plus printable text: the product and build strings are ASCII. */
+ static void
+-rmi_dump(const char *what, uint16_t reg, const uint8_t *b, int len)
++dsx_dump(const char *what, uint16_t reg, const uint8_t *b, int len)
+ {
+-	char text[48];
++	char text[32];
+ 	int i;
+ 
+-	printf("WHYRED TOUCH: rmi %s [0x%04x]", what, reg);
++	printf("WHYRED TOUCH: dsx %s [0x%04x]", what, reg);
+ 	for (i = 0; i < len; i++) {
+ 		printf(" %02x", b[i]);
+ 	}
+@@ -358,58 +387,145 @@ rmi_dump(const char *what, uint16_t reg, const uint8_t *b, int len)
+ 	printf("%s|\n", text);
+ }
+ 
+-#define RMI_ADDR		0x20
+-#define RMI_FUNCTION_TABLE	0x000e	/* six bytes per entry */
+-#define RMI_MAX_FUNCTIONS	12
++struct dsx_funcs {
++	uint16_t f01_query;
++	uint16_t f12_query;
++	uint16_t f12_ctrl;
++	uint16_t f12_data;
++	int found_f01;
++	int found_f12;
++	int entries;
++};
+ 
+ /*
+- * Read-only identification: no control register is written, so a wrong
+- * guess cannot wedge the controller. F01 is the device control function
+- * (manufacturer and product ID in its query block), F12 is 2D touch.
++ * Read-only identification. No control register is written, so a wrong
++ * address cannot wedge the controller: the page table, the F01 query block
++ * (manufacturer, product string, build id) and the F12 query block are all
++ * plain reads.
+  */
+ static void
+-rmi_identify(void)
++dsx_identify(struct dsx_funcs *f)
+ {
+-	uint8_t b[24];
+-	uint16_t f01_query = 0, f12_query = 0, f12_ctrl = 0, f12_data = 0;
+-	int i;
++	uint8_t b[DSX_F01_QUERY_LEN];
++	uint16_t addr;
++
++	f->f01_query = 0;
++	f->f12_query = 0;
++	f->f12_ctrl = 0;
++	f->f12_data = 0;
++	f->found_f01 = 0;
++	f->found_f12 = 0;
++	f->entries = 0;
++
++	for (addr = DSX_PDT_START; addr > DSX_PDT_END;
++	    addr = (uint16_t)(addr - DSX_PDT_ENTRY_SIZE)) {
++		unsigned fn;
++
++		if (dsx_read(DSX_ADDR, addr, b, DSX_PDT_ENTRY_SIZE) != 0) {
++			printf("WHYRED TOUCH: dsx pdt read failed at 0x%04x\n",
++			    addr);
++			return;
++		}
++		if (!b[0] && !b[1] && !b[2] && !b[3] && !b[4] && !b[5]) {
++			continue;	/* unused slot */
++		}
++		fn = b[5] & 0x3f;
++		f->entries++;
++		printf("WHYRED TOUCH: dsx fn %02x query %02x%02x cmd %02x "
++		    "ctrl %02x data %02x\n", fn, b[0], b[1], b[2], b[3], b[4]);
++		if (fn == 0x01 && !f->found_f01) {
++			f->f01_query = (uint16_t)((b[0] << 8) | b[1]);
++			f->found_f01 = 1;
++		} else if (fn == 0x12 && !f->found_f12) {
++			f->f12_query = (uint16_t)((b[0] << 8) | b[1]);
++			f->f12_ctrl = b[3];
++			f->f12_data = b[4];
++			f->found_f12 = 1;
++		}
++	}
+ 
+-	if (rmi_read(RMI_ADDR, 0x0000, b, 8) != 0) {
+-		printf("WHYRED TOUCH: rmi version read failed\n");
++	if (!f->found_f01) {
++		printf("WHYRED TOUCH: dsx no F01 in the page table\n");
+ 		return;
+ 	}
+-	rmi_dump("version", 0x0000, b, 8);
+-
+-	for (i = 0; i < RMI_MAX_FUNCTIONS; i++) {
+-		uint16_t reg = (uint16_t)(RMI_FUNCTION_TABLE + i * 6);
++	if (dsx_read(DSX_ADDR, f->f01_query, b, DSX_F01_QUERY_LEN) != 0) {
++		printf("WHYRED TOUCH: dsx F01 query read failed\n");
++		return;
++	}
++	dsx_dump("f01", f->f01_query, b, DSX_F01_QUERY_LEN);
++	printf("WHYRED TOUCH: dsx manufacturer %u product \"%.*s\" build "
++	    "%02x%02x%02x\n", b[0], DSX_PRODUCT_ID_SIZE,
++	    &b[DSX_PRODUCT_ID_OFFSET], b[18], b[19], b[20]);
+ 
+-		if (rmi_read(RMI_ADDR, reg, b, 6) != 0) {
+-			break;
+-		}
+-		if (!b[0] && !b[1] && !b[2] && !b[3] && !b[4] && !b[5]) {
+-			break;	/* null entry ends the table */
+-		}
+-		printf("WHYRED TOUCH: rmi fn %02x query %02x%02x cmd %02x ctrl "
+-		    "%02x data %02x\n", b[5] & 0x3f, b[0], b[1], b[2], b[3], b[4]);
+-		if ((b[5] & 0x3f) == 0x01) {
+-			f01_query = (uint16_t)((b[0] << 8) | b[1]);
+-		} else if ((b[5] & 0x3f) == 0x12) {
+-			f12_query = (uint16_t)((b[0] << 8) | b[1]);
+-			f12_ctrl = b[3];
+-			f12_data = b[4];
++	if (f->found_f12) {
++		if (dsx_read(DSX_ADDR, f->f12_query, b, 12) == 0) {
++			dsx_dump("f12q", f->f12_query, b, 12);
+ 		}
++		printf("WHYRED TOUCH: dsx f12 ctrl 0x%04x data 0x%04x\n",
++		    f->f12_ctrl, f->f12_data);
+ 	}
++}
+ 
+-	if (f01_query && rmi_read(RMI_ADDR, f01_query, b, 16) == 0) {
+-		rmi_dump("f01", f01_query, b, 16);
++/* Painted band across the top of the panel; defined with panel_report below. */
++static void panel_band(uint32_t colour);
++
++/*
++ * Read F12's 2D data block and report every change. The layout is not
++ * assumed: the first sample is the idle snapshot, and a difference in any of
++ * the eleven bytes means the controller is reporting something. The top band
++ * is blue while nothing is seen and turns green on the first change, so the
++ * panel itself answers "does the digitizer see my finger?" without a console.
++ */
++static void
++dsx_touch_test(const struct dsx_funcs *f, uint32_t seconds)
++{
++	uint8_t idle[11], b[11];
++	int i, touched = 0;
++
++	if (!f->found_f12 || !f->f12_data) {
++		printf("WHYRED TOUCH: no F12 data base, cannot poll touch\n");
++		return;
++	}
++	if (seconds > 60) {
++		seconds = 60;	/* keep the boot bounded */
+ 	}
+-	if (f12_query) {
+-		if (rmi_read(RMI_ADDR, f12_query, b, 12) == 0) {
+-			rmi_dump("f12q", f12_query, b, 12);
++	if (dsx_read(DSX_ADDR, f->f12_data, idle, sizeof(idle)) != 0) {
++		printf("WHYRED TOUCH: F12 data read failed\n");
++		return;
++	}
++	printf("WHYRED TOUCH: polling F12 0x%04x for %u s; idle %02x %02x %02x "
++	    "%02x %02x\n", f->f12_data, seconds, idle[0], idle[1], idle[2],
++	    idle[3], idle[4]);
++	panel_band(0xff2040e0);		/* blue: waiting for a finger */
++
++	for (i = 0; i < (int)(seconds * 50); i++) {
++		int changed = 0;
++
++		if (dsx_read(DSX_ADDR, f->f12_data, b, sizeof(b)) != 0) {
++			printf("WHYRED TOUCH: F12 data read failed\n");
++			break;
+ 		}
+-		printf("WHYRED TOUCH: rmi f12 ctrl 0x%04x data 0x%04x\n",
+-		    f12_ctrl, f12_data);
++		for (int k = 0; k < (int)sizeof(b); k++) {
++			if (b[k] != idle[k]) {
++				changed = 1;
++			}
++		}
++		if (changed) {
++			printf("WHYRED TOUCH: f12 %02x %02x %02x %02x %02x %02x "
++			    "%02x %02x %02x %02x %02x\n", b[0], b[1], b[2], b[3],
++			    b[4], b[5], b[6], b[7], b[8], b[9], b[10]);
++			for (int k = 0; k < (int)sizeof(b); k++) {
++				idle[k] = b[k];
++			}
++			if (!touched) {
++				touched = 1;
++				panel_band(0xff20e020);	/* green: seen */
++			}
++		}
++		delay(20000);
+ 	}
++	printf("WHYRED TOUCH: touch test done (%s)\n",
++	    touched ? "data changed" : "nothing seen");
+ }
+ 
+ /*
+@@ -448,23 +564,32 @@ panel_code(int acks, uint8_t first)
+ 	}
+ }
+ 
++static volatile uint32_t *panel_fb;
++
++static volatile uint32_t *
++panel_map(void)
++{
++	if (panel_fb == NULL) {
++		panel_fb = (volatile uint32_t *)ml_io_map_unmappable(
++		    WHYRED_FB_PHYS,
++		    (vm_size_t)WHYRED_FB_STRIDE * WHYRED_FB_HEIGHT,
++		    VM_WIMG_IO);
++	}
++	return panel_fb;
++}
++
+ static int
+-panel_report(int acks, uint8_t first)
++panel_fill_rows(uint32_t top, uint32_t bottom)
+ {
+-	vm_size_t size = (vm_size_t)WHYRED_FB_STRIDE * WHYRED_FB_HEIGHT;
+-	uint32_t code = panel_code(acks, first);
+-	uint32_t body = acks > 0 ? 0xff20e020 : 0xffe02020;
+-	volatile uint32_t *fb;
++	volatile uint32_t *fb = panel_map();
+ 
+-	fb = (volatile uint32_t *)ml_io_map_unmappable(WHYRED_FB_PHYS, size,
+-	    VM_WIMG_IO);
+ 	if (fb == NULL) {
+ 		return ENOMEM;
+ 	}
+ 	for (uint32_t y = 0; y < WHYRED_FB_HEIGHT; y++) {
+ 		volatile uint32_t *line = fb + (uint64_t)y *
+ 		    (WHYRED_FB_STRIDE / 4);
+-		uint32_t px = (y < WHYRED_FB_HEIGHT / 4) ? code : body;
++		uint32_t px = (y < WHYRED_FB_HEIGHT / 4) ? top : bottom;
+ 
+ 		for (uint32_t x = 0; x < WHYRED_FB_WIDTH; x++) {
+ 			line[x] = px;
+@@ -473,6 +598,32 @@ panel_report(int acks, uint8_t first)
+ 	return 0;
+ }
+ 
++/* Cheap visible state for the touch poll: a band across the top. */
++static void
++panel_band(uint32_t colour)
++{
++	volatile uint32_t *fb = panel_map();
++
++	if (fb == NULL) {
++		return;
++	}
++	for (uint32_t y = 0; y < 120; y++) {
++		volatile uint32_t *line = fb + (uint64_t)y *
++		    (WHYRED_FB_STRIDE / 4);
++
++		for (uint32_t x = 0; x < WHYRED_FB_WIDTH; x++) {
++			line[x] = colour;
++		}
++	}
++}
++
++static int
++panel_report(int acks, uint8_t first)
++{
++	return panel_fill_rows(panel_code(acks, first),
++	    acks > 0 ? 0xff20e020 : 0xffe02020);
++}
++
+ int
+ santoni_touch_probe(void)
+ {
+@@ -480,7 +631,9 @@ santoni_touch_probe(void)
+ 	uint32_t on = 0, pulse = 0, wait, halt;
+ 	uint8_t id[3] = { 0, 0, 0 };
+ 	uint8_t first_ack = 0;
++	struct dsx_funcs dsx;
+ 	int addr, acks = 0, pulsed, saw_rmi = 0;
++	uint32_t touch_s;
+ 	uint32_t rst_cfg, rst_io, irq_cfg, irq_io;
+ 
+ 	if (touch_probe_done) {
+@@ -541,9 +694,10 @@ santoni_touch_probe(void)
+ 			first_ack = (uint8_t)addr;
+ 		}
+ 		printf("WHYRED TOUCH: ack 0x%02x\n", addr);
+-		if (addr == RMI_ADDR) {
+-			/* Synaptics: the Novatek page protocol would only
+-			 * return noise, the RMI4 dump below is the real ID. */
++		if (addr == DSX_ADDR) {
++			/* Synaptics DSX: the Novatek page protocol would only
++			 * return noise, the DSX page-table dump below is the
++			 * real identification. */
+ 			saw_rmi = 1;
+ 			continue;
+ 		}
+@@ -559,7 +713,12 @@ santoni_touch_probe(void)
+ 	    "scl %d\n", acks, pin_read(&touch_sda), pin_read(&touch_scl));
+ 
+ 	if (saw_rmi) {
+-		rmi_identify();
++		dsx_identify(&dsx);
++		touch_s = 0;
++		if (PE_parse_boot_argn("sweetouchtouch", &touch_s,
++		    sizeof(touch_s)) && touch_s) {
++			dsx_touch_test(&dsx, touch_s);
++		}
+ 	}
+ 
+ 	/*

@@ -327,6 +327,7 @@ query/control/data bases for 2D touch.
 | `sweetouchi2c=1` | run the probe: scan `0x08`..`0x77`, then dump the RMI4 identification |
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) low 10 ms and high 60 ms before the scan |
 | `sweetouchwait=SECONDS` | hold the boot after the scan (default 15 s, 0 = no hold, max 60); the panel is usually muted by then, so prefer the ring |
+| `sweetouchtouch=SECONDS` | poll F12 touch data for that long: top band of the panel is blue while waiting, green on the first change, and every change goes to the ring (max 60) |
 | `sweetouchhalt=1` | paint the answer into the scanout buffer and stop the boot there (top quarter: white = first ack `0x01`, yellow = `0x62`, cyan = `0x20`, magenta = other, red = none; bottom green if anything answered) |
 
 Without `sweetouchreset` the probe does not write GPIO 66/67, so the log also
