@@ -439,6 +439,7 @@ above was read.
 | `tools/sweet-crash.py`, `sweet-log.py` | Symbolicate crash reports, read the persistent log |
 | `tools/extract-ts-firmware.py` | Pull the Synaptics DSX image out of any boot image (finds the `const unsigned char[]` in the kernel blob), validate the header, write `out/ts-fw-whyred.img` |
 | `tools/sweet-ts-reflash.sh` | Push that image to the vendor driver over the `doreflash` sysfs (`imagesize` -> `data` -> `doreflash 2` = FORCE) |
+| `tools/build-touch-diag.sh` | Pack the whyred touch-diag image from a CI kernel (muted console, ring on, `sweetouchi2c` + 30 s F12 poll, `rd=emmcroot0`) |
 | `NOTES.md` | Engineering log and active handoff |
 
 Not in git: partition backups, live device trees, Apple firmware and root images, build trees.
