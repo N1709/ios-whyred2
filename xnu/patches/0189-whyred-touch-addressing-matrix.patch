@@ -1,0 +1,314 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+index e147227..9a84d1d 100644
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -384,18 +384,54 @@ nvt_read(uint8_t addr, uint8_t page, uint8_t reg, uint8_t *buf, int len)
+ #define DSX_PRODUCT_ID_OFFSET	11
+ #define DSX_PRODUCT_ID_SIZE	10
+ 
++/*
++ * Every framing we can build for "read register <reg>" leaves the same trace
++ * in the 0187/0188 logs: the bytes look like a coherent page descriptor table
++ * but the requested address is ignored (0x00e9 -> 27 00 09 00 21 34, the entry
++ * that lives at 0x00e9, then 0x00e9 again -> the next six bytes). The chip
++ * only ever streams from wherever its pointer happens to be, so the address
++ * phase never lands.
++ *
++ * That leaves the framing itself as the suspect, and there are two variants
++ * nobody has tried: a 16-bit address sent little endian, and the page select
++ * and the address in one write. This table enumerates all of them; 0189 tries
++ * each against the one fact we know for certain - the page descriptor table
++ * starts at 0x00e9 with the F34 entry 27 00 09 00 21 34 - and keeps the first
++ * framing that returns it twice in a row.
++ */
++enum dsx_frame {
++	DFRAME_PAGE_A1,		/* 0xFF page, stop; address byte, restart */
++	DFRAME_PAGE_A1_COMB,	/* 0xFF page address, one write, restart */
++	DFRAME_PAGE_A2_BE,	/* page; 16-bit address, big endian */
++	DFRAME_PAGE_A2_LE,	/* page; 16-bit address, little endian */
++	DFRAME_A1,		/* address byte, no page select */
++	DFRAME_A2_BE,		/* 16-bit address, big endian, no page */
++	DFRAME_A2_LE,		/* 16-bit address, little endian, no page */
++	DFRAME_COUNT
++};
++
++static const char *dsx_frame_name[DFRAME_COUNT] = {
++	"page|a1", "page+a1", "page|a2be", "page|a2le",
++	"a1", "a2be", "a2le",
++};
++
++/* The vendor driver's framing until the self test says otherwise. */
++static int dsx_frame = DFRAME_PAGE_A1;
++
+ static int
+-dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
+-    int use_page, int addr_bytes)
++dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ {
++	uint8_t hi = (uint8_t)((reg >> 8) & 0xff);
++	uint8_t lo = (uint8_t)(reg & 0xff);
+ 	int i, ok = 1;
+ 
+-	if (use_page) {
+-		/* page select: 0xFF <page> */
++	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
++	    frame == DFRAME_PAGE_A2_LE) {
++		/* page select: 0xFF <page>, its own transaction */
+ 		i2c_start();
+ 		ok &= i2c_write((uint8_t)(addr << 1));
+ 		ok &= i2c_write(0xff);
+-		ok &= i2c_write((uint8_t)((reg >> 8) & 0xff));
++		ok &= i2c_write(hi);
+ 		i2c_stop();
+ 		if (!ok) {
+ 			return EIO;
+@@ -404,10 +440,31 @@ dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
+ 
+ 	i2c_start();
+ 	ok &= i2c_write((uint8_t)(addr << 1));
+-	if (addr_bytes == 2) {
+-		ok &= i2c_write((uint8_t)((reg >> 8) & 0xff));
++	switch (frame) {
++	case DFRAME_PAGE_A1:
++	case DFRAME_A1:
++		ok &= i2c_write(lo);
++		break;
++	case DFRAME_PAGE_A1_COMB:
++		/* the vendor write, with the address appended to it */
++		ok &= i2c_write(0xff);
++		ok &= i2c_write(hi);
++		ok &= i2c_write(lo);
++		break;
++	case DFRAME_PAGE_A2_BE:
++	case DFRAME_A2_BE:
++		ok &= i2c_write(hi);
++		ok &= i2c_write(lo);
++		break;
++	case DFRAME_PAGE_A2_LE:
++	case DFRAME_A2_LE:
++		ok &= i2c_write(lo);
++		ok &= i2c_write(hi);
++		break;
++	default:
++		ok = 0;
++		break;
+ 	}
+-	ok &= i2c_write((uint8_t)(reg & 0xff));
+ 	if (!ok) {
+ 		i2c_stop();
+ 		return EIO;
+@@ -425,11 +482,46 @@ dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
+ 	return 0;
+ }
+ 
+-/* The vendor driver's read: page select, then one address byte. */
+ static int
+ dsx_read(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
+ {
+-	return dsx_read_ex(addr, reg, buf, len, 1, 1);
++	return dsx_read_f(addr, reg, buf, len, dsx_frame);
++}
++
++/*
++ * A framing is only believed when the same register reads back the same six
++ * bytes twice and the entry one slot above it reads back something else. A
++ * streaming pointer fails the first test, and an off-by-one framing fails the
++ * second.
++ */
++static int
++dsx_frame_works(int frame, uint8_t *out)
++{
++	uint8_t a[DSX_PDT_ENTRY_SIZE], b[DSX_PDT_ENTRY_SIZE];
++	uint8_t c[DSX_PDT_ENTRY_SIZE];
++	int i, differ = 0;
++
++	if (dsx_read_f(DSX_ADDR, DSX_PDT_START, a, sizeof(a), frame) != 0 ||
++	    dsx_read_f(DSX_ADDR, DSX_PDT_START, b, sizeof(b), frame) != 0 ||
++	    dsx_read_f(DSX_ADDR, DSX_PDT_START - DSX_PDT_ENTRY_SIZE, c,
++	    sizeof(c), frame) != 0) {
++		return 0;
++	}
++	for (i = 0; i < (int)sizeof(a); i++) {
++		if (a[i] != b[i]) {
++			return 0;
++		}
++		if (a[i] != c[i]) {
++			differ = 1;
++		}
++	}
++	if (!differ || (!a[0] && !a[5])) {
++		return 0;
++	}
++	for (i = 0; i < (int)sizeof(a); i++) {
++		out[i] = a[i];
++	}
++	return 1;
+ }
+ 
+ /* Hex plus printable text: the product and build strings are ASCII. */
+@@ -534,63 +626,46 @@ dsx_identify(struct dsx_funcs *f)
+ static void panel_band(uint32_t colour);
+ 
+ /*
+- * 0187 could not read the page descriptor table: reading 0x00e9 and then
+- * 0x00e3 returned one continuous byte stream (0x00e9 -> 27 00 09 00 21 34,
+- * 0x00e3 -> 2f 26 0d 04 01 01), and the "first" PDT entry decoded as
+- * function 0x34, which cannot be the entry at 0x00e9 - that slot always holds
+- * F01. Either the address phase is not taking effect or the chip is in a
+- * state where it only streams. This diagnostic answers both questions in one
+- * boot, read-only:
+- *
+- *   same address twice      does the second read repeat or advance?
+- *   0x00e9, one byte        the vendor driver's protocol
+- *   0x00e9, two bytes       the RMI4 protocol 0186 used
+- *   0x00e8 / 0x00ea         off-by-one check on the same protocol
+- *   0x00e9, no page select  page select itself may be the problem
+- *   page 1, 0x0000          does 0xFF <page> reach a different page?
++ * Address-framing matrix. Every framing is tried against the one register
++ * whose contents we know for certain, 0x00e9, and the first one that gives
++ * back the same six bytes twice - and something else one slot above - is
++ * kept for the rest of the probe. One boot therefore answers both "does the
++ * address phase work at all" and, if it does, which framing the controller
++ * wanted.
+  */
+ static void
+ dsx_diag(void)
+ {
+-	uint8_t a[8], b[8];
+-	int i, same = 1;
+-
+-	if (dsx_read_ex(DSX_ADDR, 0x0000, a, sizeof(a), 1, 1) == 0) {
+-		dsx_dump("diag 0000 a1 #1", 0x0000, a, sizeof(a));
+-	} else {
+-		printf("WHYRED TOUCH: diag 0000 a1 #1 read failed\n");
+-	}
+-	delay(2000);
+-	if (dsx_read_ex(DSX_ADDR, 0x0000, b, sizeof(b), 1, 1) == 0) {
+-		dsx_dump("diag 0000 a1 #2", 0x0000, b, sizeof(b));
+-	} else {
+-		printf("WHYRED TOUCH: diag 0000 a1 #2 read failed\n");
+-	}
+-	for (i = 0; i < (int)sizeof(a); i++) {
+-		if (a[i] != b[i]) {
+-			same = 0;
++	uint8_t a[DSX_PDT_ENTRY_SIZE], b[DSX_PDT_ENTRY_SIZE];
++	int frame, best = -1;
++
++	for (frame = 0; frame < DFRAME_COUNT; frame++) {
++		if (dsx_frame_works(frame, a)) {
++			dsx_dump(dsx_frame_name[frame], DSX_PDT_START, a,
++			    sizeof(a));
++			printf("WHYRED TOUCH: frame %s addressed\n",
++			    dsx_frame_name[frame]);
++			if (best < 0) {
++				best = frame;
++			}
++		} else if (dsx_read_f(DSX_ADDR, DSX_PDT_START, b,
++		    sizeof(b), frame) == 0) {
++			dsx_dump(dsx_frame_name[frame], DSX_PDT_START, b,
++			    sizeof(b));
++			printf("WHYRED TOUCH: frame %s streams\n",
++			    dsx_frame_name[frame]);
++		} else {
++			printf("WHYRED TOUCH: frame %s failed\n",
++			    dsx_frame_name[frame]);
+ 		}
+ 	}
+-	printf("WHYRED TOUCH: diag same address twice -> %s\n",
+-	    same ? "repeated" : "advanced");
+-
+-	if (dsx_read_ex(DSX_ADDR, 0x00e9, a, 6, 1, 1) == 0) {
+-		dsx_dump("diag 00e9 a1", 0x00e9, a, 6);
+-	}
+-	if (dsx_read_ex(DSX_ADDR, 0x00e9, a, 6, 1, 2) == 0) {
+-		dsx_dump("diag 00e9 a2", 0x00e9, a, 6);
+-	}
+-	if (dsx_read_ex(DSX_ADDR, 0x00e8, a, 6, 1, 1) == 0) {
+-		dsx_dump("diag 00e8 a1", 0x00e8, a, 6);
+-	}
+-	if (dsx_read_ex(DSX_ADDR, 0x00ea, a, 6, 1, 1) == 0) {
+-		dsx_dump("diag 00ea a1", 0x00ea, a, 6);
+-	}
+-	if (dsx_read_ex(DSX_ADDR, 0x00e9, a, 6, 0, 2) == 0) {
+-		dsx_dump("diag 00e9 a2 nopage", 0x00e9, a, 6);
+-	}
+-	if (dsx_read_ex(DSX_ADDR, 0x0100, a, 6, 1, 1) == 0) {
+-		dsx_dump("diag page1 0000 a1", 0x0100, a, 6);
++	if (best >= 0) {
++		dsx_frame = best;
++		printf("WHYRED TOUCH: using frame %s\n",
++		    dsx_frame_name[best]);
++	} else {
++		printf("WHYRED TOUCH: no framing addressed the chip, keeping "
++		    "%s\n", dsx_frame_name[dsx_frame]);
+ 	}
+ }
+ 
+@@ -783,6 +858,26 @@ panel_report(int acks, uint8_t first)
+ 	    acks > 0 ? 0xff20e020 : 0xffe02020);
+ }
+ 
++/*
++ * whyred's DT: synaptics,reset-active-ms = 20, reset-delay-ms = 200. The
++ * controller boots its firmware during that delay, so wait before any read.
++ * This is also the escape hatch from flash-programming mode: a reset after
++ * ENABLE_FLASH_PROG brings the part back to application firmware.
++ */
++static void
++dsx_reset(vm_offset_t north)
++{
++	struct touch_pin rst;
++
++	pin_setup(&rst, north, WHYRED_RST);
++	pin_out(&rst, 0);
++	delay(20000);
++	pin_out(&rst, 1);
++	delay(250000);
++	printf("WHYRED TOUCH: reset pulse low 20 ms, high 200 ms + 50 ms "
++	    "settle\n");
++}
++
+ int
+ santoni_touch_probe(void)
+ {
+@@ -834,18 +929,7 @@ santoni_touch_probe(void)
+ 	}
+ 
+ 	if (PE_parse_boot_argn("sweetouchreset", &pulse, sizeof(pulse)) && pulse) {
+-		struct touch_pin rst;
+-
+-		/* whyred's DT: synaptics,reset-active-ms = 20,
+-		 * synaptics,reset-delay-ms = 200; the controller boots its
+-		 * firmware during that delay, so wait before any read. */
+-		pin_setup(&rst, north, WHYRED_RST);
+-		pin_out(&rst, 0);
+-		delay(20000);
+-		pin_out(&rst, 1);
+-		delay(250000);
+-		printf("WHYRED TOUCH: reset pulse low 20 ms, high 200 ms + "
+-		    "50 ms settle\n");
++		dsx_reset(north);
+ 	}
+ 
+ 	for (addr = 0x08; addr <= 0x77; addr++) {
+@@ -879,6 +963,20 @@ santoni_touch_probe(void)
+ 		touch_irq_setup(north);
+ 		dsx_diag();
+ 		dsx_identify(&dsx);
++		if (!dsx.found_f12 && dsx.found_f01 && dsx.entries <= 2) {
++			/*
++			 * F34 + F01 and nothing else is exactly the table the
++			 * flash-programming (bootloader) firmware exposes, and
++			 * it is what a part left in flash-pgm mode looks like.
++			 * One reset boots it back into application firmware.
++			 */
++			printf("WHYRED TOUCH: PDT has %d entries, F01 and no "
++			    "F12 - bootloader mode; resetting once\n",
++			    dsx.entries);
++			dsx_reset(north);
++			dsx_diag();
++			dsx_identify(&dsx);
++		}
+ 		touch_s = 0;
+ 		if (PE_parse_boot_argn("sweetouchtouch", &touch_s,
+ 		    sizeof(touch_s)) && touch_s) {

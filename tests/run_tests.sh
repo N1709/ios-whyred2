@@ -884,6 +884,31 @@ assert 'diag page1 0000 a1' in body
 PY
 echo "ok   0188 releases the lines, times reset and runs the read matrix"
 
+echo "== TOUCH: 0189 tries every address framing against 0x00e9 =="
+P189="xnu/patches/0189-whyred-touch-addressing-matrix.patch"
+python3 tools/check_patch.py "$P189" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:enum dsx_frame' \
+	--added-contains 'bsd/dev/santoni_touch.c:DFRAME_A2_LE' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_frame_works' \
+	--added-contains 'bsd/dev/santoni_touch.c:using frame' \
+	--added-contains 'bsd/dev/santoni_touch.c:bootloader mode; resetting once'
+python3 - <<'PY'
+src = open('xnu/patches/0189-whyred-touch-addressing-matrix.patch', encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+# Every framing that could plausibly be right is exercised: both byte orders,
+# with and without the page select, and the page select in the same write.
+for name in ('page|a1', 'page+a1', 'page|a2be', 'page|a2le', 'a1',
+             'a2be', 'a2le'):
+    assert '"%s"' % name in body, name
+# A framing is only believed when the same register repeats and the slot
+# above it reads differently, so a streaming pointer cannot win.
+assert 'if (a[i] != b[i])' in body and 'differ = 1' in body
+assert 'dsx_frame = best' in body
+PY
+echo "ok   0189 tries seven framings and keeps the repeatable one"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

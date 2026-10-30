@@ -23,6 +23,29 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
+**2026-10-30 - the controller was in bootloader mode; 0189 tests the address framing.**
+The touch controller had been parked in flash-programming mode, not stripped of
+firmware: the page table was `F34 + F01` with no `F12`. A reset cycle after
+`ENABLE_FLASH_PROG` boots it back into application firmware, and the Android
+recovery driver then works normally again - `input2` with 10 `ABS_MT_SLOT`s and
+real `ABS_MT_POSITION_X/Y` events in `getevent`, cleared by a boot of
+`fastboot boot` recovery. The firmware was never missing either:
+`tools/extract-ts-firmware.py` pulls the 128,512-byte DSX image out of the
+recovery kernel, and `tools/sweet-ts-reflash.sh` drives the vendor
+`doreflash` sysfs (`echo 2`, not `1`, is FORCE).
+
+XNU still reads the same shifted stream, and 0188's matrix pinned it down: a
+read of `0x0000` returns the entry that lives at `0x00e9`
+(`27 00 09 00 21 34`), and a second read of the same address returns the next
+six bytes, so the address phase never lands and the chip does no more than
+stream from wherever its pointer sits. The created tooling is in `NOTES.md`.
+`0189` therefore enumerates the framings nobody has tried - 16-bit address
+little endian, the page select and the address in one write, the page select
+with a two-byte address - and accepts a framing only when it returns the
+`0x00e9` entry twice in a row and something else one slot above; the winner is
+used for the rest of the probe. It also recognises the `F34 + F01, no F12`
+table as bootloader mode and pulses reset once before giving up.
+
 **2026-10-29 - 0187 and 0188: the read is the problem, not the address.**
 `0187` replaced the RMI4 read with the Synaptics DSX one the vendor driver
 uses (page select `0xFF <page>`, then one address byte, then a repeated
@@ -350,7 +373,8 @@ IRQ witness on GPIO 67 during the F12 poll.
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) per the DT: low 20 ms, high 200 ms, then 50 ms settle before the scan |
 | `sweetouchwait=SECONDS` | hold the boot after the scan (default 15 s, 0 = no hold, max 60); the panel is usually muted by then, so prefer the ring |
 | `sweetouchtouch=SECONDS` | poll F12 touch data for that long: top band of the panel is blue while waiting, green on the first change or IRQ edge, and every change goes to the ring (max 60) |
-| (automatic) | before identification, 0188 prints the read matrix: `diag 0000 a1 #1/#2`, `diag 00e9 a1/a2`, `diag 00e8 a1`, `diag 00ea a1`, `diag 00e9 a2 nopage`, `diag page1 0000 a1` |
+| (automatic) | before identification, 0189 prints every address framing it knows (`page|a1`, `page+a1`, `page|a2be`, `page|a2le`, `a1`, `a2be`, `a2le`) against `0x00e9`, marks each one `addressed`, `streams` or `failed`, and keeps the first that returns the same six bytes twice with a different entry one slot above (`using frame ...`) |
+| (automatic) | if the page table has F01 but no F12, 0189 treats the part as bootloader-mode, pulses reset once and scans again |
 | `sweetouchhalt=1` | paint the answer into the scanout buffer and stop the boot there (top quarter: white = first ack `0x01`, yellow = `0x62`, cyan = `0x20`, magenta = other, red = none; bottom green if anything answered) |
 
 Without `sweetouchreset` the probe does not write GPIO 66/67, so the log also
@@ -444,6 +468,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0186 | RMI4 identification at `0x20`: version, function table, F01/F12 query blocks (read-only) - wrong protocol |
 | 0187 | Synaptics DSX protocol (page select at `0xFF`, PDT at `0x00e9`) plus an F12 data poll - still a shifted stream |
 | 0188 | Open-drain bit-bang with clock-stretch wait, DT reset timing, read matrix, IRQ edge witness |
+| 0189 | Seven address framings tried against `0x00e9`, auto-selected by repetition, plus a bootloader-mode reset retry |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

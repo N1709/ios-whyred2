@@ -102,6 +102,45 @@ downgrade. A raw read of `rmidev/data` at `0x0e9` returns zeros here while the
 attribute files work, so read state through the `buildid`, `productinfo` and
 `fwblockcount` attributes rather than raw `rmidev/data`.
 
+### 0189: the address phase never lands, so try every framing
+
+The iOS side (0187/0188) reads a coherent but unaddressed stream: `0x0000`
+returns the entry that lives at `0x00e9` (`27 00 09 00 21 34`), and the next
+read of the same address returns the following six bytes. The chip is not in
+bootloader mode at that point (F12 exists in recovery), and the data is not
+garbage - only the address is ignored. Every framing tried so far is
+"page select `0xFF <page>` with a STOP, then one address byte, then a repeated
+start", so 0189 enumerates what has not been tried:
+
+```
+page|a1    page select, stop; address byte, restart   (the vendor framing)
+page+a1    0xFF page address in one write, restart
+page|a2be  page; 16-bit big-endian address
+page|a2le  page; 16-bit little-endian address
+a1         address byte, no page select
+a2be       16-bit big-endian, no page select
+a2le       16-bit little-endian, no page select
+```
+
+A framing is accepted only if it returns the same six bytes for `0x00e9`
+twice **and** something different for `0x00e3`; a streaming pointer fails the
+first test, an off-by-one framing fails the second. The accepted framing is
+stored in `dsx_frame` and every later read (`dsx_identify`, the F12 poll) uses
+it. If the page table comes back as `F34 + F01` with no F12 - the bootloader
+table - 0189 pulses reset once and scans again.
+
+### Why userspace could not answer it
+
+`/dev/i2c-1` (c175000.i2c, `MSM-I2C-v2-adapter`) is present and writes to an
+absent address fail honestly with `ENOTCONN`, but *every* read returns zeros,
+including a read with no register write at all, while the kernel driver reads
+`buildid` 2788281 fine. A matrix tool over `/dev/i2c-1`
+(`addr1+read`, `page|addr1+read`, `page+addr1+read`, `addr2+read`,
+`page+addr2+read`, read-only) returned six zeros for all seven variants, so the
+i2c-dev path cannot be used as an oracle here. `/dev/mem` does not exist and
+there is no tracefs/dynamic-debug in the recovery kernel, so the bit-bang has
+to be exercised from XNU.
+
 ## ROOT CAUSE (2026-10-30): the touch controller is in bootloader mode
 
 Mainline `drivers/input/rmi4/rmi_driver.c` settles it. Two things were wrong in
