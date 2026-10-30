@@ -356,6 +356,17 @@ IRQ witness on GPIO 67 during the F12 poll.
 Without `sweetouchreset` the probe does not write GPIO 66/67, so the log also
 records the reset/IRQ pad state ABL handed over.
 
+The controller state is not a software problem any more: an earlier session left
+it parked in flash-programming (bootloader) mode, where the PDT ends at
+`F34 + F01` and there is no `F12`. A reset cycle after `ENABLE_FLASH_PROG`
+brings it back to application mode, and the Android driver then works normally
+again - `input2` with `ABS_X` 0-1079 / `ABS_Y` 0-2159 / 10 `ABS_MT_SLOT`s and
+real `ABS_MT_POSITION_X/Y` events in `getevent`. The firmware image itself was
+never missing; `tools/extract-ts-firmware.py` pulls it out of the recovery
+kernel (`out/ts-fw-whyred.img`, 128,512 B) and `tools/sweet-ts-reflash.sh`
+drives the vendor `doreflash` sysfs, where `echo 2` (not `1`) is FORCE.
+`NOTES.md` has the full sequence.
+
 **Reading the result without a serial cable.** Every test image carries
 `sweetlog=1`, so the 4 MiB console ring on SYSTEM keeps the probe lines even
 though the panel stops drawing them. Boot the whyred recovery with
@@ -372,12 +383,13 @@ above was read.
 ## Roadmap
 
 1. **Touch**: the controller answers at Synaptics `0x20` on BLSP1 QUP1 I2C
-   (`0x0c175000`, IRQ GPIO 67, reset GPIO 66, VDDIO PM660 LDO11). 0184/0186
-   prove the bus and identify the chip with bit-banged GPIO; next is F12
-   reporting (poll the data registers or take the IRQ), then the QUP I2C
-   master (GCC `BLSP1_AHB` + `QUP1_I2C_APPS`) and PM660 SPMI for LDO11 so the
-   bit-bang can be retired. `sweet_hid_touch()` and `SweetHIDTouch` are
-   already shared with the topaz port and need no change.
+   (`0x0c175000`, IRQ GPIO 67, reset GPIO 66, VDDIO PM660 LDO11) and reports
+   F12 again after the bootloader-mode recovery. 0184/0186/0187/0188 prove the
+   bus and identify the chip with bit-banged GPIO; next is a clean read of the
+   F12 data registers from XNU (the 0188 matrix exists to explain the shifting
+   stream), then the QUP I2C master (GCC `BLSP1_AHB` + `QUP1_I2C_APPS`) and
+   PM660 SPMI for LDO11 so the bit-bang can be retired. `sweet_hid_touch()` and
+   `SweetHIDTouch` are already shared with the topaz port and need no change.
 2. **Buttons**: power and volume keys on the PM660/PM660L PON block, volume up on a PMIC GPIO.
 3. **Smoother display**: higher `sweetfb_hz`; check whether the Gold cores run at a low clock without cpufreq (the shim's speed probe) and raise it if so.
 4. **Narrow the GIC fix** to the register that actually matters, then move it into XNU.
@@ -401,6 +413,8 @@ above was read.
 | `tools/mkpayload.py` | Packs kernel + ADT + boot-args into the shim payload |
 | `tools/mkiosroot.sh`, `tools/sweet-root-tweaks.py` | Build and adjust the HFS+ iOS root |
 | `tools/sweet-crash.py`, `sweet-log.py` | Symbolicate crash reports, read the persistent log |
+| `tools/extract-ts-firmware.py` | Pull the Synaptics DSX image out of any boot image (finds the `const unsigned char[]` in the kernel blob), validate the header, write `out/ts-fw-whyred.img` |
+| `tools/sweet-ts-reflash.sh` | Push that image to the vendor driver over the `doreflash` sysfs (`imagesize` -> `data` -> `doreflash 2` = FORCE) |
 | `NOTES.md` | Engineering log and active handoff |
 
 Not in git: partition backups, live device trees, Apple firmware and root images, build trees.

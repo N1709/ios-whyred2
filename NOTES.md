@@ -1,5 +1,281 @@
 # iOS 16 on lavender (Redmi Note 7, SDM660) / whyred (Redmi Note 5, SDM636) - working notes
 
+## 2026-10-30: firmware image recovered, first reflash attempts, chip wakes with F12
+
+The image the driver was already parsing lives **inside the recovery kernel**:
+build a kernel with `CONFIG_TOUCHSCREEN_SYNAPTICS_DSX_FW_IMAGE` and the DSX
+image is a `const unsigned char[]`. OrangeFox's `recovery.img` carries two of
+them:
+
+```
+$ python3 tools/extract-ts-firmware.py recovery.img --list
+2 candidate image(s):
+  offset 0x0139ee60  size 128512  fw_id 2732044  product E753  ds_id DS5 R12.5.2  hdr v6
+  offset 0x013be460  size 128512  fw_id 2732045  product E753  ds_id DS5 R12.5.2  hdr v6
+```
+
+`out/ts-fw-whyred.img` (first one, sha256
+`fff978f25d6a687736f1deb63087a5e8fc16ffbb99c1dd7dfee8b666c91db60e`) is the
+verbose file. Header: options `0x03` (firmware_id + bootloader), version 6,
+firmware 0x1B000, config 0x1000, bootloader at 0x100 size 0x2000, UI firmware
+at 0x2100, UI config at 0x1D100, display config at 0x1E600, firmware_id
+2732044 - exactly the ID in dmesg.
+
+### `doreflash` argument is 2, not 1
+
+```c
+enum update_mode { NORMAL = 1, FORCE = 2, LOCKDOWN = 8 };
+...
+if (input == FORCE) fwu->force_update = true;
+```
+
+`echo 1 > doreflash` is NORMAL and still runs `fwu_go_nogo()`, which refuses
+because device ID 2788281 > image ID 2732044. `echo 2 > doreflash` is the real
+FORCE and does skip the comparison (`fwu_go_nogo()` first branch). The script
+was fixed; the first run in this session was with 1 and therefore a no-op.
+
+### What FORCE does on this unit
+
+```
+fwu_go_nogo: Updating UI firmware and config
+fwu_read_flash_status: Flash status = 3, command = 0x28
+fwu_read_flash_status: Flash status = 6, command = 0x03
+fwu_wait_for_idle: Timed out waiting for idle status
+synaptics_rmi4_check_status: In flash prog mode, status = 0x0c
+```
+
+So the sequence enters flash-programming mode (F01 status 0x0c), but the v6
+bootloader never reports flash status 0 with command 0, and
+`fwu_wait_for_idle()` (ENABLE_WAIT_MS = 1 s) gives up. The driver then calls
+`reset_device()`, re-probes while the part is still in flash-programming mode,
+fails, and leaves the part there until the next reset.
+
+Second attempt (after the part had re-booted) got further: initial
+`Flash status = 1`, then 3 and 6, i.e. it does make progress, but never the
+`(command == CMD_IDLE && flash_status == 0)` pair the vendor code insists on.
+This looks like an F34 v6 status-semantics mismatch: the bootloader reports
+"flash programming mode" (status bit1/bit2) rather than "idle" after
+`CMD_ENABLE_FLASH_PROG (0x0f)`.
+
+### Side effect: the part now advertises F12
+
+After the reset that followed the failed FORCE, a platform probe reached F12
+for the first time (`synaptics_rmi4_f12_find_sub: Register 20 is not present`
+comes from the F12 query presence bitmap, not from a bus error). So the
+application firmware was never missing - the controller was parked in
+bootloader mode, and a reset cycle after `ENABLE_FLASH_PROG` boots it back into
+app mode. Confirming this needs a clean re-probe: the failed platform probe
+left the reset GPIO asserted, after which raw i2c reads at 0x20 return random
+bytes (the bus is floating) and writes fail with ENOTCONN.
+
+Tools added:
+- `tools/extract-ts-firmware.py` - pull the DSX image out of any boot image.
+- `tools/sweet-ts-reflash.sh` - `imagesize` -> `data` -> `doreflash 2`, with a
+  local image instead of the missing `/vendor/firmware` file.
+
+### Confirmed: touch works in recovery again (2026-10-30)
+
+A clean recovery boot after the reset cycle gives a fully functional
+controller. `/sys/class/input/input2` exists, no `udg_scan_pdt: Failed to find
+F12` in dmesg, and `getevent -lt` captures real multi-touch:
+
+```
+/dev/input/event2: EV_ABS  ABS_MT_TRACKING_ID  0000002d
+/dev/input/event2: EV_KEY  BTN_TOUCH           DOWN
+/dev/input/event2: EV_KEY  BTN_TOOL_FINGER     DOWN
+/dev/input/event2: EV_ABS  ABS_MT_POSITION_X   00000165
+/dev/input/event2: EV_ABS  ABS_MT_POSITION_Y   000006a0
+/dev/input/event2: EV_ABS  ABS_MT_TOUCH_MAJOR  00000004
+/dev/input/event2: EV_SYN  SYN_REPORT          00000000
+```
+
+141 lines over a 25 s tap/swipe, 28 SYN_REPORTs, coordinates tracking the
+finger. Node axes: `ABS_X` 0-1079, `ABS_Y` 0-2159, `ABS_MT_SLOT` 0-9 (10
+slots). Note that `input keyevent` does not exist in this recovery shell; the
+panel has to be woken by an actual tap or by the boot itself.
+
+Also observed: the running firmware reports `buildid 2788281`, `fwblockcount
+432` (0x1B0 blocks = 0x1B000 bytes, same size as the extracted image) and
+`configblockcount 16`. 2788281 is newer than both embedded images (2732044 /
+2732045), which is exactly why `doreflash 1` (NORMAL) refuses: it would be a
+downgrade. A raw read of `rmidev/data` at `0x0e9` returns zeros here while the
+attribute files work, so read state through the `buildid`, `productinfo` and
+`fwblockcount` attributes rather than raw `rmidev/data`.
+
+## ROOT CAUSE (2026-10-30): the touch controller is in bootloader mode
+
+Mainline `drivers/input/rmi4/rmi_driver.c` settles it. Two things were wrong in
+our reading of the dump:
+
+```c
+/* rmi_driver.h */
+#define PDT_START_SCAN_LOCATION 0x00e9
+#define RMI_PDT_ENTRY_SIZE 6
+#define RMI4_END_OF_PDT(id) ((id) == 0x00 || (id) == 0xff)
+
+/* rmi_read_pdt_entry() - the function number is the LAST byte, not the first */
+entry->query_base_addr      = buf[0];
+entry->command_base_addr    = buf[1];
+entry->control_base_addr    = buf[2];
+entry->data_base_addr       = buf[3];
+entry->interrupt_source_count = buf[4] & 0x07;
+entry->function_version     = (buf[4] & 0x60) >> 5;
+entry->function_number      = buf[5];
+```
+
+The PDT is scanned **downwards** from `0x00e9` in 6-byte steps. Re-decoding
+the bytes 0188 got, with that layout:
+
+```
+0x00e9  27 00 09 00 21 34   query 0x27 cmd 0x00 ctrl 0x09 data 0x00 irq 1 ver 1 -> F34
+0x00e3  2f 26 0d 04 01 01   query 0x2f cmd 0x26 ctrl 0x0d data 0x04 irq 1 ver 0 -> F01
+0x00dd  06 01 12 0a 29 00   ... function number 0x00                        -> END OF PDT
+```
+
+That is a clean, complete PDT holding **only F34 (firmware update) and F01
+(device control)**. There is no F12 because the controller is **not running
+its application firmware**: it is sitting in the bootloader waiting for an
+image. Mainline has an explicit check for exactly this:
+
+```c
+if (pdt->function_number == 0x34 && pdt->function_version > 1) ...
+	dev_warn(dev, "Device in bootloader mode.\n");
+```
+
+Every symptom now agrees:
+
+- our bit-bang and Android's hardware I2C return the same 33 bytes because
+  both are reading the same (correct) PDT - 0187's "the address is ignored"
+  was a misparse, not a bus bug;
+- Android's driver logs `udg_scan_pdt: Failed to find F12` at every boot;
+- `test_scan_pdt: Failed to find F54` is also just an absent function;
+- **touch is dead in OrangeFox too**, so this was never an iOS problem;
+- `fwu_go_nogo` reads `Device firmware ID = 2788281` (the bootloader's ID)
+  and compares it with image ID 2732044, decides "image older", and refuses
+  to flash - which is why the part never recovers on its own.
+
+**The fix is a firmware reflash, not a power cycle.** A cold boot will not
+bring it back; there is no application firmware to run.
+
+The vendor driver exposes the whole procedure over sysfs, and it only talks
+to the touch controller - no partition is written:
+
+```
+echo <size>          > /sys/class/input/inputN/imagesize   # allocates the buffer
+cat <fw image>       > /sys/class/input/inputN/data        # loads the image
+echo 1               > /sys/class/input/inputN/doreflash   # 1 = FORCE
+```
+
+`dorecovery` is the same thing for microbootloader (`in_ub_mode`) mode, which
+is why the DT carries `synaptics,ub-i2c-addr = <0x2c>`.
+
+Next boot question: read
+`/proc/device-tree/soc/i2c@c175000/synaptics_dsx@20/synaptics,fw-image-name`
+to get the exact image path the driver already parses, then push that file
+through the three writes above.
+
+## 0188 result (2026-10-29): our I2C is byte-identical to Android's driver
+
+**The bit-bang is not the bug.** OrangeFox recovery on this phone drives the
+same `synaptics_dsx_i2c` driver that works in Android. Its `rmidev/data`
+sysfs node performs a raw `synaptics_rmi4_reg_read(address, buf, len)` through
+the real BLSP controller, i.e. the exact transaction our probe hand-rolls.
+
+Reading `0x00e9` there, six bytes at a time, four times:
+
+```
+e9#1:  27 00 09 00 21 34
+e9#2:  2f 26 0d 04 01 01
+e9#3:  81 4c 00 13 06 01
+e9#4:  12 0a 29 00 8f d4
+e8:    1e 08 00 40 38 0e
+00:    0f 15 c7 11 12 33
+```
+
+Concatenated that is
+
+```
+27 00 09 00 21 34 2f 26 0d 04 01 01 81 4c 00 13
+06 01 12 0a 29 00 8f d4 1e 08 00 40 38 0e 0f 15
+c7 11 12 33
+```
+
+which is **the first 33 bytes of what 0188's bit-bang returned**, in the same
+order, at every address we tried:
+
+```
+diag 0000 a1 #1  27 00 09 00 21 34 2f 26
+diag 0000 a1 #2  0d 04 01 01 81 4c 00 13
+diag 00e9 a1     06 01 12 0a 29 00
+diag 00e9 a2     8f d4 1e 08 00 40
+diag 00e8 a1     38 0e 0f 15 c7 11
+diag 00ea a1     12 33 13 49 07 83
+```
+
+Two independent masters, one bit-banged on GPIO 2/3 and one done by the
+hardware I2C engine, produce the same stream, so:
+
+- SDA/SCL timing, open-drain release, clock stretching, ACK sampling and the
+  page-select byte are all correct. Nothing in `santoni_touch.c` needs fixing;
+- the bytes are a **fixed sequence**, not live data: the same 33 bytes came
+  back minutes apart and across a full SoC reboot, so it is not a touch FIFO;
+- the address write really is being ignored by the part in this state, which
+  is what 0187 concluded. The controller is not in normal app mode.
+
+The recovery driver does read a sane F01 at *probe* time (it registers
+`input2`, `productinfo = 0x01 0x00`, `buildid = 2788281`, and `fwu_go_nogo`
+reads device firmware ID 2788281 through F34), so a chip that has just been
+reset **does** answer addressed reads. Between probe and our read the driver
+suspends the panel (`synaptics_rmi4_suspend ... enable_wakeup_gesture is on`)
+and the part drops into its gesture/sleep state, which is where the stream
+comes from.
+
+That makes the next question narrow: does a freshly reset part answer
+`0x00e9` with a real PDT (`01 ...`) before anything suspends it? Reading
+`rmidev/data` immediately after a clean recovery boot answers it, and it is
+free - no iOS image needed.
+
+Caveat for the record: 0188's IRQ witness never printed a line, because the
+diag matrix and the `f01` decode ate the whole 30 s budget before the poll
+loop ran. `irq`/`poll` evidence is still outstanding.
+
+### Follow-up on the same evening: the controller is wedged, and it is not our bug
+
+OrangeFox stopped seeing the panel as well - **touch does not work in
+recovery either**, so this is a controller state problem, not an iOS problem.
+`rmidev/data` on a freshly booted recovery answers:
+
+```
+00: 00 00 00 00 00 00 00 00        (sleep)
+e9: 00 00 00 00 00 00              (sleep)
+```
+
+Writing `1` to `/sys/class/input/input2/reset` (the driver's F01 reset
+command, not the GPIO) makes it worse instead of better:
+
+```
+synaptics_rmi4_query_device: Failed to find F01
+synaptics_rmi4_query_device: Failed to find F35
+synaptics_rmi4_reset_device: Failed to query device
+synaptics_rmi4_f01_reset_store: Failed to issue reset command, error = -22
+```
+
+and right after that the raw reads become an advancing stream of unrelated
+bytes (`56 36 00 01 a7 b0`, `01 10 00 10 00 70`, `01 00 01 00 01 00`,
+`f0 00 00 22 00 ff`), with `0x0000` reading `ff ff ff ff ff ff ff ff`.
+
+`pm660_l11` (the touch `vcc_i2c` rail, `regulator.15`) is `enabled` but its
+`state` attribute is `0444`, so it cannot be cycled from sysfs even as root
+with SELinux permissive. The only way to power-cycle the part is a real
+cold boot.
+
+**Next step is therefore physical, not another image:** force a full power
+off, wait, cold boot, and check whether touch works in recovery again. If the
+panel answers after a cold boot, the wedge is something our iOS probe leaves
+behind and we compare that boot's reset sequence with the vendor's. If it
+does not, the controller firmware itself needs reflashing before any more
+iOS touch work makes sense.
+
 ## 0187/0188 (2026-10-29): the synaptics read does not address
 
 **0187 result (ring pulled 2026-10-29):** the DSX protocol from the vendor
