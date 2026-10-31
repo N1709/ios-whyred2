@@ -990,7 +990,9 @@ assert 'refusing the QUP' in body
 # A dwell after "clocks on" separates a GCC stall from a QUP stall, and a
 # third one before the first SE write narrows a QUP stall to the slave.
 assert body.count('delay(1500000);') == 3
-assert 'QUP mapped, resetting the SE' in body
+assert 'QUP mapped, probing the SE' in body
+assert 'SE version 0x%08x, STATE 0x%08x' in body
+assert 'WHYRED I2C: resetting the SE' in body
 
 # A stall in the GCC or QUP window happens before the reset at the end of the
 # probe, so the diag boot died with no USB at all and needed a held Power key.

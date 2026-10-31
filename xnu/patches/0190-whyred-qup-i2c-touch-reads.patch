@@ -11,7 +11,7 @@ index 4b27ddc..2e79620 100644
  bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
-index 9a84d1d..1b3ef21 100644
+index 9a84d1d..8939247 100644
 --- a/bsd/dev/santoni_touch.c
 +++ b/bsd/dev/santoni_touch.c
 @@ -20,6 +20,9 @@
@@ -209,7 +209,7 @@ index 9a84d1d..1b3ef21 100644
 +
 +	if (!PE_parse_boot_argn("sweetouchwatchdog", &seconds,
 +	    sizeof(seconds))) {
-+		seconds = 240;
++		seconds = 300;
 +	}
 +	if (seconds == 0) {
 +		return;
@@ -292,10 +292,10 @@ index 9a84d1d..1b3ef21 100644
  
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..1b10ef1
+index 0000000..4f12014
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,566 @@
+@@ -0,0 +1,579 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -710,9 +710,22 @@ index 0000000..1b10ef1
 +	 * the dwell gives the flusher two ticks, so a ring that stops here
 +	 * means the QUP slave stalled the bus, not the GCC block.
 +	 */
-+	printf("WHYRED I2C: QUP mapped, resetting the SE\n");
++	printf("WHYRED I2C: QUP mapped, probing the SE\n");
 +	delay(1500000);
 +
++	/*
++	 * Read before the first write. Ring 0195 stops on the SW reset and
++	 * cannot say which of the two it is, so ask the SE for HW_VERSION
++	 * first: a ring that stops on this line means the register window
++	 * itself does not answer (CX/NoC side of the BLSP1 slave port), a
++	 * printed version means the window is alive and the SW reset is what
++	 * never completes.
++	 */
++	v = qup[QUP_HW_VERSION / 4];
++	printf("WHYRED I2C: SE version 0x%08x, STATE 0x%08x\n", v,
++	    qup[QUP_STATE / 4]);
++
++	printf("WHYRED I2C: resetting the SE\n");
 +	sweet_sw_reset();
 +	if (sweet_state_set(QUP_STATE_RESET) != 0) {
 +		return -1;

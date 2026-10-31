@@ -4663,15 +4663,17 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 Collected on 2026-10-31 while the QUP work was in flight. None of them is the
 main blocker, but each one has already cost a cycle once.
 
-1. `tools/touch-cycle.sh` waits 420 s for the return; the 0195 boot took 451 s
-   and the script declared "no fastboot device" while the phone was still
-   running. Raise it to 600 s.
-2. The watchdog default is 240 s counted from the start of the probe. A slow
+1. DONE: `tools/touch-cycle.sh` now waits 600 s; the 0195 boot took 451 s, so
+   420 s still declared "no fastboot device" while the phone was running.
+2. DONE: the watchdog default is 300 s counted from the start of the probe. A slow
    bit-bang scan plus the framing matrix can approach that; either raise the
    default to 300 s or pass `sweetouchwatchdog=` in `tools/build-touch-diag.sh`.
 3. The watchdog's own line never reaches the ring, because the flusher shares
    the stalled bus. Always read the ring before concluding "the watchdog did
    not fire": the phone returning to fastboot is the proof.
+3. DONE: the probe now reads `QUP_HW_VERSION` (0x30) before the first SE
+   write, so the next ring separates "window dead" from "SW reset never
+   self-clears".
 4. `origin/whyred` is a stale tracking ref (pushes go to
    `ssh://git@ssh.github.com:443/N1709/ios-whyred2.git`), so `git status`
    claims dozens of commits ahead. Check with `git ls-remote`, not `git status`.
