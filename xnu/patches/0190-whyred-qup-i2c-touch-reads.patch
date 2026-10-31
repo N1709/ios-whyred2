@@ -156,10 +156,10 @@ index 9a84d1d..38e9125 100644
  		dsx_identify(&dsx);
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..af3cc19
+index 0000000..820fe8c
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,493 @@
+@@ -0,0 +1,507 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -486,6 +486,21 @@ index 0000000..af3cc19
 +	return -1;
 +}
 +
++/* FIFO depth is reported in IO_MODES: block size * count, vendor tables */
++static int
++sweet_fifo_bytes(uint32_t v)
++{
++	static const int blk[4] = { 16, 16, 32, 0 };
++	static const int cnt[4] = { 2, 4, 8, 16 };
++	int out_sz = blk[v & 3] * cnt[(v >> 2) & 3];
++	int in_sz = blk[(v >> 5) & 3] * cnt[(v >> 7) & 3];
++
++	if (out_sz <= 0 || in_sz <= 0) {
++		return 16;
++	}
++	return (out_sz < in_sz) ? out_sz : in_sz;
++}
++
 +int
 +sweet_i2c_init(void)
 +{
@@ -516,9 +531,8 @@ index 0000000..af3cc19
 +	qup[QUP_OPERATIONAL_MASK / 4] = OP_SERVICE;
 +	qup[QUP_I2C_MASTER_CONFIG / 4] = MASTER_V2_TAGS;
 +
-+	/* FIFO depth is reported in IO_MODES: block size * {2,4,8,16} */
-+	v = qup[QUP_IO_MODES / 4];
-+	fifo_bytes = 16 * (int)(1u << ((v >> 5) & 3));
++	/* FIFO depth is a hardware constant, read once */
++	fifo_bytes = sweet_fifo_bytes(qup[QUP_IO_MODES / 4]);
 +
 +	if (!(qup[QUP_STATE / 4] & QUP_I2C_MAST_GEN)) {
 +		printf("WHYRED I2C: SE does not advertise I2C master mode "

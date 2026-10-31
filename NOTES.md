@@ -198,7 +198,9 @@ tag and the read would never happen. It is now `(wl + 4) + (rl ? 4 : 0)`.
 
 The pin mux is also the last step of `sweet_i2c_init()` now: if the clocks or
 the SE fail, GPIO2/3 are still plain GPIO with the internal pull-up, which is
-what the bit-bang scan needs for its fallback.
+what the bit-bang scan needs for its fallback. The FIFO depth is taken from
+`QUP_IO_MODES` with the vendor block/count tables (never below 32 bytes), so
+the 21-byte F01 query fits instead of being refused by a guessed limit.
 
 ### Why userspace could not answer it
 

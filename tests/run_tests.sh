@@ -961,6 +961,10 @@ assert '0x03002000' not in body
 # write-then-read also counts the read tag; without it the read never starts.
 assert '(wl ? wl + TAG_LEN : 0) + (rl ? TAG_LEN : 0)' in body
 assert 'rd_bytes = rl ? rl + RX_TAG_ECHO : 0' in body
+# The FIFO depth comes from IO_MODES with the vendor tables, so the 21-byte
+# F01 query is not refused with a made-up 16-byte limit.
+assert 'static const int blk[4] = { 16, 16, 32, 0 };' in body
+assert 'fifo_bytes = sweet_fifo_bytes(' in body
 # The pin mux is the last step of init, so a failed init leaves the bit-bang
 # pins (plain GPIO + pull-up) untouched.
 assert '\tsweet_pins(1);\n\tsweet_i2c_ready = 1;' in body
