@@ -224,6 +224,16 @@ only), waits 3 s for two log-flusher ticks, writes 0 to PS_HOLD and never
 returns. ABL reads the reason out of the always-on IMEM and enters fastboot,
 so `tools/touch-cycle.sh` completes by itself.
 
+The 20:08 boot on 2026-10-31 showed the hole in that: the reset sits at the
+*end* of the probe, so a stall in `sweet_clocks_on()` or the first QUP access
+never reaches it. USB stayed down for more than four minutes and the phone
+needed a 15 s Power hold, which is exactly what these unattended cycles are
+supposed to avoid. The probe now arms a watchdog thread before the first
+clock write: it sleeps `sweetouchwatchdog` seconds (default 240) in chunks and
+then calls the same `whyred_reboot_bootloader()`. It runs on another core, and
+both IMEM and PS_HOLD sit outside the BLSP window whose access stalls, so a
+locked bus cannot take the escape hatch down with it.
+
 ### Why userspace could not answer it
 
 `/dev/i2c-1` (c175000.i2c, `MSM-I2C-v2-adapter`) is present and writes to an

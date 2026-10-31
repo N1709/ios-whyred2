@@ -56,6 +56,14 @@ so the ring is on SYSTEM first. `tools/touch-cycle.sh` now runs end to end
 without a key press: bootloader, diag image, dwel, fastboot, recovery,
 `fastboot boot`, ring pull.
 
+That reset is only reached if the probe finishes. A stall in the GCC or QUP
+register window happens earlier, and the next diag boot proved the cost: the
+phone sat on the colour bars with no USB device at all until Power was held
+for 15 s. `0190` therefore arms a reboot watchdog on its own kernel thread
+*before* the first clock write (`sweetouchwatchdog=<seconds>`, default 240,
+0 disables). The timer runs on another core; the IMEM reason and PS_HOLD are
+outside the BLSP window that stalls, so even a hung probe lands in fastboot.
+
 **2026-10-31 - the GCC block starts at `0x00100000`, not `0x01800000`.**
 Two boots in a row ended at `WHYRED TOUCH: ack 0x20` with a byte-identical
 ring. The scan itself is fine (0189 runs to `scan done` with the same bus), so
@@ -572,7 +580,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0187 | Synaptics DSX protocol (page select at `0xFF`, PDT at `0x00e9`) plus an F12 data poll - still a shifted stream |
 | 0188 | Open-drain bit-bang with clock-stretch wait, DT reset timing, read matrix, IRQ edge witness |
 | 0189 | Seven address framings tried against `0x00e9`, auto-selected by repetition, plus a bootloader-mode reset retry |
-| 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC `0x100000` RCG/branches, TLMM `blsp_i2c1` function index 3) behind `sweeti2c=1`, bit-bang kept as fallback; `sweetouchreboot=1` writes the IMEM bootloader reason and drops PS_HOLD so the diag boot returns to fastboot |
+| 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC `0x100000` RCG/branches, TLMM `blsp_i2c1` function index 3) behind `sweeti2c=1`, bit-bang kept as fallback; `sweetouchreboot=1` writes the IMEM bootloader reason and drops PS_HOLD so the diag boot returns to fastboot, with a kernel-thread watchdog (`sweetouchwatchdog`, 240 s) armed before the first clock write so a stalled GCC/QUP window still ends in fastboot |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

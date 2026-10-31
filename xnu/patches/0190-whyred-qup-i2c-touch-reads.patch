@@ -11,7 +11,7 @@ index 4b27ddc..2e79620 100644
  bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
-index 9a84d1d..77f6aeb 100644
+index 9a84d1d..1b3ef21 100644
 --- a/bsd/dev/santoni_touch.c
 +++ b/bsd/dev/santoni_touch.c
 @@ -20,6 +20,9 @@
@@ -24,7 +24,15 @@ index 9a84d1d..77f6aeb 100644
   *   sweetouchreset=1  drive reset (GPIO 66) low for 10 ms and high for
   *                     60 ms before the scan; use it only in the boot that
   *                     asks whether the bootloader hand-off left the
-@@ -59,6 +62,15 @@
+@@ -50,6 +53,7 @@
+ #include <sys/systm.h>
+ #include <sys/errno.h>
+ #include <kern/clock.h>
++#include <sys/kernel.h>
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <vm/memory_types.h>
+@@ -59,6 +63,15 @@
  extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
      uint32_t flags);
  
@@ -40,7 +48,7 @@ index 9a84d1d..77f6aeb 100644
  #define WHYRED_TLMM_BASE	0x03000000ULL	/* vendor DTS: pinctrl@03000000 */
  #define WHYRED_TLMM_SOUTH	0x00100000u	/* GPIO 0..15 */
  #define WHYRED_TLMM_NORTH	0x00900000u	/* GPIO 66..67 */
-@@ -418,6 +430,60 @@ static const char *dsx_frame_name[DFRAME_COUNT] = {
+@@ -418,6 +431,60 @@ static const char *dsx_frame_name[DFRAME_COUNT] = {
  /* The vendor driver's framing until the self test says otherwise. */
  static int dsx_frame = DFRAME_PAGE_A1;
  
@@ -101,7 +109,7 @@ index 9a84d1d..77f6aeb 100644
  static int
  dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
  {
-@@ -425,6 +491,10 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+@@ -425,6 +492,10 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
  	uint8_t lo = (uint8_t)(reg & 0xff);
  	int i, ok = 1;
  
@@ -112,7 +120,7 @@ index 9a84d1d..77f6aeb 100644
  	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
  	    frame == DFRAME_PAGE_A2_LE) {
  		/* page select: 0xFF <page>, its own transaction */
-@@ -639,6 +709,8 @@ dsx_diag(void)
+@@ -639,6 +710,8 @@ dsx_diag(void)
  	uint8_t a[DSX_PDT_ENTRY_SIZE], b[DSX_PDT_ENTRY_SIZE];
  	int frame, best = -1;
  
@@ -121,7 +129,7 @@ index 9a84d1d..77f6aeb 100644
  	for (frame = 0; frame < DFRAME_COUNT; frame++) {
  		if (dsx_frame_works(frame, a)) {
  			dsx_dump(dsx_frame_name[frame], DSX_PDT_START, a,
-@@ -878,11 +950,53 @@ dsx_reset(vm_offset_t north)
+@@ -878,11 +951,100 @@ dsx_reset(vm_offset_t north)
  	    "settle\n");
  }
  
@@ -167,6 +175,53 @@ index 9a84d1d..77f6aeb 100644
 +	}
 +}
 +
++/*
++ * Once XNU owns the USB controller the diag image has no way back except the
++ * reset above, and a stall in the GCC or QUP register window happens before
++ * that call is reached - the phone then sits on the colour bars with no USB at
++ * all until someone holds Power. Arm this before the first clock write so a
++ * hung probe still lands in fastboot: the timer runs on another core, and both
++ * the IMEM reason and PS_HOLD are outside the BLSP register window that
++ * stalls. sweetouchwatchdog=<seconds> overrides the delay, 0 disables it.
++ */
++static void
++whyred_reboot_watchdog(void *arg, __unused wait_result_t wr)
++{
++	int seconds = (int)(uintptr_t)arg;
++
++	printf("WHYRED TOUCH: reboot watchdog armed, %d s\n", seconds);
++	while (seconds > 0) {
++		int chunk = seconds > 10 ? 10 : seconds;
++
++		(void)tsleep(&whyred_reboot_watchdog, PZERO, "sweetwd",
++		    chunk * hz);
++		seconds -= chunk;
++	}
++	printf("WHYRED TOUCH: watchdog fired, probe did not finish\n");
++	whyred_reboot_bootloader();
++}
++
++static void
++whyred_arm_reboot_watchdog(void)
++{
++	uint32_t seconds = 0;
++	thread_t thread;
++
++	if (!PE_parse_boot_argn("sweetouchwatchdog", &seconds,
++	    sizeof(seconds))) {
++		seconds = 240;
++	}
++	if (seconds == 0) {
++		return;
++	}
++	if (kernel_thread_start(whyred_reboot_watchdog,
++	    (void *)(uintptr_t)seconds, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("WHYRED TOUCH: cannot arm the reboot watchdog\n");
++	}
++}
++
  int
  santoni_touch_probe(void)
  {
@@ -176,7 +231,25 @@ index 9a84d1d..77f6aeb 100644
  	uint8_t id[3] = { 0, 0, 0 };
  	uint8_t first_ack = 0;
  	struct dsx_funcs dsx;
-@@ -960,6 +1074,23 @@ santoni_touch_probe(void)
+@@ -898,6 +1060,17 @@ santoni_touch_probe(void)
+ 	}
+ 	touch_probe_done = 1;
+ 
++	/*
++	 * Arm the way out before the first clock or QUP register write. A stall
++	 * in either window leaves the phone with no USB at all, and the reset
++	 * at the end of the probe is never reached, so the timer has to start
++	 * here.
++	 */
++	if (PE_parse_boot_argn("sweetouchreboot", &reboot, sizeof(reboot)) &&
++	    reboot) {
++		whyred_arm_reboot_watchdog();
++	}
++
+ 	south = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_SOUTH,
+ 	    0x10000, VM_WIMG_IO);
+ 	north = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_NORTH,
+@@ -960,6 +1133,23 @@ santoni_touch_probe(void)
  	    "scl %d\n", acks, pin_read(&touch_sda), pin_read(&touch_scl));
  
  	if (saw_rmi) {
@@ -200,7 +273,7 @@ index 9a84d1d..77f6aeb 100644
  		touch_irq_setup(north);
  		dsx_diag();
  		dsx_identify(&dsx);
-@@ -1019,6 +1150,16 @@ santoni_touch_probe(void)
+@@ -1019,6 +1209,16 @@ santoni_touch_probe(void)
  		printf("WHYRED TOUCH: holding the panel %u s\n", wait);
  		delay((int)(wait * 1000000u));
  	}

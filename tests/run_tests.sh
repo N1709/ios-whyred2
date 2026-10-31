@@ -986,6 +986,15 @@ assert 'refusing the QUP' in body
 # A second dwell after "clocks on" separates a GCC stall from a QUP stall.
 assert body.count('delay(1500000);') == 2
 
+# A stall in the GCC or QUP window happens before the reset at the end of the
+# probe, so the diag boot died with no USB at all and needed a held Power key.
+# The way out is armed before the first clock write, on its own thread.
+assert 'kernel_thread_start(whyred_reboot_watchdog' in body
+assert 'tsleep(&whyred_reboot_watchdog, PZERO, "sweetwd",' in body
+assert 'sweetouchwatchdog' in body
+assert body.count('whyred_arm_reboot_watchdog();') == 1  # the probe's call
+assert 'Arm the way out before the first clock or QUP register write' in body
+
 # MX_WRITE_COUNT counts every byte pushed into the output FIFO, so a
 # write-then-read also counts the read tag; without it the read never starts.
 assert '(wl ? wl + TAG_LEN : 0) + (rl ? TAG_LEN : 0)' in body
