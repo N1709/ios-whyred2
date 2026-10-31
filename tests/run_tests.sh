@@ -947,15 +947,25 @@ assert 'if (dsx_qup) {' in body
 assert 'staying on bit-bang' in body
 assert 'if (PE_parse_boot_argn("sweeti2c", &qup, sizeof(qup)) && qup)' in body
 
-# The first QUP boot hung before its first print: the GCC registers were
-# addressed as absolute 0x0005xxxx/0x0001xxxx instead of offsets from
-# 0x01800000, and GPIO2/3 were mapped at 0x03002000 instead of the SOUTH
-# tile 0x03102000. Both are now the addresses the rest of the tree proves.
-assert '#define GCC_BASE\t\t0x01800000u' in body
+# The first two QUP boots hung before their first print because the GCC
+# offsets were paired with the wrong base. sdm660.dtsi gives the block as
+# clock-controller@100000 (reg 0x100000+0x94000), not 0x1800000: a write to
+# 0x1852004 is outside the block and stalls the AXI bus. GPIO2/3 likewise
+# live at the SOUTH tile 0x03102000.
+assert '#define GCC_BASE\t\t0x00100000u' in body
 assert '(GCC_BASE + 0x52004u)' in body
 assert '(GCC_BASE + 0x19024u)' in body
 assert '#define TLMM_SOUTH\t\t0x03100000u' in body
+assert '0x01800000' not in body
 assert '0x03002000' not in body
+# msm_pinmux_set_mux writes the function's index in the pin group, so
+# blsp_i2c1 on gpio2/3 is index 3, not a hardware mux number.
+assert '#define PIN_I2C_SEL\t\t3u' in body
+# The bring-up line and a 1.5 s dwell land on SYSTEM before the first GCC
+# or QUP access, so a bus stall leaves the last block touched on the ring.
+assert 'bring-up, GCC' in body
+assert 'delay(1500000);' in body
+assert body.index('bring-up, GCC') < body.index('sweet_clocks_on() != 0')
 
 # MX_WRITE_COUNT counts every byte pushed into the output FIFO, so a
 # write-then-read also counts the read tag; without it the read never starts.

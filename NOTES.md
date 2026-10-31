@@ -180,15 +180,21 @@ fork's `1 << 1`, `parent << 12` and `0x004b004b` do not match any of this.
 before its first `WHYRED I2C:` line. Two address mistakes explain it, both
 fixed in the patch after the run:
 
-- GCC was addressed as if the block started at zero. The vendor offsets
-  (`0x52004`, `0x19008`, `0x19020`, `0x17004`) are relative to
-  `0x01800000` on this phone - the base the SDHCI RCG code already writes
-  successfully. The first draft wrote `0x00052004`, which is outside every
-  block this kernel maps, and the access stalled the AXI bus.
+- GCC was addressed as if the block started at zero, and the first fix then
+  moved it to `0x01800000` (the base the SDHCI RCG code uses). Both are
+  outside the block. The vendor DTS is explicit:
+  `clock-controller@100000` with `reg = <0x100000 0x94000>`, so the vendor
+  offsets (`0x52004`, `0x19008`, `0x19020`, `0x17004`) land at
+  `0x152004`, `0x119008`, `0x119020` and `0x117004`. A write to
+  `0x1852004` is above the block and stalls the AXI bus the same way
+  `0x00052004` does; the SDHCI code's `0x01842000` is equally bogus, which
+  explains why its rate change never really took effect.
 - GPIO 2/3 were mapped at `0x03002000`. The vendor pinctrl splits TLMM into
   tiles: the SOUTH tile is at `+0x100000`, so the pads are at
   `0x03102000`/`0x03103000`, one `0x1000` page per pin. The bit-bang already
-  used exactly those addresses.
+  used exactly those addresses. The function selector is also an index, not
+  a name: `msm_pinmux_set_mux()` writes the position of `blsp_i2c1` in that
+  pin's group, which is 3 (`{gpio, blsp_spi1, blsp_uart1, blsp_i2c1, ...}`).
 
 While checking the vendor driver again, a third mistake surfaced before the
 next boot: `MX_WRITE_COUNT` counts *every* byte pushed into the output FIFO,

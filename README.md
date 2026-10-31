@@ -23,6 +23,29 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
+**2026-10-31 - the GCC block starts at `0x00100000`, not `0x01800000`.**
+Two boots in a row ended at `WHYRED TOUCH: ack 0x20` with a byte-identical
+ring. The scan itself is fine (0189 runs to `scan done` with the same bus), so
+the stop is the first QUP register access: it is reached less than a second
+after that line, before the flusher's next tick can commit anything newer.
+
+The vendor DTS names the block: `clock-controller@100000` with
+`reg = <0x100000 0x94000>`. The offsets in `gcc-sdm660.c` (`0x52004`,
+`0x17004`, `0x19008`, `0x19020`) therefore land at `0x152004`, `0x117004`,
+`0x119008` and `0x119020`. Addressing them from `0x01800000` - the base the
+SDHCI code still uses - writes to `0x1852004`, above the block, so the BLSP1
+AHB and QUP1 apps branches were never really enabled. The QUP then has no
+clock, its register window does not answer, and the access stalls the AXI
+bus. The same bug hides in `GCC_SDCC1_APPS_PHYS 0x01842000`, which is why the
+SDHCI rate change never took effect.
+
+`tools/touch-cycle.sh` now runs a whole cycle without typing: bootloader,
+diagnostic image, dwell, `fastboot boot` of the OrangeFox recovery (this ABL
+does not honour `fastboot reboot recovery`), ring pull and grep. The bring-up
+line and a 1.5 s dwell also now come *before* the first GCC/QUP access, so if
+a block still stalls, the ring names the block that was touched last instead
+of stopping one line earlier.
+
 **2026-10-31 - the first QUP boot stopped at the probe; three addresses were wrong.**
 The 0190 image painted the four colour bars (0176) and then stopped: the ring
 ends at `WHYRED TOUCH: ack 0x20`, before `sweet_i2c_init()` could print its
@@ -516,7 +539,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0187 | Synaptics DSX protocol (page select at `0xFF`, PDT at `0x00e9`) plus an F12 data poll - still a shifted stream |
 | 0188 | Open-drain bit-bang with clock-stretch wait, DT reset timing, read matrix, IRQ edge witness |
 | 0189 | Seven address framings tried against `0x00e9`, auto-selected by repetition, plus a bootloader-mode reset retry |
-| 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC RCG/branches, TLMM mux 19) behind `sweeti2c=1`, bit-bang kept as fallback |
+| 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC `0x100000` RCG/branches, TLMM `blsp_i2c1` function index 3) behind `sweeti2c=1`, bit-bang kept as fallback |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

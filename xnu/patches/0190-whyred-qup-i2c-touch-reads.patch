@@ -156,10 +156,10 @@ index 9a84d1d..38e9125 100644
  		dsx_identify(&dsx);
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..820fe8c
+index 0000000..f4d7559
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,507 @@
+@@ -0,0 +1,526 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -211,12 +211,13 @@ index 0000000..820fe8c
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +
 +/*
-+ * GCC (gcc-sdm660.c, DT clock-controller@1800000). Offsets are the vendor
-+ * driver's: the I2C apps RCG at 0x19020, the two branches at 0x52004 and
-+ * 0x19008. The 0x1800000 base is the one the SDHCI path already uses on this
-+ * phone, so the block is known to be there at this point of the boot.
++ * GCC: sdm660.dtsi has them at clock-controller@100000 with
++ * reg = <0x100000 0x94000>, and gcc-sdm660.c puts the I2C apps RCG at
++ * offset 0x19020 and the two branches at 0x52004 and 0x19008. Addressing
++ * them from 0x1800000 (a guess the SDHCI code makes too) put the write
++ * outside the block and stalled the bus on both 0190 boots.
 + */
-+#define GCC_BASE		0x01800000u
++#define GCC_BASE		0x00100000u
 +#define GCC_BLSP1_AHB_CMD	(GCC_BASE + 0x52004u)
 +#define GCC_BLSP1_AHB_ENA	(1u << 17)	/* gcc_blsp1_ahb_clk */
 +#define GCC_BLSP1_AHB_HALT	(GCC_BASE + 0x17004u)
@@ -297,12 +298,18 @@ index 0000000..820fe8c
 + */
 +#define TLMM_SOUTH		0x03100000u
 +#define TLMM_CTL(n)		(TLMM_SOUTH + 0x1000u * (n))
-+#define TLMM_MUX(v)		(((v) & 0x1fu) << 2)
++#define TLMM_MUX(v)		(((v) & 0x7u) << 2)
 +#define TLMM_PULL_UP		(3u << 0)
 +#define TLMM_DRV_2MA		(0u << 6)
 +#define GPIO_I2C_SDA		2
 +#define GPIO_I2C_SCL		3
-+#define PIN_I2C_SEL		19u
++/*
++ * msm_pinmux_set_mux() writes the index of the function inside that pin's
++ * group, so gpio2/gpio3 list {gpio, blsp_spi1, blsp_uart1, blsp_i2c1, ...}
++ * and blsp_i2c1 is index 3 (the vendor "function = blsp_i2c1" name, not a
++ * hardware mux number).
++ */
++#define PIN_I2C_SEL		3u
 +
 +/* 400 kHz from the 19.2 MHz CXO: vendor i2c_msm_clk_div_map entry */
 +#define CLK_400K		(CLK_HT_DIV(14) | CLK_FS_DIV(28))
@@ -509,6 +516,18 @@ index 0000000..820fe8c
 +	if (sweet_i2c_ready) {
 +		return 0;
 +	}
++
++	/*
++	 * Land the "scan done" line and this one on SYSTEM before the first
++	 * access to either block. A slave whose AHB clock is still gated can
++	 * stall the AXI bus, and a stalled CPU stops the log flusher dead;
++	 * the 1.5 s dwell gives the flusher two ticks, so the ring then says
++	 * exactly which block was touched last.
++	 */
++	printf("WHYRED I2C: bring-up, GCC 0x%08x QUP 0x%08x, mux %u\n",
++	    GCC_BASE, QUP_BASE, PIN_I2C_SEL);
++	delay(1500000);
++
 +	if (sweet_clocks_on() != 0) {
 +		return -1;
 +	}
