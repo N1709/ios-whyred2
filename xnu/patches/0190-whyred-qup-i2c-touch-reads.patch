@@ -292,10 +292,10 @@ index 9a84d1d..1b3ef21 100644
  
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..7a99737
+index 0000000..1b10ef1
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,566 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -704,6 +704,14 @@ index 0000000..7a99737
 +		printf("WHYRED I2C: cannot map BLSP1 QUP1\n");
 +		return -1;
 +	}
++
++	/*
++	 * First access to the SE itself. The line lands before the write and
++	 * the dwell gives the flusher two ticks, so a ring that stops here
++	 * means the QUP slave stalled the bus, not the GCC block.
++	 */
++	printf("WHYRED I2C: QUP mapped, resetting the SE\n");
++	delay(1500000);
 +
 +	sweet_sw_reset();
 +	if (sweet_state_set(QUP_STATE_RESET) != 0) {

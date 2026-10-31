@@ -987,8 +987,10 @@ assert body.count('(*app & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 0
 assert 'if ((*app & BRANCH_CLK_OFF) == 0) {' in body
 assert 'I2C apps clock stays halted' in body
 assert 'refusing the QUP' in body
-# A second dwell after "clocks on" separates a GCC stall from a QUP stall.
-assert body.count('delay(1500000);') == 2
+# A dwell after "clocks on" separates a GCC stall from a QUP stall, and a
+# third one before the first SE write narrows a QUP stall to the slave.
+assert body.count('delay(1500000);') == 3
+assert 'QUP mapped, resetting the SE' in body
 
 # A stall in the GCC or QUP window happens before the reset at the end of the
 # probe, so the diag boot died with no USB at all and needed a held Power key.

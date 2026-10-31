@@ -235,6 +235,11 @@ away, so the QUP was never attempted. The probe now keeps the NOC check for
 the VOTED AHB branch only and matches the vendor for the apps branch, printing
 `I2C apps clock stays halted` with the raw value if it really is gated.
 
+A third dwell now sits immediately before the first SE write, with
+`WHYRED I2C: QUP mapped, resetting the SE` printed first, so a ring that stops
+after `clocks on` but before that line is the SE's address window, while a ring
+that stops right after it is the SW reset itself.
+
 A full diagnostic boot is also ~5 minutes (50 kHz bit-bang scan, framing
 matrix, DSX dump, 15 s panel hold), not the 2 minutes the earlier cycles
 assumed. `tools/touch-cycle.sh` waits up to 420 s now; the 20:08/20:47 boots
