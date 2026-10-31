@@ -967,6 +967,15 @@ assert 'bring-up, GCC' in body
 assert 'delay(1500000);' in body
 assert body.index('bring-up, GCC') < body.index('sweet_clocks_on() != 0')
 
+# The diag image walks itself back to fastboot instead of waiting for a key
+# press: the vendor msm-poweroff.c "bootloader" path writes the IMEM reason
+# and drops PS_HOLD. sdm660.dtsi places both at these addresses.
+assert '#define IMEM_RESTART_REASON_PA\t0x146bf65cu' in body
+assert '#define PSHOLD_PA\t\t0x010ac000u' in body
+assert '#define RESTART_REASON_BOOTLOADER 0x77665500u' in body
+assert '\t*pshold = 0;' in body
+assert 'sweetouchreboot' in body
+
 # MX_WRITE_COUNT counts every byte pushed into the output FIFO, so a
 # write-then-read also counts the read tag; without it the read never starts.
 assert '(wl ? wl + TAG_LEN : 0) + (rl ? TAG_LEN : 0)' in body

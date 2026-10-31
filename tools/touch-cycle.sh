@@ -61,8 +61,9 @@ fastboot boot "$img" || exit 1
 say "waiting ${dwell}s for the probe (no tap needed)"
 sleep "$dwell"
 
-say "hold Power + Vol-Down until the phone is back in fastboot"
-for _ in $(seq 1 120); do
+say "waiting for the probe to reset the phone into fastboot"
+say "(sweetouchreboot=1; fallback: hold Power + Vol-Down)"
+for _ in $(seq 1 180); do
 	[ -n "$(fastboot devices 2>/dev/null | awk '{print $1}')" ] && break
 	sleep 1
 done

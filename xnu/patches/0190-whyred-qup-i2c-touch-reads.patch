@@ -11,7 +11,7 @@ index 4b27ddc..2e79620 100644
  bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
-index 9a84d1d..38e9125 100644
+index 9a84d1d..77f6aeb 100644
 --- a/bsd/dev/santoni_touch.c
 +++ b/bsd/dev/santoni_touch.c
 @@ -20,6 +20,9 @@
@@ -121,16 +121,62 @@ index 9a84d1d..38e9125 100644
  	for (frame = 0; frame < DFRAME_COUNT; frame++) {
  		if (dsx_frame_works(frame, a)) {
  			dsx_dump(dsx_frame_name[frame], DSX_PDT_START, a,
-@@ -882,7 +954,7 @@ int
+@@ -878,11 +950,53 @@ dsx_reset(vm_offset_t north)
+ 	    "settle\n");
+ }
+ 
++/*
++ * Diagnostics only: hand the phone back to the bootloader without a key
++ * press. The vendor msm-poweroff.c does exactly this for
++ * "reboot bootloader": write RESTART_REASON_BOOTLOADER into the IMEM slot
++ * and drop PS_HOLD. sdm660.dtsi names both:
++ *
++ *   qcom,msm-imem@146bf000 / restart_reason@65c -> 0x146bf65c
++ *   restart@10ac000    ("qcom,pshold")          -> 0x010ac000
++ *
++ * ABL reads the reason on the next boot and enters fastboot. IMEM is in the
++ * always-on domain and survives the warm reset PS_HOLD causes, which is why
++ * the reason has to be written first.
++ */
++#define IMEM_RESTART_REASON_PA	0x146bf65cu
++#define PSHOLD_PA		0x010ac000u
++#define RESTART_REASON_BOOTLOADER 0x77665500u
++
++static void
++whyred_reboot_bootloader(void)
++{
++	volatile uint32_t *reason, *pshold;
++
++	reason = (volatile uint32_t *)ml_io_map_unmappable(
++	    IMEM_RESTART_REASON_PA, 4, VM_WIMG_IO);
++	pshold = (volatile uint32_t *)ml_io_map_unmappable(PSHOLD_PA, 4,
++	    VM_WIMG_IO);
++	if (!reason || !pshold) {
++		printf("WHYRED TOUCH: cannot map IMEM/PS_HOLD, staying up\n");
++		return;
++	}
++	*reason = RESTART_REASON_BOOTLOADER;
++	__asm__ volatile("dsb sy" ::: "memory");
++	printf("WHYRED TOUCH: restart reason 0x%08x set, resetting to fastboot\n",
++	    RESTART_REASON_BOOTLOADER);
++	/* two flusher ticks, so the ring lands before the reset */
++	delay(3000000);
++	*pshold = 0;
++	for (;;) {
++		delay(1000000);
++	}
++}
++
+ int
  santoni_touch_probe(void)
  {
  	vm_offset_t south, north;
 -	uint32_t on = 0, pulse = 0, wait, halt;
-+	uint32_t on = 0, pulse = 0, wait, halt, qup = 0;
++	uint32_t on = 0, pulse = 0, wait, halt, qup = 0, reboot = 0;
  	uint8_t id[3] = { 0, 0, 0 };
  	uint8_t first_ack = 0;
  	struct dsx_funcs dsx;
-@@ -960,6 +1032,23 @@ santoni_touch_probe(void)
+@@ -960,6 +1074,23 @@ santoni_touch_probe(void)
  	    "scl %d\n", acks, pin_read(&touch_sda), pin_read(&touch_scl));
  
  	if (saw_rmi) {
@@ -154,6 +200,23 @@ index 9a84d1d..38e9125 100644
  		touch_irq_setup(north);
  		dsx_diag();
  		dsx_identify(&dsx);
+@@ -1019,6 +1150,16 @@ santoni_touch_probe(void)
+ 		printf("WHYRED TOUCH: holding the panel %u s\n", wait);
+ 		delay((int)(wait * 1000000u));
+ 	}
++
++	/*
++	 * The diag image cannot be recovered by adb once XNU owns the phone,
++	 * so it walks itself back to fastboot. Only the diagnostic build
++	 * passes this boot argument.
++	 */
++	if (PE_parse_boot_argn("sweetouchreboot", &reboot, sizeof(reboot)) &&
++	    reboot) {
++		whyred_reboot_bootloader();
++	}
+ 	return acks ? 0 : ENXIO;
+ }
+ 
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
 index 0000000..f4d7559

@@ -23,6 +23,24 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
+**2026-10-31 - the diagnostic boot returns to fastboot on its own.**
+A diag boot ends with the phone running XNU, which has no USB driver on this
+port: the only way back was a physical Power + Vol-Down. `0190` now sets
+`sweetouchreboot=1` in the diagnostic cmdline, and after the probe the kernel
+does what the vendor `msm-poweroff.c` does for `reboot bootloader`:
+
+- write `0x77665500` (`RESTART_REASON_BOOTLOADER`) to IMEM
+  `0x146bf65c` - `sdm660.dtsi` names `qcom,msm-imem@146bf000` with
+  `restart_reason@65c`;
+- drop PS_HOLD by writing 0 to `0x010ac000` (`restart@10ac000`,
+  `compatible = "qcom,pshold"`).
+
+IMEM is always-on and survives the warm reset, so ABL sees the reason and
+enters fastboot. The probe waits 3 s (two log-flusher ticks) before the reset,
+so the ring is on SYSTEM first. `tools/touch-cycle.sh` now runs end to end
+without a key press: bootloader, diag image, dwel, fastboot, recovery,
+`fastboot boot`, ring pull.
+
 **2026-10-31 - the GCC block starts at `0x00100000`, not `0x01800000`.**
 Two boots in a row ended at `WHYRED TOUCH: ack 0x20` with a byte-identical
 ring. The scan itself is fine (0189 runs to `scan done` with the same bus), so
@@ -539,7 +557,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0187 | Synaptics DSX protocol (page select at `0xFF`, PDT at `0x00e9`) plus an F12 data poll - still a shifted stream |
 | 0188 | Open-drain bit-bang with clock-stretch wait, DT reset timing, read matrix, IRQ edge witness |
 | 0189 | Seven address framings tried against `0x00e9`, auto-selected by repetition, plus a bootloader-mode reset retry |
-| 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC `0x100000` RCG/branches, TLMM `blsp_i2c1` function index 3) behind `sweeti2c=1`, bit-bang kept as fallback |
+| 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC `0x100000` RCG/branches, TLMM `blsp_i2c1` function index 3) behind `sweeti2c=1`, bit-bang kept as fallback; `sweetouchreboot=1` writes the IMEM bootloader reason and drops PS_HOLD so the diag boot returns to fastboot |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

@@ -208,6 +208,22 @@ what the bit-bang scan needs for its fallback. The FIFO depth is taken from
 `QUP_IO_MODES` with the vendor block/count tables (never below 32 bytes), so
 the 21-byte F01 query fits instead of being refused by a guessed limit.
 
+**Getting the results back without a key press.** A diag boot leaves XNU in
+charge and this port has no USB device controller, so the phone used to stay
+on the colour bars until someone held Power + Vol-Down. The vendor kernel
+already has the answer: `drivers/power/reset/msm-poweroff.c` writes
+`0x77665500` for `reboot bootloader` into the IMEM restart reason and then
+drops PS_HOLD (or calls `SCM_IO_DEASSERT_PS_HOLD`). For sdm660 the two
+addresses are in the vendor DTS:
+
+    qcom,msm-imem@146bf000  restart_reason@65c  -> 0x146bf65c
+    restart@10ac000         compatible "qcom,pshold" -> 0x010ac000
+
+`0190` implements exactly that behind `sweetouchreboot=1` (diagnostic image
+only), waits 3 s for two log-flusher ticks, writes 0 to PS_HOLD and never
+returns. ABL reads the reason out of the always-on IMEM and enters fastboot,
+so `tools/touch-cycle.sh` completes by itself.
+
 ### Why userspace could not answer it
 
 `/dev/i2c-1` (c175000.i2c, `MSM-I2C-v2-adapter`) is present and writes to an
