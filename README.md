@@ -38,6 +38,14 @@ BLSP1 AHB and the QUP1 apps branch, prints the raw CBCR/RCG values when the
 check fails, and returns to the bit-bang without touching the QUP at all. A
 bad clock now costs a diagnostic line, not a stalled phone.
 
+**2026-10-31 - CI moved to `macos-15`, completed.** Three runs in a row
+(`8c3f96e`, `7e2bf21` twice) were cancelled one second after the job started
+with "scheduled macOS 14 runner image brownout". `.github/workflows/xnu.yml`
+now uses `macos-15`; the Deps step already picked the *lowest* Xcode on the
+image, which is 15.x there, so `iig` keeps the IORPC ABI xnu-8796 expects. The
+first run after the switch (`41212963199`, `be727db`) succeeded and produced
+the kernel used for ring 0195 - this item is finished, no further action.
+
 **2026-10-31 - the diagnostic boot returns to fastboot on its own.**
 A diag boot ends with the phone running XNU, which has no USB driver on this
 port: the only way back was a physical Power + Vol-Down. `0190` now sets
@@ -365,7 +373,7 @@ You need a Redmi Note 5 / Note 5 Pro (`whyred`, SDM636) with an **unlocked bootl
 
 ### 1. Build the kernel
 
-The kernel builds on GitHub's macOS runners (macos-14, Xcode 15) with [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build); newer Xcode's `iig` does not match the xnu-8796 IORPC ABI. Fork the repo and run, on the `whyred` branch:
+The kernel builds on GitHub's macOS runners (macos-15, lowest Xcode on the image = 15.x; macos-14 was retired on 2026-11-02 and its brownout cancelled every run until the switch) with [blacktop/darwin-xnu-build](https://github.com/blacktop/darwin-xnu-build); newer Xcode's `iig` does not match the xnu-8796 IORPC ABI. Fork the repo and run, on the `whyred` branch:
 
 ```sh
 gh workflow run xnu.yml -R YOU/ios-whyred --ref whyred
