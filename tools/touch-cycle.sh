@@ -61,9 +61,12 @@ fastboot boot "$img" || exit 1
 say "waiting ${dwell}s for the probe (no tap needed)"
 sleep "$dwell"
 
-say "waiting for the probe to reset the phone into fastboot"
-say "(sweetouchreboot=1; fallback: hold Power + Vol-Down)"
-for _ in $(seq 1 180); do
+# A full diagnostic boot is about five minutes: the 50 kHz bit-bang scan, the
+# framing matrix, the DSX dump and the 15 s panel hold all run before the
+# reset. 180 s was too short and reported a return that had not happened yet.
+say "waiting up to 420 s for the probe to reset the phone into fastboot"
+say "(sweetouchreboot=1 or the watchdog; fallback: hold Power + Vol-Down)"
+for _ in $(seq 1 420); do
 	[ -n "$(fastboot devices 2>/dev/null | awk '{print $1}')" ] && break
 	sleep 1
 done

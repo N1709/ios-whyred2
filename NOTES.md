@@ -224,6 +224,23 @@ only), waits 3 s for two log-flusher ticks, writes 0 to PS_HOLD and never
 returns. ABL reads the reason out of the always-on IMEM and enters fastboot,
 so `tools/touch-cycle.sh` completes by itself.
 
+**The apps clock check was the real blocker (20:47 ring).** `blsp1_ahb_clk` is
+a `BRANCH_HALT_VOTED` branch, so demanding its NOC FSM is right, but
+`gcc_blsp1_qup1_i2c_apps_clk` is a plain `BRANCH_HALT` branch and the vendor
+`clk_branch2_check_halt()` only rejects `BIT(31)` there. The 20:47 boot
+reported `I2C apps clock not verifiably on (cmd 0x00000001, need NOC on)` with
+`AHB halt 0x2000c220` (NOC on), `RCG cfg 0x00000001`, `cmd 0x00000002`: enable
+set, clock-off clear, RCG latched - a live clock that the stricter check threw
+away, so the QUP was never attempted. The probe now keeps the NOC check for
+the VOTED AHB branch only and matches the vendor for the apps branch, printing
+`I2C apps clock stays halted` with the raw value if it really is gated.
+
+A full diagnostic boot is also ~5 minutes (50 kHz bit-bang scan, framing
+matrix, DSX dump, 15 s panel hold), not the 2 minutes the earlier cycles
+assumed. `tools/touch-cycle.sh` waits up to 420 s now; the 20:08/20:47 boots
+that looked like hangs had in fact returned to fastboot just after the old
+180 s window.
+
 The 20:08 boot on 2026-10-31 showed the hole in that: the reset sits at the
 *end* of the probe, so a stall in `sweet_clocks_on()` or the first QUP access
 never reaches it. USB stayed down for more than four minutes and the phone

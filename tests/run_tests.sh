@@ -976,12 +976,16 @@ assert '#define RESTART_REASON_BOOTLOADER 0x77665500u' in body
 assert '\t*pshold = 0;' in body
 assert 'sweetouchreboot' in body
 
-# A branch that clears BIT(31) but has no NOC FSM is still not a live
-# slave; touching the QUP then stalls the AXI bus. Require the FSM before
-# the first SE access and stay on bit-bang otherwise.
+# blsp1_ahb_clk is a BRANCH_HALT_VOTED branch: a cleared BIT(31) alone is
+# not a live slave, so require its NOC FSM. gcc_blsp1_qup1_i2c_apps_clk is a
+# plain BRANCH_HALT branch and the vendor only rejects BIT(31) there - the
+# 20:47 ring showed apps 0x00000001 (enable set, clock-off clear) while this
+# check was demanding NOC 2, so the QUP was refused on every boot.
 assert '#define BRANCH_NOC_ON\t\t(2u << 28)' in body
 assert body.count('(*ahb_halt & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 1
-assert body.count('(*app & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 1
+assert body.count('(*app & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 0
+assert 'if ((*app & BRANCH_CLK_OFF) == 0) {' in body
+assert 'I2C apps clock stays halted' in body
 assert 'refusing the QUP' in body
 # A second dwell after "clocks on" separates a GCC stall from a QUP stall.
 assert body.count('delay(1500000);') == 2

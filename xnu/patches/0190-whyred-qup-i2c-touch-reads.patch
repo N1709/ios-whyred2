@@ -292,10 +292,10 @@ index 9a84d1d..1b3ef21 100644
  
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..2be1852
+index 0000000..7a99737
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,552 @@
+@@ -0,0 +1,558 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -526,17 +526,23 @@ index 0000000..2be1852
 +	}
 +	*cmd |= RCG_CMD_ROOT_EN;
 +
++	/*
++	 * gcc_blsp1_qup1_i2c_apps_clk is a plain BRANCH_HALT branch, and the
++	 * vendor clk_branch2_check_halt() only rejects BIT(31) for that kind.
++	 * Requiring the VOTED branch's NOC field here rejected a clock that
++	 * the hardware reported as running (the 20:47 ring: apps 0x00000001,
++	 * bit 0 set and bit 31 clear) and so the QUP was never even tried.
++	 */
 +	*app |= GCC_I2C1_APPS_ENA;
 +	for (i = 0; i < 200; i++) {
-+		if ((*app & BRANCH_CLK_OFF) == 0 &&
-+		    (*app & BRANCH_NOC_MASK) == BRANCH_NOC_ON) {
++		if ((*app & BRANCH_CLK_OFF) == 0) {
 +			break;
 +		}
 +		delay(10);
 +	}
 +	if (i == 200) {
-+		printf("WHYRED I2C: I2C apps clock not verifiably on (cmd "
-+		    "0x%08x, need NOC on), refusing the QUP\n", *app);
++		printf("WHYRED I2C: I2C apps clock stays halted (cmd 0x%08x), "
++		    "refusing the QUP\n", *app);
 +		printf("WHYRED I2C: AHB halt 0x%08x, RCG cfg 0x%08x cmd 0x%08x"
 +		    " - staying on bit-bang\n", *ahb_halt, *cfg, *cmd);
 +		return -1;

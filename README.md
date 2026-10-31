@@ -56,6 +56,11 @@ so the ring is on SYSTEM first. `tools/touch-cycle.sh` now runs end to end
 without a key press: bootloader, diag image, dwel, fastboot, recovery,
 `fastboot boot`, ring pull.
 
+Note the timings first: a full diag boot is ~5 minutes (bit-bang scan, framing
+matrix, DSX dump, 15 s panel hold), so `tools/touch-cycle.sh` waits up to 420 s
+for the return. A phone that looks hung after 4 minutes is usually still
+working.
+
 That reset is only reached if the probe finishes. A stall in the GCC or QUP
 register window happens earlier, and the next diag boot proved the cost: the
 phone sat on the colour bars with no USB device at all until Power was held
