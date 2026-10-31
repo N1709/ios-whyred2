@@ -976,6 +976,14 @@ assert '#define RESTART_REASON_BOOTLOADER 0x77665500u' in body
 assert '\t*pshold = 0;' in body
 assert 'sweetouchreboot' in body
 
+# A branch that clears BIT(31) but has no NOC FSM is still not a live
+# slave; touching the QUP then stalls the AXI bus. Require the FSM before
+# the first SE access and stay on bit-bang otherwise.
+assert '#define BRANCH_NOC_ON\t\t(2u << 28)' in body
+assert body.count('(*ahb_halt & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 1
+assert body.count('(*app & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 1
+assert 'refusing the QUP' in body
+
 # MX_WRITE_COUNT counts every byte pushed into the output FIFO, so a
 # write-then-read also counts the read tag; without it the read never starts.
 assert '(wl ? wl + TAG_LEN : 0) + (rl ? TAG_LEN : 0)' in body

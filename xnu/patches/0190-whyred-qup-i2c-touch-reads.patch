@@ -219,10 +219,10 @@ index 9a84d1d..77f6aeb 100644
  
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..f4d7559
+index 0000000..5971b0f
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,526 @@
+@@ -0,0 +1,542 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -296,6 +296,8 @@ index 0000000..f4d7559
 +#define RCG_CFG_DIV_1		1u		/* 2*19.2/2 = 19.2 MHz */
 +#define RCG_CFG_SRC_XO		(0u << 8)	/* gcc_parent_map_1: P_XO */
 +#define BRANCH_CLK_OFF		(1u << 31)
++#define BRANCH_NOC_MASK		(7u << 28)	/* clk-branch.c FSM status */
++#define BRANCH_NOC_ON		(2u << 28)	/* "on"; anything else is not */
 +
 +/* BLSP1_QUP1_I2C_MASTER, qcom,i2c-msm-v2 */
 +#define QUP_BASE		0x0c175000u
@@ -410,15 +412,26 @@ index 0000000..f4d7559
 +
 +	*ahb |= GCC_BLSP1_AHB_ENA;
 +	for (i = 0; i < 200; i++) {
-+		if ((*ahb_halt & BRANCH_CLK_OFF) == 0) {
++		/*
++		 * clk_branch2_check_halt() only rejects BIT(31); the NOC FSM
++		 * status is the stricter signal. A branch that reports "off
++		 * cleared" but no FSM means the SE's AHB slave still does not
++		 * answer, and a register access to it stalls the AXI bus
++		 * instead of returning. Refuse before touching the QUP.
++		 */
++		if ((*ahb_halt & BRANCH_CLK_OFF) == 0 &&
++		    (*ahb_halt & BRANCH_NOC_MASK) == BRANCH_NOC_ON) {
 +			break;
 +		}
 +		delay(10);
 +	}
 +	if (i == 200) {
-+		printf("WHYRED I2C: BLSP1_AHB stays halted (cmd 0x%08x halt "
-+		    "0x%08x)\n", *ahb, *ahb_halt);
-+		ret = -1;
++		printf("WHYRED I2C: BLSP1_AHB not verifiably on (cmd 0x%08x "
++		    "halt 0x%08x, need NOC on), refusing the QUP\n",
++		    *ahb, *ahb_halt);
++		printf("WHYRED I2C: apps cmd 0x%08x, RCG cfg 0x%08x cmd "
++		    "0x%08x - staying on bit-bang\n", *app, *cfg, *cmd);
++		return -1;
 +	}
 +
 +	/* 19.2 MHz from XO, divider field 1, then latch the config */
@@ -442,15 +455,18 @@ index 0000000..f4d7559
 +
 +	*app |= GCC_I2C1_APPS_ENA;
 +	for (i = 0; i < 200; i++) {
-+		if ((*app & BRANCH_CLK_OFF) == 0) {
++		if ((*app & BRANCH_CLK_OFF) == 0 &&
++		    (*app & BRANCH_NOC_MASK) == BRANCH_NOC_ON) {
 +			break;
 +		}
 +		delay(10);
 +	}
 +	if (i == 200) {
-+		printf("WHYRED I2C: I2C apps clock stays halted (cmd 0x%08x)\n",
-+		    *app);
-+		ret = -1;
++		printf("WHYRED I2C: I2C apps clock not verifiably on (cmd "
++		    "0x%08x, need NOC on), refusing the QUP\n", *app);
++		printf("WHYRED I2C: AHB halt 0x%08x, RCG cfg 0x%08x cmd 0x%08x"
++		    " - staying on bit-bang\n", *ahb_halt, *cfg, *cmd);
++		return -1;
 +	}
 +	if (ret == 0) {
 +		printf("WHYRED I2C: clocks on, RCG cfg 0x%08x cmd 0x%08x, "

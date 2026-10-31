@@ -23,6 +23,21 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
+**2026-10-31 - a clock that looks on is not a live slave; verify the NOC FSM.**
+The 41b3069 boot reached fastboot by itself once (132 s after the diag
+image started) but a later boot of the same image stalled at the colour bars
+again, so the QUP access is not deterministic: when the BLSP1 clocks really
+come up the probe completes, and when they do not the first SE register read
+never returns and the CPU stops with it.
+
+`clk-branch.c` accepts a branch whose `BIT(31)` off flag is clear - it does
+not require the NOC FSM to report `on` (`0x2 << 28`). That is too weak here:
+the branch can read "not off" while its slave still has no response. The
+driver now requires `(halt & BRANCH_NOC_MASK) == BRANCH_NOC_ON` for both
+BLSP1 AHB and the QUP1 apps branch, prints the raw CBCR/RCG values when the
+check fails, and returns to the bit-bang without touching the QUP at all. A
+bad clock now costs a diagnostic line, not a stalled phone.
+
 **2026-10-31 - the diagnostic boot returns to fastboot on its own.**
 A diag boot ends with the phone running XNU, which has no USB driver on this
 port: the only way back was a physical Power + Vol-Down. `0190` now sets
