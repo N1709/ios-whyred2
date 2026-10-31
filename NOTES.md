@@ -251,6 +251,18 @@ write to QUP_SW_RESET, stalls the AXI bus. The watchdog fired at ~240 s (its
 own line never reached the disk because the flusher shares the stalled bus)
 and the phone returned to fastboot on its own.
 
+Ring 0196 (build 1ff65a48, 22:49): the QUP1 read of HW_VERSION (0x30) did not
+even return. The ring stops at `QUP mapped, probing the SE`, and the phone
+stayed dark for 16 minutes - the 300 s watchdog could not reboot it either,
+so a stalled BLSP1 read takes the IMEM/PS_HOLD path down with it. That is the
+strongest evidence yet that the QUP1 register window does not answer at all
+(CX/NoC side or an APPS-invisible port), not that the SW reset hangs.
+
+The probe now reads QUP2 (0xc176000) and QUP3 (0xc177000) HW_VERSION first, as
+controls whyred does not use: if either answers, BLSP1 is reachable and QUP1
+alone is held; if neither answers, no BLSP1 window is reachable from the APPS
+and the next step is the TZ/XPU or CX side, not the SE protocol.
+
 Next probes, cheapest first: read QUP_HW_VERSION (0x30) before any write, to
 separate "the window does not answer at all" from "the SW reset never
 self-clears"; if reads stall too, look at a BLSP1 QUP1 reset/gdsc in the

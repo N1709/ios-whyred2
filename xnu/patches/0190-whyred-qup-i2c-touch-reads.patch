@@ -292,10 +292,10 @@ index 9a84d1d..8939247 100644
  
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..4f12014
+index 0000000..e86b762
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,579 @@
+@@ -0,0 +1,614 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -666,6 +666,25 @@ index 0000000..4f12014
 +	return (out_sz < in_sz) ? out_sz : in_sz;
 +}
 +
++/*
++ * Read one QUP window's HW_VERSION. BLSP1 has four QUPs; whyred uses only
++ * QUP1, so QUP2/QUP3 make a free control. A window that answers proves the
++ * NoC path to BLSP1 works and that QUP1 alone is held/reset; a window that
++ * stalls means BLSP1 is not reachable from the APPS at all.
++ */
++static int
++sweet_probe_window(uint32_t base, uint32_t *ver)
++{
++	volatile uint32_t *w = (volatile uint32_t *)ml_io_map((vm_offset_t)base,
++	    0x1000);
++
++	if (!w) {
++		return -1;
++	}
++	*ver = w[QUP_HW_VERSION / 4];
++	return 0;
++}
++
 +int
 +sweet_i2c_init(void)
 +{
@@ -710,6 +729,22 @@ index 0000000..4f12014
 +	 * the dwell gives the flusher two ticks, so a ring that stops here
 +	 * means the QUP slave stalled the bus, not the GCC block.
 +	 */
++	/*
++	 * Never touch QUP1 before the controls answer: ring 0196 read
++	 * QUP1+0x30 and the whole SoC died, watchdog included, so a stalled
++	 * read is not survivable and has to be attributed in one boot.
++	 */
++	printf("WHYRED I2C: probe QUP2/QUP3 windows (controls)\n");
++	delay(1500000);
++	v = 0;
++	if (sweet_probe_window(0x0c176000u, &v) == 0) {
++		printf("WHYRED I2C: QUP2 version 0x%08x\n", v);
++	}
++	v = 0;
++	if (sweet_probe_window(0x0c177000u, &v) == 0) {
++		printf("WHYRED I2C: QUP3 version 0x%08x\n", v);
++	}
++
 +	printf("WHYRED I2C: QUP mapped, probing the SE\n");
 +	delay(1500000);
 +

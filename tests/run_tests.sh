@@ -989,8 +989,13 @@ assert 'I2C apps clock stays halted' in body
 assert 'refusing the QUP' in body
 # A dwell after "clocks on" separates a GCC stall from a QUP stall, and a
 # third one before the first SE write narrows a QUP stall to the slave.
-assert body.count('delay(1500000);') == 3
+assert body.count('delay(1500000);') == 4
 assert 'QUP mapped, probing the SE' in body
+# Ring 0196 died on the first QUP1 read with the watchdog dead too, so the
+# control windows are probed first: QUP2/QUP3 answering means QUP1 alone is
+# held in reset; nothing answering means BLSP1 is unreachable from the APPS.
+assert 'sweet_probe_window(uint32_t base, uint32_t *ver)' in body
+assert 'probe QUP2/QUP3 windows (controls)' in body
 assert 'SE version 0x%08x, STATE 0x%08x' in body
 assert 'WHYRED I2C: resetting the SE' in body
 
