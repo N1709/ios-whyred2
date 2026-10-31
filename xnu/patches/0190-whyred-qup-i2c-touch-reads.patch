@@ -156,10 +156,10 @@ index 9a84d1d..38e9125 100644
  		dsx_identify(&dsx);
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..aa1d513
+index 0000000..af3cc19
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,493 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -180,18 +180,25 @@ index 0000000..aa1d513
 + *     the SE does not interpret 0x8x bytes as tags at all.
 + *   - A buffer travels as a four-byte tag [START, addr<<1|r/w, tag, len]
 + *     followed by len data bytes. START is only sent on the first buffer of
-+ *     a transfer; the byte order inside the FIFO word is little endian.
-+ *   - A write that is followed by a read uses the plain 0x82 tag (no stop),
-+ *     the last write uses 0x83, and the read uses 0x87. +1 on the 0x8x data
-+ *     tag is the stop variant.
-+ *   - QUP_MX_WRITE_COUNT counts data bytes plus the four tag bytes;
-+ *     QUP_MX_READ_COUNT counts data bytes plus two (the input FIFO echoes
-+ *     two tag bytes before the data).
-+ *   - FIFO mode: state PAUSE, fill the output FIFO, state RUN, poll
-+ *     MAX_INPUT_DONE, then drain the input FIFO.
++ *     a message; the byte order inside the FIFO word is little endian.
++ *   - tag_lookup_table[] uses the "N_STOP" variant for the LAST buffer of a
++ *     transfer, and that variant is the one with bit 0 set: 0x83 for a write
++ *     and 0x87 for a read. A write followed by a read therefore ends its
++ *     write buffer with the plain 0x82 (bus held), while the read buffer
++ *     carries both START and 0x87, which is the repeated start the Synaptics
++ *     DSX expects.
++ *   - QUP_MX_WRITE_COUNT counts every byte pushed into the output FIFO: the
++ *     write data plus its four tag bytes, plus four more for the read tag
++ *     when a read follows. QUP_MX_READ_COUNT counts the read data plus two
++ *     (the input FIFO echoes two tag bytes before the data). FIFO mode keeps
++ *     QUP_MX_INPUT/OUTPUT_COUNT at zero.
++ *   - Per transfer: state RESET, program the counters, state RUN, write
++ *     QUP_I2C_MASTER_CLK_CTL, state PAUSE, fill the output FIFO, state RUN,
++ *     poll MAX_INPUT_DONE, then drain the input FIFO.
 + *
 + * Byte counts are bounded and every wait is bounded, so a wrong count shows
-+ * up as an OPER/ERR/STATUS print instead of a hang.
++ * up as an OPER/ERR/STATUS print instead of a hang. The pin mux is the very
++ * last step, so a failure before it leaves GPIO2/3 as the bit-bang expects.
 + */
 +
 +#include <machine/machine_routines.h>
@@ -203,30 +210,36 @@ index 0000000..aa1d513
 +
 +extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 +
-+/* GCC (gcc-sdm660.c): branch enable bits and the I2C apps RCG */
-+#define GCC_BLSP1_AHB_CMD	0x00052004u
++/*
++ * GCC (gcc-sdm660.c, DT clock-controller@1800000). Offsets are the vendor
++ * driver's: the I2C apps RCG at 0x19020, the two branches at 0x52004 and
++ * 0x19008. The 0x1800000 base is the one the SDHCI path already uses on this
++ * phone, so the block is known to be there at this point of the boot.
++ */
++#define GCC_BASE		0x01800000u
++#define GCC_BLSP1_AHB_CMD	(GCC_BASE + 0x52004u)
 +#define GCC_BLSP1_AHB_ENA	(1u << 17)	/* gcc_blsp1_ahb_clk */
-+#define GCC_BLSP1_AHB_HALT	0x00017004u
-+#define GCC_I2C1_APPS_CMD	0x00019008u
++#define GCC_BLSP1_AHB_HALT	(GCC_BASE + 0x17004u)
++#define GCC_I2C1_APPS_CMD	(GCC_BASE + 0x19008u)
 +#define GCC_I2C1_APPS_ENA	(1u << 0)	/* qup1_i2c_apps_clk */
-+#define GCC_I2C1_SRC_CMD	0x00019020u	/* cmd_rcgr */
-+#define GCC_I2C1_SRC_CFG	0x00019024u	/* cfg_rcgr */
-+#define GCC_I2C1_SRC_M		0x00019028u
-+#define GCC_I2C1_SRC_N		0x0001902cu
-+#define GCC_I2C1_SRC_D		0x00019030u
++#define GCC_I2C1_SRC_CMD	(GCC_BASE + 0x19020u)	/* cmd_rcgr */
++#define GCC_I2C1_SRC_CFG	(GCC_BASE + 0x19024u)	/* cfg_rcgr */
++#define GCC_I2C1_SRC_M		(GCC_BASE + 0x19028u)
++#define GCC_I2C1_SRC_N		(GCC_BASE + 0x1902cu)
++#define GCC_I2C1_SRC_D		(GCC_BASE + 0x19030u)
 +#define RCG_CMD_UPDATE		(1u << 0)
 +#define RCG_CMD_ROOT_EN		(1u << 1)
-+#define RCG_ROOT_OFF		(1u << 31)
-+#define RCG_CFG_DIV_1		1u		/* 19.2 MHz from XO: */
-+#define RCG_CFG_SRC_XO		(0u << 8)	/* 2*19.2/2 */
++#define RCG_CFG_DIV_1		1u		/* 2*19.2/2 = 19.2 MHz */
++#define RCG_CFG_SRC_XO		(0u << 8)	/* gcc_parent_map_1: P_XO */
 +#define BRANCH_CLK_OFF		(1u << 31)
-+
 +
 +/* BLSP1_QUP1_I2C_MASTER, qcom,i2c-msm-v2 */
 +#define QUP_BASE		0x0c175000u
 +#define QUP_CONFIG		0x000
-+#define  QUP_MINI_CORE_I2C	0x200u
 +#define  QUP_N_VAL		0x7u
++#define  QUP_MINI_CORE_I2C_VAL	0x200u
++#define  QUP_MINI_CORE_MASK	0xf00u
++#define  QUP_N_MASK		0x1fu
 +#define  QUP_NO_OUTPUT		(1u << 6)
 +#define  QUP_NO_INPUT		(1u << 7)
 +#define QUP_STATE		0x004
@@ -235,18 +248,23 @@ index 0000000..aa1d513
 +#define  QUP_STATE_PAUSE	3u
 +#define  QUP_STATE_MASK		3u
 +#define  QUP_STATE_VALID	(1u << 2)
-+#define QUP_SW_RESET		0x00c
++#define  QUP_I2C_MAST_GEN	(1u << 4)
 +#define QUP_IO_MODES		0x008
++#define  QUP_OUTPUT_MODE	(3u << 10)
++#define  QUP_INPUT_MODE		(3u << 12)
 +#define  QUP_UNPACK_EN		(1u << 14)
 +#define  QUP_PACK_EN		(1u << 15)
++#define  QUP_OUTPUT_BIT_SHIFT_EN (1u << 16)
++#define QUP_SW_RESET		0x00c
 +#define QUP_OPERATIONAL		0x018
-+#define  QUP_OUTPUT_DONE	(1u << 10)
-+#define  QUP_INPUT_DONE		(1u << 11)
++#define  QUP_MAX_OUTPUT_DONE	(1u << 10)
++#define  QUP_MAX_INPUT_DONE	(1u << 11)
 +#define QUP_ERROR_FLAGS		0x01c
 +#define QUP_ERROR_FLAGS_EN	0x020
 +#define  ERR_ALL		0x3cu
 +#define QUP_OPERATIONAL_MASK	0x028
 +#define  OP_SERVICE		((1u << 8) | (1u << 9))
++#define QUP_HW_VERSION		0x030
 +#define QUP_MX_OUTPUT_CNT	0x100
 +#define QUP_OUT_FIFO		0x110
 +#define QUP_MX_WRITE_CNT	0x150
@@ -257,25 +275,31 @@ index 0000000..aa1d513
 +#define  CLK_FS_DIV(v)		((v) & 0xffu)
 +#define  CLK_HT_DIV(v)		(((v) & 0xffu) << 16)
 +#define QUP_I2C_STATUS		0x404
++#define  ST_ERROR_MASK		0x7cu	/* BUS_ERR..FAILED */
 +#define  ST_NACK		(1u << 3)
++#define  ST_BUS_ERROR		(1u << 2)
 +#define QUP_I2C_MASTER_CONFIG	0x408
 +#define  MASTER_V2_TAGS		1u
-+#define QUP_HW_VERSION		0x030
 +
 +/* QUP v2 FIFO tags (i2c-msm-v2.h) */
 +#define TAG_START		0x81u
 +#define TAG_DATA_WR		0x82u
 +#define TAG_DATA_WR_STOP	0x83u
++#define TAG_DATA_RD		0x85u
 +#define TAG_DATA_RD_STOP	0x87u
 +#define TAG_LEN			4	/* START + addr + tag + count */
 +#define RX_TAG_ECHO		2	/* input FIFO repeats two tag bytes */
 +
-+/* TLMM: gpio n ctl at 0x1000*n; gpio2/gpio3 select blsp_i2c1 with mux 19 */
-+#define TLMM_BASE		0x03000000u
-+#define TLMM_CTL(n)		(TLMM_BASE + 0x1000u * (n))
++/*
++ * TLMM: whyred's pinctrl@0x03000000 is split into tiles. GPIO 0..15 live in
++ * the SOUTH tile at +0x100000, one 0x1000 register page per pin, exactly the
++ * layout the bit-bang already uses. mux 19 is blsp_i2c1.
++ */
++#define TLMM_SOUTH		0x03100000u
++#define TLMM_CTL(n)		(TLMM_SOUTH + 0x1000u * (n))
 +#define TLMM_MUX(v)		(((v) & 0x1fu) << 2)
 +#define TLMM_PULL_UP		(3u << 0)
-+#define TLMM_DRV_2MA		0u
++#define TLMM_DRV_2MA		(0u << 6)
 +#define GPIO_I2C_SDA		2
 +#define GPIO_I2C_SCL		3
 +#define PIN_I2C_SEL		19u
@@ -286,42 +310,32 @@ index 0000000..aa1d513
 +int sweet_i2c_ready;
 +
 +static uint32_t *qup;
++static int fifo_bytes = 16;	/* read back from QUP_IO_MODES at init */
 +
-+static uint32_t *
-+io_win(uint32_t phys, uint32_t size)
++static volatile uint32_t *
++io_win(uint32_t phys)
 +{
-+	return (uint32_t *)ml_io_map((vm_offset_t)phys, (vm_size_t)size);
-+}
-+
-+static void
-+sweet_pins_i2c(void)
-+{
-+	uint32_t *sda = io_win(TLMM_CTL(GPIO_I2C_SDA), 4);
-+	uint32_t *scl = io_win(TLMM_CTL(GPIO_I2C_SCL), 4);
-+
-+	/* mux 19 = blsp_i2c1; whyred has no external pull resistors, so keep
-+	 * the internal pull-up the bit-bang relied on */
-+	*sda = TLMM_MUX(PIN_I2C_SEL) | TLMM_PULL_UP | TLMM_DRV_2MA;
-+	*scl = TLMM_MUX(PIN_I2C_SEL) | TLMM_PULL_UP | TLMM_DRV_2MA;
++	return (volatile uint32_t *)ml_io_map((vm_offset_t)phys, 4);
 +}
 +
 +/*
-+ * Whyred has no I2C driver, so nothing has enabled these clocks yet. Both
-+ * branches are CBRs whose bit 0 requests the clock and whose bit 31 reports
-+ * "clock off"; the apps clock source is an RCG2 that has to be moved to the
-+ * 19.2 MHz XO with the divider field set to 1 (calc_rate: 2*19.2/2 MHz).
++ * Whyred has no I2C driver in this kernel, so nothing has enabled these
++ * clocks yet. Both branches are CBRs whose bit 0 requests the clock and whose
++ * bit 31 reports "clock off"; the apps clock source is an RCG2 that has to be
++ * moved to the 19.2 MHz XO with the divider field set to 1 (calc_rate:
++ * 2*19.2/2 MHz). The RCG has no M/N/D for I2C (mnd_width 0).
 + */
 +static int
 +sweet_clocks_on(void)
 +{
-+	volatile uint32_t *ahb = io_win(GCC_BLSP1_AHB_CMD, 4);
-+	volatile uint32_t *ahb_halt = io_win(GCC_BLSP1_AHB_HALT, 4);
-+	volatile uint32_t *app = io_win(GCC_I2C1_APPS_CMD, 4);
-+	volatile uint32_t *cmd = io_win(GCC_I2C1_SRC_CMD, 4);
-+	volatile uint32_t *cfg = io_win(GCC_I2C1_SRC_CFG, 4);
-+	volatile uint32_t *m = io_win(GCC_I2C1_SRC_M, 4);
-+	volatile uint32_t *n = io_win(GCC_I2C1_SRC_N, 4);
-+	volatile uint32_t *d = io_win(GCC_I2C1_SRC_D, 4);
++	volatile uint32_t *ahb = io_win(GCC_BLSP1_AHB_CMD);
++	volatile uint32_t *ahb_halt = io_win(GCC_BLSP1_AHB_HALT);
++	volatile uint32_t *app = io_win(GCC_I2C1_APPS_CMD);
++	volatile uint32_t *cmd = io_win(GCC_I2C1_SRC_CMD);
++	volatile uint32_t *cfg = io_win(GCC_I2C1_SRC_CFG);
++	volatile uint32_t *m = io_win(GCC_I2C1_SRC_M);
++	volatile uint32_t *n = io_win(GCC_I2C1_SRC_N);
++	volatile uint32_t *d = io_win(GCC_I2C1_SRC_D);
 +	int i, ret = 0;
 +
 +	*ahb |= GCC_BLSP1_AHB_ENA;
@@ -337,7 +351,7 @@ index 0000000..aa1d513
 +		ret = -1;
 +	}
 +
-+	/* 19.2 MHz from XO, no M/N/D (mnd_width is zero for this RCG) */
++	/* 19.2 MHz from XO, divider field 1, then latch the config */
 +	*cfg = RCG_CFG_DIV_1 | RCG_CFG_SRC_XO;
 +	*m = 0;
 +	*n = 0;
@@ -373,6 +387,35 @@ index 0000000..aa1d513
 +		    "apps 0x%08x\n", *cfg, *cmd, *app);
 +	}
 +	return ret;
++}
++
++/*
++ * The bit-bang owns these pads until the QUP is fully up. On a failed init
++ * they are put back to plain GPIO with the internal pull-up, which is what
++ * pin_setup() in santoni_touch.c leaves behind, so the fallback stays usable.
++ */
++static void
++sweet_pins(int sel)
++{
++	volatile uint32_t *sda = io_win(TLMM_CTL(GPIO_I2C_SDA));
++	volatile uint32_t *scl = io_win(TLMM_CTL(GPIO_I2C_SCL));
++	uint32_t v;
++
++	if (sel) {
++		*sda = TLMM_MUX(PIN_I2C_SEL) | TLMM_PULL_UP | TLMM_DRV_2MA;
++		*scl = TLMM_MUX(PIN_I2C_SEL) | TLMM_PULL_UP | TLMM_DRV_2MA;
++		return;
++	}
++	v = *sda;
++	v &= ~(0x1fu << 2);
++	v |= TLMM_PULL_UP;
++	v &= ~(1u << 9);		/* input */
++	*sda = v;
++	v = *scl;
++	v &= ~(0x1fu << 2);
++	v |= TLMM_PULL_UP;
++	v &= ~(1u << 9);
++	*scl = v;
 +}
 +
 +/* Poll QUP_STATE until the state machine reports VALID in the given state. */
@@ -446,70 +489,105 @@ index 0000000..aa1d513
 +int
 +sweet_i2c_init(void)
 +{
++	uint32_t v;
++
 +	if (sweet_i2c_ready) {
 +		return 0;
 +	}
-+	sweet_pins_i2c();
 +	if (sweet_clocks_on() != 0) {
 +		return -1;
 +	}
-+	qup = io_win(QUP_BASE, 0x1000);
++	qup = (uint32_t *)ml_io_map((vm_offset_t)QUP_BASE, 0x1000);
 +	if (!qup) {
 +		printf("WHYRED I2C: cannot map BLSP1 QUP1\n");
 +		return -1;
 +	}
++
 +	sweet_sw_reset();
-+	qup[QUP_CONFIG / 4] = QUP_N_VAL | QUP_MINI_CORE_I2C;
++	if (sweet_state_set(QUP_STATE_RESET) != 0) {
++		return -1;
++	}
++
++	v = qup[QUP_CONFIG / 4];
++	v &= ~(QUP_NO_INPUT | QUP_NO_OUTPUT | QUP_N_MASK | QUP_MINI_CORE_MASK);
++	v |= QUP_N_VAL | QUP_MINI_CORE_I2C_VAL;
++	qup[QUP_CONFIG / 4] = v;
 +	qup[QUP_ERROR_FLAGS_EN / 4] = ERR_ALL;
 +	qup[QUP_OPERATIONAL_MASK / 4] = OP_SERVICE;
 +	qup[QUP_I2C_MASTER_CONFIG / 4] = MASTER_V2_TAGS;
++
++	/* FIFO depth is reported in IO_MODES: block size * {2,4,8,16} */
++	v = qup[QUP_IO_MODES / 4];
++	fifo_bytes = 16 * (int)(1u << ((v >> 5) & 3));
++
++	if (!(qup[QUP_STATE / 4] & QUP_I2C_MAST_GEN)) {
++		printf("WHYRED I2C: SE does not advertise I2C master mode "
++		    "(STATE 0x%08x)\n", qup[QUP_STATE / 4]);
++		return -1;
++	}
++
++	sweet_pins(1);
 +	sweet_i2c_ready = 1;
 +	printf("WHYRED I2C: QUP1 up, HW_VERSION 0x%08x (v2 = 0x0002xxxx), "
-+	    "CONFIG 0x%08x STATE 0x%08x\n", qup[QUP_HW_VERSION / 4],
-+	    qup[QUP_CONFIG / 4], qup[QUP_STATE / 4]);
++	    "CONFIG 0x%08x STATE 0x%08x fifo %d B\n",
++	    qup[QUP_HW_VERSION / 4], qup[QUP_CONFIG / 4],
++	    qup[QUP_STATE / 4], fifo_bytes);
 +	return 0;
 +}
 +
 +/*
 + * One transaction. With rl == 0 the write is the last buffer and ends with a
-+ * stop. With rl > 0 the write is followed by a read: the write uses the plain
-+ * data tag (bus held) and the read buffer carries the stop, which is the
-+ * repeated start the Synaptics DSX expects.
++ * stop (0x83). With rl > 0 the write is followed by a read: the write uses
++ * the plain 0x82 tag (bus held) and the read buffer carries START + 0x87,
++ * which is the repeated start the Synaptics DSX expects.
 + *
 + * wl is at most four bytes here (page select, or one/two address bytes) and
-+ * rl is at most 60; both fit one output word each plus the tag.
++ * rl is bounded by the FIFO depth; both fit in one output FIFO load.
 + */
 +int
 +sweet_i2c_xfer(uint8_t addr, const uint8_t *w, int wl, uint8_t *r, int rl)
 +{
-+	uint32_t word, tag;
++	uint32_t word, tag, v;
 +	int i, j, have, err = 0;
++	int wr_bytes, rd_bytes;
 +
 +	if (!sweet_i2c_ready) {
 +		return -1;
 +	}
-+	if (wl < 0 || wl > 4 || rl < 0 || rl > 60 || (wl == 0 && rl == 0)) {
++	if (wl < 0 || wl > 4 || rl < 0 || (wl == 0 && rl == 0)) {
++		return -1;
++	}
++
++	/* every byte pushed into the output FIFO counts, tags included */
++	wr_bytes = (wl ? wl + TAG_LEN : 0) + (rl ? TAG_LEN : 0);
++	rd_bytes = rl ? rl + RX_TAG_ECHO : 0;
++	if (wr_bytes > fifo_bytes || rd_bytes > fifo_bytes) {
++		printf("WHYRED I2C: transfer %d/%d B exceeds the %d B FIFO\n",
++		    wr_bytes, rd_bytes, fifo_bytes);
 +		return -1;
 +	}
 +
 +	sweet_sw_reset();
-+
 +	if (sweet_state_set(QUP_STATE_RESET) != 0) {
-+		err = -1;
-+		goto out;
++		return -1;
 +	}
 +
-+	/* FIFO mode, v2 tags, counts include the tag bytes */
-+	qup[QUP_MX_OUTPUT_CNT / 4] = 0;
++	qup[QUP_MX_OUTPUT_CNT / 4] = 0;		/* FIFO mode */
 +	qup[QUP_MX_INPUT_CNT / 4] = 0;
-+	qup[QUP_MX_WRITE_CNT / 4] = wl ? (uint32_t)(wl + TAG_LEN) : 0;
-+	qup[QUP_MX_READ_CNT / 4] = rl ? (uint32_t)(rl + RX_TAG_ECHO) : 0;
-+	qup[QUP_CONFIG / 4] = QUP_N_VAL | QUP_MINI_CORE_I2C |
-+	    (rl ? 0 : QUP_NO_INPUT);
-+	qup[QUP_IO_MODES / 4] = QUP_PACK_EN | QUP_UNPACK_EN;
++	qup[QUP_MX_WRITE_CNT / 4] = (uint32_t)wr_bytes;
++	qup[QUP_MX_READ_CNT / 4] = (uint32_t)rd_bytes;
++	v = qup[QUP_CONFIG / 4];
++	v &= ~(QUP_NO_INPUT | QUP_NO_OUTPUT | QUP_N_MASK | QUP_MINI_CORE_MASK);
++	v |= QUP_N_VAL | QUP_MINI_CORE_I2C_VAL | (rl ? 0 : QUP_NO_INPUT);
++	qup[QUP_CONFIG / 4] = v;
++	v = qup[QUP_IO_MODES / 4];
++	v &= ~(QUP_OUTPUT_MODE | QUP_INPUT_MODE | QUP_PACK_EN |
++	    QUP_UNPACK_EN | QUP_OUTPUT_BIT_SHIFT_EN);
++	v |= QUP_PACK_EN | QUP_UNPACK_EN;	/* FIFO mode, packed */
++	qup[QUP_IO_MODES / 4] = v;
 +	qup[QUP_I2C_MASTER_CONFIG / 4] = MASTER_V2_TAGS;
 +	qup[QUP_ERROR_FLAGS_EN / 4] = ERR_ALL;
-+	qup[QUP_OPERATIONAL_MASK / 4] = OP_SERVICE;
++	qup[QUP_OPERATIONAL_MASK / 4] = 0;
 +
 +	if (sweet_state_set(QUP_STATE_RUN) != 0) {
 +		err = -1;
@@ -546,17 +624,18 @@ index 0000000..aa1d513
 +		err = -1;
 +		goto out;
 +	}
-+	if (sweet_se_wait(rl ? QUP_INPUT_DONE : QUP_OUTPUT_DONE) != 0) {
++	if (sweet_se_wait(rl ? QUP_MAX_INPUT_DONE : QUP_MAX_OUTPUT_DONE) != 0) {
 +		printf("WHYRED I2C: transfer failed addr 0x%02x wl %d rl %d "
 +		    "ERR 0x%08x STATUS 0x%08x\n", addr, wl, rl,
 +		    qup[QUP_ERROR_FLAGS / 4], qup[QUP_I2C_STATUS / 4]);
 +		err = -1;
 +		goto out;
 +	}
-+	if (qup[QUP_I2C_STATUS / 4] & ST_NACK) {
-+		printf("WHYRED I2C: NACK from 0x%02x (STATUS 0x%08x)\n", addr,
-+		    qup[QUP_I2C_STATUS / 4]);
-+		err = -2;
++	v = qup[QUP_I2C_STATUS / 4];
++	if (v & ST_ERROR_MASK) {
++		printf("WHYRED I2C: %s from 0x%02x (STATUS 0x%08x)\n",
++		    (v & ST_NACK) ? "NACK" : "bus error", addr, v);
++		err = (v & ST_NACK) ? -2 : -1;
 +		goto out;
 +	}
 +

@@ -175,6 +175,31 @@ fork's `1 << 1`, `parent << 12` and `0x004b004b` do not match any of this.
 **400 kHz.** `CLK_CTL` = `(ht_div << 16) | fs_div` = `(14 << 16) | 28` for the
 400 kHz entry of `i2c_msm_clk_div_map`, with the RCG at 19.2 MHz.
 
+**First boot (0190 as committed in `64b5758`).** The ring stops at
+`WHYRED TOUCH: ack 0x20`: the probe reached the QUP init and hung there,
+before its first `WHYRED I2C:` line. Two address mistakes explain it, both
+fixed in the patch after the run:
+
+- GCC was addressed as if the block started at zero. The vendor offsets
+  (`0x52004`, `0x19008`, `0x19020`, `0x17004`) are relative to
+  `0x01800000` on this phone - the base the SDHCI RCG code already writes
+  successfully. The first draft wrote `0x00052004`, which is outside every
+  block this kernel maps, and the access stalled the AXI bus.
+- GPIO 2/3 were mapped at `0x03002000`. The vendor pinctrl splits TLMM into
+  tiles: the SOUTH tile is at `+0x100000`, so the pads are at
+  `0x03102000`/`0x03103000`, one `0x1000` page per pin. The bit-bang already
+  used exactly those addresses.
+
+While checking the vendor driver again, a third mistake surfaced before the
+next boot: `MX_WRITE_COUNT` counts *every* byte pushed into the output FIFO,
+including the four-byte tag of the read buffer. The first draft counted only
+`wl + 4`, so on a write-then-read the core would stop before sending the read
+tag and the read would never happen. It is now `(wl + 4) + (rl ? 4 : 0)`.
+
+The pin mux is also the last step of `sweet_i2c_init()` now: if the clocks or
+the SE fail, GPIO2/3 are still plain GPIO with the internal pull-up, which is
+what the bit-bang scan needs for its fallback.
+
 ### Why userspace could not answer it
 
 `/dev/i2c-1` (c175000.i2c, `MSM-I2C-v2-adapter`) is present and writes to an

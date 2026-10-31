@@ -946,6 +946,24 @@ assert 'wl + TAG_LEN' in body and 'rl + RX_TAG_ECHO' in body
 assert 'if (dsx_qup) {' in body
 assert 'staying on bit-bang' in body
 assert 'if (PE_parse_boot_argn("sweeti2c", &qup, sizeof(qup)) && qup)' in body
+
+# The first QUP boot hung before its first print: the GCC registers were
+# addressed as absolute 0x0005xxxx/0x0001xxxx instead of offsets from
+# 0x01800000, and GPIO2/3 were mapped at 0x03002000 instead of the SOUTH
+# tile 0x03102000. Both are now the addresses the rest of the tree proves.
+assert '#define GCC_BASE\t\t0x01800000u' in body
+assert '(GCC_BASE + 0x52004u)' in body
+assert '(GCC_BASE + 0x19024u)' in body
+assert '#define TLMM_SOUTH\t\t0x03100000u' in body
+assert '0x03002000' not in body
+
+# MX_WRITE_COUNT counts every byte pushed into the output FIFO, so a
+# write-then-read also counts the read tag; without it the read never starts.
+assert '(wl ? wl + TAG_LEN : 0) + (rl ? TAG_LEN : 0)' in body
+assert 'rd_bytes = rl ? rl + RX_TAG_ECHO : 0' in body
+# The pin mux is the last step of init, so a failed init leaves the bit-bang
+# pins (plain GPIO + pull-up) untouched.
+assert '\tsweet_pins(1);\n\tsweet_i2c_ready = 1;' in body
 PY
 echo "ok   0190 adds the QUP master and keeps bit-bang as the fallback"
 

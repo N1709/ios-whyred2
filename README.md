@@ -23,6 +23,21 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
+**2026-10-31 - the first QUP boot stopped at the probe; three addresses were wrong.**
+The 0190 image painted the four colour bars (0176) and then stopped: the ring
+ends at `WHYRED TOUCH: ack 0x20`, before `sweet_i2c_init()` could print its
+first line. The address scan itself was fine; the hang was the first QUP
+access, which went to `0x00052004` instead of `0x01852004` because the vendor
+offsets had been used as absolute addresses. The same mistake put the I2C RCG
+at `0x00019024` (should be `0x01819024`), and GPIO 2/3 were mapped at
+`0x03002000` instead of the TLMM SOUTH tile `0x03102000`.
+
+Reading the vendor driver again also caught a count error that would have
+killed the very first write-then-read: `MX_WRITE_COUNT` includes the four tag
+bytes of the *read* buffer as well, so it is `(wl + 4) + (rl ? 4 : 0)`, not
+`wl + 4`. The pin mux now happens as the last step of init, so a failure
+leaves the pads as plain GPIO and the bit-bang fallback still works.
+
 **2026-10-31 - 0189 says the bit-bang cannot address the chip; 0190 moves the reads to the QUP.**
 All seven framings 0189 tried came back `streams`: `0x00e9` returned
 `12 0a 29 00 8f d4`, then `81 04 03 03 04 05`, then `05 01 01 01 0e 0f` - six
