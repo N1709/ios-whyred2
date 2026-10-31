@@ -4657,3 +4657,28 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
      cpu_init, before arm_vm_init.
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
+
+### Open small items (do not lose these)
+
+Collected on 2026-10-31 while the QUP work was in flight. None of them is the
+main blocker, but each one has already cost a cycle once.
+
+1. `tools/touch-cycle.sh` waits 420 s for the return; the 0195 boot took 451 s
+   and the script declared "no fastboot device" while the phone was still
+   running. Raise it to 600 s.
+2. The watchdog default is 240 s counted from the start of the probe. A slow
+   bit-bang scan plus the framing matrix can approach that; either raise the
+   default to 300 s or pass `sweetouchwatchdog=` in `tools/build-touch-diag.sh`.
+3. The watchdog's own line never reaches the ring, because the flusher shares
+   the stalled bus. Always read the ring before concluding "the watchdog did
+   not fire": the phone returning to fastboot is the proof.
+4. `origin/whyred` is a stale tracking ref (pushes go to
+   `ssh://git@ssh.github.com:443/N1709/ios-whyred2.git`), so `git status`
+   claims dozens of commits ahead. Check with `git ls-remote`, not `git status`.
+5. `/tmp/opencode/xr2` is the base tree used to regenerate `0190`; it is
+   outside the repo and will not survive a machine change. If a patch must be
+   regenerated elsewhere, recreate it from `xnu/patches/0190-*.patch` first.
+6. `/tmp/opencode/cycle-0193.sh` is a scratch copy of the cycle with the longer
+   wait. Keep fixes in `tools/touch-cycle.sh`; the scratch copy is disposable.
+7. `sweetouchwait` defaults to 15 s of panel hold on every boot. Fine for the
+   diag image, but remember it when timing a cycle by hand.
