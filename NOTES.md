@@ -129,6 +129,52 @@ stored in `dsx_frame` and every later read (`dsx_identify`, the F12 poll) uses
 it. If the page table comes back as `F34 + F01` with no F12 - the bootloader
 table - 0189 pulses reset once and scans again.
 
+### 0190: the vendor QUP v2 protocol, byte for byte
+
+The fork at `tahamsaglam/ios-whyred2` has a QUP master (`0180`) but leaves the
+FIFO counts as a "known unknown". The vendor driver answers it, and four of
+its details differ from the fork's draft:
+
+**Source** (LineageOS `android_kernel_xiaomi_sdm660`, `lineage-18.1`):
+`drivers/i2c/busses/i2c-msm-v2.c`, `include/linux/i2c/i2c-msm-v2.h`,
+`drivers/clk/qcom/gcc-sdm660.c`, `drivers/clk/qcom/clk-rcg2.c`,
+`drivers/clk/qcom/clk-branch.c`.
+
+**Tag layout.** `struct i2c_msm_tag` is a `u64` whose first bytes are written
+to the FIFO in order, so a buffer is:
+
+```
+word 0 (LE): [0x81][addr<<1 | r/w][tag][len]
+word n     : data bytes packed four per word, little endian
+```
+
+`tag_lookup_table[is_new_addr][is_last][is_rx]` selects the tag:
+`0x82` write, `0x83` write+stop, `0x85` read, `0x87` read+stop. The `+1` is
+the stop, so a write followed by a read uses `0x82` and the read uses `0x87`.
+
+**Counts (FIFO mode).**
+`QUP_MX_WRITE_COUNT = data bytes + 4` (tag), `QUP_MX_READ_COUNT = data bytes
++ 2` (the input FIFO echoes two tag bytes), `QUP_MX_INPUT_COUNT` and
+`QUP_MX_OUTPUT_COUNT` stay 0. The read drains 2 echo bytes and then the data,
+both from the same little-endian FIFO words.
+
+**State machine.** `QUP_I2C_MASTER_CONFIG (0x408) = 1` (two-tag mode) once;
+per transfer: state RESET -> program counts/config/IO_MODES -> state RUN ->
+write `QUP_I2C_CLK_CTL` -> state PAUSE -> fill the output FIFO -> state RUN ->
+poll `MAX_INPUT_DONE`, then drain. All state transitions wait for
+`QUP_STATE_VALID` and then for the state field to match.
+
+**Clocks.** `blsp1_qup1_i2c_apps_clk_src` is a `clk_rcg2` at `cmd_rcgr =
+0x19020`: CFG at +0x4 (`0x19024`), divider bits 0-4, parent bits 8-10
+(`P_XO = 0`), mode bits 12-13; M/N/D at +0x8/+0xC/+0x10. 19.2 MHz from XO is
+divider field 1 (`calc_rate`: `2*19.2/2`). `gcc_blsp1_ahb_clk` enables with
+bit 17 at `0x52004`, `gcc_blsp1_qup1_i2c_apps_clk` with bit 0 at `0x19008`;
+both report halt in bit 31 of their register (`0x17004` and `0x19008`). The
+fork's `1 << 1`, `parent << 12` and `0x004b004b` do not match any of this.
+
+**400 kHz.** `CLK_CTL` = `(ht_div << 16) | fs_div` = `(14 << 16) | 28` for the
+400 kHz entry of `i2c_msm_clk_div_map`, with the RCG at 19.2 MHz.
+
 ### Why userspace could not answer it
 
 `/dev/i2c-1` (c175000.i2c, `MSM-I2C-v2-adapter`) is present and writes to an

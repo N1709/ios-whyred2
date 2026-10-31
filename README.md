@@ -23,6 +23,36 @@ The same tree still builds the Redmi Note 7 (`lavender`, SDM660) target for comp
 
 ## Progress
 
+**2026-10-31 - 0189 says the bit-bang cannot address the chip; 0190 moves the reads to the QUP.**
+All seven framings 0189 tried came back `streams`: `0x00e9` returned
+`12 0a 29 00 8f d4`, then `81 04 03 03 04 05`, then `05 01 01 01 0e 0f` - six
+new bytes every time, no matter what address or how many address bytes were
+sent. The bit-bang is therefore not fixable by timing: the controller never
+sees an address phase at all.
+
+`0190` adds `bsd/dev/sweet_i2c.c`, a BLSP1 QUP1 master, and points the DSX
+reads at it behind `sweeti2c=1` (the bit-bang stays as the fallback, including
+the address scan, which still finds `0x20`). The register set, clock tree, pin
+mux and FIFO protocol were taken from the vendor `i2c-msm-v2.c` rather than
+guessed, which corrected four things that would each have wasted a boot:
+
+- `QUP_I2C_MASTER_CONFIG` (0x408) must be set to 1 for the v2 tags; without it
+  the SE does not treat `0x8x` bytes as tags.
+- a tag is `[START, addr<<1|r/w, tag, len]`, little endian in the FIFO word,
+  and the stop bit is the `+1` variant (`0x83`/`0x87`), not the `0x82`/`0x85`
+  one - 0189's driver had the two swapped.
+- `MX_WRITE_COUNT` counts data + 4 tag bytes and `MX_READ_COUNT` counts data
+  + 2 (the input FIFO echoes two tag bytes first), all in FIFO mode with
+  `MX_INPUT/OUTPUT_COUNT` zero.
+- the RCG is at `0x19024` with the divider in bits 0-4 and the parent in bits
+  8-10; the branches enable with bit 17 (`BLSP1_AHB`, 0x52004) and bit 0
+  (`I2C_APPS`, 0x19008) and report halt in bit 31.
+
+The driver fills the FIFO in PAUSE, moves to RUN and polls `MAX_INPUT_DONE`,
+so a wrong count prints `timeout OPER/ERR/STATUS` instead of hanging. The
+per-boot table now also names `QUP1 (hardware I2C)` or `bit-bang` before the
+framing matrix, so one ring shows which transport produced the bytes.
+
 **2026-10-30 - the controller was in bootloader mode; 0189 tests the address framing.**
 The touch controller had been parked in flash-programming mode, not stripped of
 firmware: the page table was `F34 + F01` with no `F12`. A reset cycle after
@@ -370,6 +400,7 @@ IRQ witness on GPIO 67 during the F12 poll.
 | Boot-arg | Effect |
 | --- | --- |
 | `sweetouchi2c=1` | run the probe: scan `0x08`..`0x77`, then dump the RMI4 identification |
+| `sweeti2c=1` | after the address scan, bring up the BLSP1 QUP1 hardware master and read the DSX through it; the bit-bang remains the fallback if the clocks or the SE do not come up |
 | `sweetouchreset=1` | additionally drive reset (GPIO 66) per the DT: low 20 ms, high 200 ms, then 50 ms settle before the scan |
 | `sweetouchwait=SECONDS` | hold the boot after the scan (default 15 s, 0 = no hold, max 60); the panel is usually muted by then, so prefer the ring |
 | `sweetouchtouch=SECONDS` | poll F12 touch data for that long: top band of the panel is blue while waiting, green on the first change or IRQ edge, and every change goes to the ring (max 60) |
@@ -470,6 +501,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0187 | Synaptics DSX protocol (page select at `0xFF`, PDT at `0x00e9`) plus an F12 data poll - still a shifted stream |
 | 0188 | Open-drain bit-bang with clock-stretch wait, DT reset timing, read matrix, IRQ edge witness |
 | 0189 | Seven address framings tried against `0x00e9`, auto-selected by repetition, plus a bootloader-mode reset retry |
+| 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC RCG/branches, TLMM mux 19) behind `sweeti2c=1`, bit-bang kept as fallback |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

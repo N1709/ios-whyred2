@@ -909,6 +909,46 @@ assert 'dsx_frame = best' in body
 PY
 echo "ok   0189 tries seven framings and keeps the repeatable one"
 
+echo "== TOUCH: 0190 drives the same reads through the BLSP1 QUP =="
+P190="xnu/patches/0190-whyred-qup-i2c-touch-reads.patch"
+python3 tools/check_patch.py "$P190" -q \
+	--added-contains 'bsd/dev/sweet_i2c.c:sweet_i2c_xfer' \
+	--added-contains 'bsd/dev/sweet_i2c.c:QUP_I2C_MASTER_CONFIG' \
+	--added-contains 'bsd/dev/sweet_i2c.c:QUP_STATE_PAUSE' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_read_q' \
+	--added-contains 'bsd/dev/santoni_touch.c:sweeti2c' \
+	--added-contains 'bsd/conf/files:bsd/dev/sweet_i2c.c'
+python3 - <<'PY'
+src = open('xnu/patches/0190-whyred-qup-i2c-touch-reads.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The vendor v2 protocol, not a guess: two-tag mode must be enabled, the
+# FIFO is filled in PAUSE and the core only runs afterwards.
+assert 'MASTER_V2_TAGS\t\t1u' in body
+assert 'qup[QUP_I2C_MASTER_CONFIG / 4] = MASTER_V2_TAGS;' in body
+assert 'sweet_state_set(QUP_STATE_PAUSE)' in body
+
+# A write followed by a read must use the non-stop tag so the read issues a
+# repeated start; only the last buffer (a write-only transaction) stops.
+assert '#define TAG_DATA_WR\t\t0x82u' in body
+assert '#define TAG_DATA_WR_STOP\t0x83u' in body
+assert '((rl ? TAG_DATA_WR : TAG_DATA_WR_STOP) << 16)' in body
+assert '#define TAG_DATA_RD_STOP\t0x87u' in body
+
+# Counts include the tag bytes, as i2c_msm_qup_xfer_init_reset_state does.
+assert 'wl + TAG_LEN' in body and 'rl + RX_TAG_ECHO' in body
+
+# The bit-bang stays as the fallback when the QUP does not come up, and the
+# QUP path is selected per boot so the old diagnostic boots still work.
+assert 'if (dsx_qup) {' in body
+assert 'staying on bit-bang' in body
+assert 'if (PE_parse_boot_argn("sweeti2c", &qup, sizeof(qup)) && qup)' in body
+PY
+echo "ok   0190 adds the QUP master and keeps bit-bang as the fallback"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
