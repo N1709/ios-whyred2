@@ -5,7 +5,7 @@
 - The user switches agents frequently. Update the active handoff in `NOTES.md`
   after each milestone and before stopping. Record commits, CI run IDs, exact
   build/boot results and unfinished work. Distinguish observations from guesses.
-- Commit completed changes. All new commits must include the trailer `Co-Authored-By: Gemini <noreply@google.com>`. Use `gh` for GitHub Actions kernel builds and logs.
+- Commit completed changes. Do **not** add any `Co-Authored-By:` trailer (user request, 2026-10-31); the message is just the subject and body. Use the GitHub REST API for Actions builds and logs (`gh` is not installed).
   Local single-file cross-compiles are useful before spending a CI run.
 - Leverage OpenCode for task delegation:
   - Use DeepSeek v4.1 Flash (`opencode run -m opencode/deepseek-v4.1-flash-free --auto "<prompt>"`) for reasoning, hardware register analysis, debugging, and authoring code modifications.
