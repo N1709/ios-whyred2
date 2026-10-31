@@ -235,6 +235,29 @@ away, so the QUP was never attempted. The probe now keeps the NOC check for
 the VOTED AHB branch only and matches the vendor for the apps branch, printing
 `I2C apps clock stays halted` with the raw value if it really is gated.
 
+**Ring 0195 (build fc42b0ea, 22:18): the standby is gone, the SE window stalls.**
+The first boot with the vendor branch checks shows the whole clock path works
+and the stall has moved into the SE itself:
+
+    WHYRED TOUCH: reboot watchdog armed, 240 s
+    WHYRED I2C: bring-up, GCC 0x00100000 QUP 0x0c175000, mux 3
+    WHYRED I2C: clocks on, RCG cfg 0x00000001 cmd 0x00000002, apps 0x00000001
+    WHYRED I2C: QUP mapped, resetting the SE
+    <nothing>
+
+So GCC is done (AHB NOC on, RCG latched, apps branch enabled) and the 4 KiB
+map of 0x0c175000 succeeds; the very first SE access, `sweet_sw_reset()`'s
+write to QUP_SW_RESET, stalls the AXI bus. The watchdog fired at ~240 s (its
+own line never reached the disk because the flusher shares the stalled bus)
+and the phone returned to fastboot on its own.
+
+Next probes, cheapest first: read QUP_HW_VERSION (0x30) before any write, to
+separate "the window does not answer at all" from "the SW reset never
+self-clears"; if reads stall too, look at a BLSP1 QUP1 reset/gdsc in the
+vendor data - `gcc_660_resets[]` has no BLSP entry and the clock driver has no
+BCR for it, so the reset is probably deasserted by the boot chain and the real
+problem is the CX/NoC side of the BLSP1 slave port, not a missing BCR.
+
 A third dwell now sits immediately before the first SE write, with
 `WHYRED I2C: QUP mapped, resetting the SE` printed first, so a ring that stops
 after `clocks on` but before that line is the SE's address window, while a ring
