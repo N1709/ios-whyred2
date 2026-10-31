@@ -1,64 +1,48 @@
-DeepSeek, Gemini here. The user instructed us:
-"Attack his fix first, argue, settle, apply fix, also im going afk again, aby query, ping on tg. Strictly no yes man."
+DeepSeek: this file is the standing handoff. Read NOTES.md and README.md
+first; they are authoritative. The old SDHCI debate that used to live here is
+resolved and shipped (0142: INT_ENABLE, CORE_VENDOR_SPEC POR, CK_OUT_EN) - do
+not re-argue it.
 
-Here is the exact hardware console readout from photo 20261022_002308.jpg booted on Redmi 4X with commit df4395e:
-1. core MCI_VERSION 0x1000004d GENERICS 0x24100041
-2. HC_MODE 0x00000000, enabling HC mode
-3. FF_CLK_SW_RST_DIS did not stick (HC_MODE 0x00000001)
-4. HC mode enabled (HC_MODE 0x00000001, HOST_VERSION 0x4d02)
-5. CLOCK_CONTROL 0x0003 PRESENT_STATE 0x01F80000 POWER_CONTROL 0x0B
-6. card clock gate was closed, enabled (CLOCK_CONTROL 0x0007)
-7. takeover complete (HC_MODE 0x00000001, VENDOR_SPEC 0x00000000, legacy MCI_CLK 0x90000000, MCI_POWER 0x00000041)
-8. command 13 timed out (arg 0x00020000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-9. command 12 timed out (arg 0x00000000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-10. CMD13 with RCA 2 got no answer
-11. command 13 timed out (arg 0x00010000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-12. command 12 timed out (arg 0x00000000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-13. CMD13 with RCA 1 got no answer
-14. CORE_VENDOR_SPEC 0x00000000 (MCLK sel 0, PWRSAVE 0) -> POR 0x00000a9c, CLOCK_CONTROL 0x0007
-15. command 13 timed out (arg 0x00020000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-16. command 5 timed out (arg 0x00020000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-17. command 5 timed out (arg 0x00010000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-18. command 0 timed out (arg 0x00000000, INT_STATUS 0x00000000, PRESENT_STATE 0x01F80001, CMD_INHIBIT 1)
-19. SANTONI SDHCI: CMD0 did not complete either: no SDCLK reaches the card
-20. SANTONI: eMMC probe failed (6), continuing
-21. md0 mounted root, Mach-O PID 1 launched and ticks normally!
+The user's standing instruction (unchanged): "Attack his fix first, argue,
+settle, apply fix, also im going afk again, any query, ping on tg. Strictly no
+yes man." Answer the user in short Indonesian, copy-paste ready, and automate
+everything a keyboard would otherwise be needed for.
 
-I ATTACK YOUR CURRENT DRIVER ON TWO GROUNDS:
+Hard constraints
+- whyred (Redmi Note 5, SDM636) only. `fastboot boot` only: never flash boot,
+  modem, persist, recovery or any partition, and never format `userdata` (the
+  HFSX iOS root lives there).
+- Enter recovery with `fastboot boot recovery.img`; this ABL does not honour
+  `fastboot reboot recovery`.
+- Kernels are built by GitHub Actions (workflow `xnu`). `gh` is not installed:
+  use the REST API and nightly.link. As of 2026-10-31 the build runs on
+  `macos-15`; `macos-14` was retired and its brownout cancelled every run.
+- Commits carry the subject and body only. Do **not** add any
+  `Co-Authored-By:` trailer (user request, 2026-10-31).
+- A patch change means: update `xnu/patches/NNNN-*.patch`, the matching block
+  in `tests/run_tests.sh`, README/NOTES, then `bash tests/run_tests.sh` and
+  `python3 tools/check_patch.py` before committing.
 
-ATTACK 1: You blinded your own polled loop with SDHCI_INT_ENABLE = 0.
-In 0142 line 726:
-    hc_wr(SDHCI_INT_ENABLE, 0);
-    hc_wr(SDHCI_SIGNAL_ENABLE, 0);
-In the SD Host Controller Standard Specification Section 2.2.17:
-- Offset 0x30 is Interrupt Status (INT_STATUS).
-- Offset 0x34 is Normal/Error Interrupt Status Enable (SDHCI_INT_ENABLE).
-- Offset 0x38 is Normal/Error Interrupt Signal Enable (SDHCI_SIGNAL_ENABLE).
-When 0x34 is 0, the controller hardware is FORBIDDEN from asserting ANY status bits in 0x30! Even if the command completes in 1 microsecond, Command Complete (bit 0) NEVER appears in 0x30.
-In sdhci_cmd(), you loop polling hc_rd(SDHCI_INT_STATUS) for SDHCI_INT_CC (bit 0). Because 0x34 is 0, st & SDHCI_INT_CC is NEVER true, and every command times out after 100ms!
-SDHCI_INT_ENABLE must be 0xFFFFFFFF (or 0x01FF01FF) while SDHCI_SIGNAL_ENABLE is 0!
+How results are read
+- Never from the panel. The kernel writes a 4 MiB ring to SYSTEM
+  ("SANTONILOG1"); pull it with a whyred recovery boot and
+  `tools/sweet-log-pull.sh`, decode with `tools/sweet-log.py`.
+- A diag boot has no USB and takes ~5-7 minutes. It returns to fastboot by
+  itself (IMEM reason 0x77665500 + PS_HOLD) or, if it stalls, through the
+  reboot watchdog armed before the first clock write. Treat "no USB" as normal,
+  not as a hang, and wait at least 600 s.
 
-ATTACK 2: Why was CMD_INHIBIT stuck at 1 on CMD0?
-In SDHCI, writing SDHCI_COMMAND raises PRESENT_STATE bit 0 (CMD_INHIBIT = 1). The controller shifts the 48 bits of the command out using SDCLK.
-When 48 bits are sent, CMD_INHIBIT self-clears to 0.
-In your log, CMD0 timed out with CMD_INHIBIT STILL EQUAL TO 1!
-Why did the command shift register freeze?
-Look at Linux drivers/mmc/host/sdhci-msm.c:
-1. Line 2778: Linux writes CORE_VENDOR_SPEC_POR_VAL (0xa9c) to core_vendor_spec (offset 0x10c) BEFORE writing HC_MODE_EN (0x78).
-   In 0142, you switched to HC mode while CORE_VENDOR_SPEC was 0x00000000. Bits 9:8 (CORE_HC_MCLK_SEL) were 00 instead of 10 (CORE_HC_MCLK_SEL_DFLT = 2 << 8), so the HC block had no MCLK!
-2. Look at core_dll_config (offset 0x100 from core base):
-   In sdhci-msm.c line 58:
-   #define CORE_CK_OUT_EN BIT(18)
-   In lines 483 and 782: Linux explicitly sets `config |= CORE_CK_OUT_EN;` in core_dll_config (0x100) to gate the clock out to the card and CMD unit!
-   In 0142, you never touched CORE_DLL_CONFIG, so CK_OUT_EN was 0!
+Current state (2026-10-31, ring /tmp/whyred-0195.txt, image fc42b0ea)
+- Done and proven on hardware: kernel + panel + eMMC + rootfs + SpringBoard;
+  GCC/clock path for touch (`clocks on, RCG cfg 0x1 cmd 0x2, apps 0x1`);
+  watchdog auto-reboot; CI on macos-15.
+- Blocker: the BLSP1 QUP1 SE at 0x0c175000 stalls on the very first register
+  write (`WHYRED I2C: QUP mapped, resetting the SE` is the last ring line).
+  Clock and mapping are not the problem; `gcc_660_resets` has no BLSP entry.
+- Next probes, cheapest first: read QUP_HW_VERSION (0x30) before any write to
+  tell "window dead" from "SW reset never self-clears"; then the CX/NoC side of
+  the BLSP1 slave port. After that: v2 tag protocol, F01/F12, coordinates into
+  `sweet_hid_touch()`.
 
-Attack these two points. Do you agree or have counter-arguments?
-Once settled:
-1. Author the changes to xnu/patches/0142-santoni-sdhci-emmc-driver.patch:
-   - Program CORE_VENDOR_SPEC = CORE_VENDOR_SPEC_POR_VAL before HC_MODE_EN.
-   - Enable CORE_CK_OUT_EN (bit 18) in CORE_DLL_CONFIG (offset 0x100).
-   - Set SDHCI_INT_ENABLE = 0xFFFFFFFF (and keep SDHCI_SIGNAL_ENABLE = 0).
-2. Update tests/test_sdhci_mock.c to model INT_ENABLE status masking and CORE_CK_OUT_EN.
-3. Update tests/run_tests.sh.
-4. Run python3 tools/check_patch.py on 0142 and bash tests/run_tests.sh to guarantee zero errors.
-5. Commit with trailer "Co-Authored-By: Gemini <noreply@google.com>".
+Open small items that already cost a cycle are listed at the end of NOTES.md
+("Open small items"); check them before starting.
