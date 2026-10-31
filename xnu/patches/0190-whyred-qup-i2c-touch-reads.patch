@@ -219,10 +219,10 @@ index 9a84d1d..77f6aeb 100644
  
 diff --git a/bsd/dev/sweet_i2c.c b/bsd/dev/sweet_i2c.c
 new file mode 100644
-index 0000000..5971b0f
+index 0000000..2be1852
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,542 @@
+@@ -0,0 +1,552 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -610,6 +610,16 @@ index 0000000..5971b0f
 +	if (sweet_clocks_on() != 0) {
 +		return -1;
 +	}
++
++	/*
++	 * Same reasoning as the bring-up line, one step later: "clocks on"
++	 * prints microseconds before the first QUP access, so without this
++	 * dwell a stall there would hide the clock state again. Two flusher
++	 * ticks make the split unambiguous: no "clocks on" means GCC, a
++	 * "clocks on" with nothing after it means the QUP slave.
++	 */
++	delay(1500000);
++
 +	qup = (uint32_t *)ml_io_map((vm_offset_t)QUP_BASE, 0x1000);
 +	if (!qup) {
 +		printf("WHYRED I2C: cannot map BLSP1 QUP1\n");

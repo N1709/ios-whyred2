@@ -983,6 +983,8 @@ assert '#define BRANCH_NOC_ON\t\t(2u << 28)' in body
 assert body.count('(*ahb_halt & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 1
 assert body.count('(*app & BRANCH_NOC_MASK) == BRANCH_NOC_ON') == 1
 assert 'refusing the QUP' in body
+# A second dwell after "clocks on" separates a GCC stall from a QUP stall.
+assert body.count('delay(1500000);') == 2
 
 # MX_WRITE_COUNT counts every byte pushed into the output FIFO, so a
 # write-then-read also counts the read tag; without it the read never starts.
