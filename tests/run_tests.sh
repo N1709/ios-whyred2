@@ -797,13 +797,11 @@ assert '"sweetouchi2c", &on' in src
 # whyred's vendor DTS puts TLMM at 0x03000000; 0x03400000 would point at
 # the CENTER tile and write an unrelated pad.
 assert '0x03000000' in src and '0x03400000' not in src
-# Ring 0197 is the first matrix against the app-mode part and every framing
-# read 00 00 00 00 00 00 at a 10 us half bit. The ACK still lands, so the
-# slave drives low fine; the 1-bits never rise because the LDO11 pull-ups
-# are off in XNU and only the weak internal one is left. Slow the bus to
-# ~5 kHz so the line settles before the sample.
-assert 'TOUCH_I2C_DELAY_US\t100' in src
-assert 'app-mode reads' in src
+# Ring 0198 (10 us, no reset pulse) read real bytes; ring 0199 (100 us, no
+# reset) read all zero, so the 5 kHz theory is wrong and the 10 us half bit
+# stays until the chip-state confound is removed.
+assert 'TOUCH_I2C_DELAY_US\t10' in src
+assert 'Ring 0198 read' in src and 'ring 0199 read' in src
 PY
 echo "ok   0184 scans on sweetouchi2c and pulses reset only on request"
 
@@ -907,14 +905,17 @@ body = '\n'.join(added)
 # Every framing that could plausibly be right is exercised: both byte orders,
 # with and without the page select, and the page select in the same write.
 for name in ('page|a1', 'page+a1', 'page|a2be', 'page|a2le', 'a1',
-             'a2be', 'a2le'):
+             'a2be', 'a2le', 'page|a1dup'):
     assert '"%s"' % name in body, name
 # A framing is only believed when the same register repeats and the slot
 # above it reads differently, so a streaming pointer cannot win.
 assert 'if (a[i] != b[i])' in body and 'differ = 1' in body
+# On a failed repeat the log must carry both reads: which byte moved tells a
+# streaming pointer from a lost address bit.
+assert 'unstable' in body and 'printf(" ->")' in body
 assert 'dsx_frame = best' in body
 PY
-echo "ok   0189 tries seven framings and keeps the repeatable one"
+echo "ok   0189 tries eight framings and keeps the repeatable one"
 
 echo "== TOUCH: 0190 drives the same reads through the BLSP1 QUP =="
 P190="xnu/patches/0190-whyred-qup-i2c-touch-reads.patch"

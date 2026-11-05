@@ -2,7 +2,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 index e147227..9a84d1d 100644
 --- a/bsd/dev/santoni_touch.c
 +++ b/bsd/dev/santoni_touch.c
-@@ -384,18 +384,54 @@ nvt_read(uint8_t addr, uint8_t page, uint8_t reg, uint8_t *buf, int len)
+@@ -384,18 +384,56 @@ nvt_read(uint8_t addr, uint8_t page, uint8_t reg, uint8_t *buf, int len)
  #define DSX_PRODUCT_ID_OFFSET	11
  #define DSX_PRODUCT_ID_SIZE	10
  
@@ -29,12 +29,13 @@ index e147227..9a84d1d 100644
 +	DFRAME_A1,		/* address byte, no page select */
 +	DFRAME_A2_BE,		/* 16-bit address, big endian, no page */
 +	DFRAME_A2_LE,		/* 16-bit address, little endian, no page */
++	DFRAME_PAGE_A1_DUMMY,	/* page; address byte + dummy 0x00, restart */
 +	DFRAME_COUNT
 +};
 +
 +static const char *dsx_frame_name[DFRAME_COUNT] = {
 +	"page|a1", "page+a1", "page|a2be", "page|a2le",
-+	"a1", "a2be", "a2le",
++	"a1", "a2be", "a2le", "page|a1dup",
 +};
 +
 +/* The vendor driver's framing until the self test says otherwise. */
@@ -51,7 +52,8 @@ index e147227..9a84d1d 100644
  
 -	if (use_page) {
 -		/* page select: 0xFF <page> */
-+	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
++	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A1_DUMMY ||
++	    frame == DFRAME_PAGE_A2_BE ||
 +	    frame == DFRAME_PAGE_A2_LE) {
 +		/* page select: 0xFF <page>, its own transaction */
  		i2c_start();
@@ -62,7 +64,7 @@ index e147227..9a84d1d 100644
  		i2c_stop();
  		if (!ok) {
  			return EIO;
-@@ -404,10 +440,31 @@ dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
+@@ -404,10 +442,37 @@ dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
  
  	i2c_start();
  	ok &= i2c_write((uint8_t)(addr << 1));
@@ -72,6 +74,12 @@ index e147227..9a84d1d 100644
 +	case DFRAME_PAGE_A1:
 +	case DFRAME_A1:
 +		ok &= i2c_write(lo);
++		break;
++	case DFRAME_PAGE_A1_DUMMY:
++		/* The a2le accident: the extra byte is swallowed as data, but
++		 * it changes what the next repeated start reads. */
++		ok &= i2c_write(lo);
++		ok &= i2c_write(0x00);
 +		break;
 +	case DFRAME_PAGE_A1_COMB:
 +		/* the vendor write, with the address appended to it */
@@ -97,7 +105,7 @@ index e147227..9a84d1d 100644
  	if (!ok) {
  		i2c_stop();
  		return EIO;
-@@ -425,11 +482,46 @@ dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
+@@ -425,11 +490,60 @@ dsx_read_ex(uint8_t addr, uint16_t reg, uint8_t *buf, int len,
  	return 0;
  }
  
@@ -120,7 +128,7 @@ index e147227..9a84d1d 100644
 +{
 +	uint8_t a[DSX_PDT_ENTRY_SIZE], b[DSX_PDT_ENTRY_SIZE];
 +	uint8_t c[DSX_PDT_ENTRY_SIZE];
-+	int i, differ = 0;
++	int i, j, differ = 0;
 +
 +	if (dsx_read_f(DSX_ADDR, DSX_PDT_START, a, sizeof(a), frame) != 0 ||
 +	    dsx_read_f(DSX_ADDR, DSX_PDT_START, b, sizeof(b), frame) != 0 ||
@@ -130,6 +138,20 @@ index e147227..9a84d1d 100644
 +	}
 +	for (i = 0; i < (int)sizeof(a); i++) {
 +		if (a[i] != b[i]) {
++			/*
++			 * Print both reads: the interesting failure is not
++			 * "unstable" in the abstract but which byte moved,
++			 * because a streaming pointer shifts the whole block
++			 * while a lost address bit usually changes one.
++			 */
++			printf("WHYRED TOUCH: %s unstable",
++			    dsx_frame_name[frame]);
++			for (j = 0; j < (int)sizeof(a); j++)
++				printf(" %02x", a[j]);
++			printf(" ->");
++			for (j = 0; j < (int)sizeof(b); j++)
++				printf(" %02x", b[j]);
++			printf("\n");
 +			return 0;
 +		}
 +		if (a[i] != c[i]) {
@@ -146,7 +168,7 @@ index e147227..9a84d1d 100644
  }
  
  /* Hex plus printable text: the product and build strings are ASCII. */
-@@ -534,63 +626,46 @@ dsx_identify(struct dsx_funcs *f)
+@@ -534,63 +648,46 @@ dsx_identify(struct dsx_funcs *f)
  static void panel_band(uint32_t colour);
  
  /*
@@ -244,7 +266,7 @@ index e147227..9a84d1d 100644
  	}
  }
  
-@@ -783,6 +858,26 @@ panel_report(int acks, uint8_t first)
+@@ -783,6 +880,26 @@ panel_report(int acks, uint8_t first)
  	    acks > 0 ? 0xff20e020 : 0xffe02020);
  }
  
@@ -271,7 +293,7 @@ index e147227..9a84d1d 100644
  int
  santoni_touch_probe(void)
  {
-@@ -834,18 +929,7 @@ santoni_touch_probe(void)
+@@ -834,18 +951,7 @@ santoni_touch_probe(void)
  	}
  
  	if (PE_parse_boot_argn("sweetouchreset", &pulse, sizeof(pulse)) && pulse) {
@@ -291,7 +313,7 @@ index e147227..9a84d1d 100644
  	}
  
  	for (addr = 0x08; addr <= 0x77; addr++) {
-@@ -879,6 +963,20 @@ santoni_touch_probe(void)
+@@ -879,6 +985,20 @@ santoni_touch_probe(void)
  		touch_irq_setup(north);
  		dsx_diag();
  		dsx_identify(&dsx);

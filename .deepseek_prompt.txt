@@ -62,13 +62,22 @@ Current state (2026-11-06, after commit 275f3b0)
   different non-zero block, but two reads of the same address still differ, so
   the address phase is ignored and the part streams. The reset pulse (or the
   warm boot) was what produced the 0197 zeros.
-- Next: boot `images/shim-boot-touch-norst-5k.img` (kernel 275f3b0,
-  `sweeti2c=0 sweetouchreset=0`, 100 us half bit, sha256 9f2adae7...) after a
-  full power-off. Rationale: only the internal TLMM pull-up is on the bus, and
-  a 10 us half bit may not let a released SDA rise before the slave samples the
-  register address (0xe9 has four 1 bits). If 5 kHz gives a stable PDT, the bus
-  is solved; if not, dump a sequential block and work out which addressing the
-  part is in.
+- Ring 0199 (2026-11-06, 100 us half bit, no reset, warm boot) read all zero,
+  so the 5 kHz theory is dead; 0184 is back at TOUCH_I2C_DELAY_US 10.
+- New on 2026-11-06: in recovery, every i2cprobe mode (0,1,2,4,5,6,7) reads
+  zero, `echo 1 > /sys/class/input/input2/reset` (EINVAL) makes the driver try
+  a reset and it logs `Failed to find F01/F35`, and six QUP reads of 0x00e9 in
+  a row return six different blocks (`56 36 00 01 a7 b0`, ... `ff`). Unbind +
+  rebind fails the same way. At boot the same driver found F01/F12, then
+  suspended at 3.25 s (`enable_wakeup_gesture is on`) and never woke. Conclusion:
+  the DSX sleeps on suspend, a warm reboot inherits the sleep, and that is the
+  0197/0199 zero matrix. Wake it by touching the panel (IRQ GPIO 67) and probe
+  again in recovery; that is the next cheap test.
+- 0198 (cold boot) had real bytes but every framing was unstable, so the
+  bit-bang's address phase still has its own bug. 0189 now adds `page|a1dup`
+  and prints `a -> b` on an unstable framing to tell a streaming pointer from
+  one lost address bit. Build that kernel, cold-boot it, and compare.
+- Do not boot the QUP path yet: every QUP1 register access still kills the SoC.
 - Do not port ginkgo's driver yet. Ginkgo is QUPv3; only its F01/F12 report
   parsing is reusable and only after the bus works.
 

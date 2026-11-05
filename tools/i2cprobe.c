@@ -7,6 +7,10 @@
  * MODE 1: page select (ff PAGE), then write REG, stop, then a separate read
  * MODE 2: no page select, just write REG + repeated start read LEN
  * MODE 3: no page select, write REG, stop, then separate read
+ * MODE 4: page select, then write REG + dummy 0x00, then repeated start read
+ * MODE 5: no page select, write REG + dummy 0x00, then repeated start read
+ * MODE 6: page select, then a plain read of LEN bytes
+ * MODE 7: a plain read of LEN bytes, no write at all
  *
  * Why it exists: this is the only way to compare the chip's answers on the
  * known-good recovery QUP with what the XNU bit-bang sees. Wrong addresses
@@ -76,7 +80,7 @@ main(int argc, char **argv)
 	pagebuf[1] = (char)page;
 	regbuf = (char)reg;
 
-	if (mode <= 1) {
+	if (mode <= 1 || mode == 4 || mode == 6) {
 		struct i2c_msg p = { .addr = addr, .flags = 0, .len = 2,
 		    .buf = (unsigned char *)pagebuf };
 
@@ -84,7 +88,24 @@ main(int argc, char **argv)
 			return 1;
 	}
 
-	if (mode == 0 || mode == 2) {
+	if (mode == 4 || mode == 5) {
+		char wb[2] = { (char)reg, 0x00 };
+		struct i2c_msg m[2] = {
+			{ .addr = addr, .flags = 0, .len = 2,
+			    .buf = (unsigned char *)wb },
+			{ .addr = addr, .flags = I2C_M_RD, .len = len,
+			    .buf = data },
+		};
+
+		if (xfer(fd, m, 2, "write reg+dummy + read"))
+			return 1;
+	} else if (mode == 6 || mode == 7) {
+		struct i2c_msg r = { .addr = addr, .flags = I2C_M_RD,
+		    .len = len, .buf = data };
+
+		if (xfer(fd, &r, 1, "plain read"))
+			return 1;
+	} else if (mode == 0 || mode == 2) {
 		struct i2c_msg m[2] = {
 			{ .addr = addr, .flags = 0, .len = 1,
 			    .buf = (unsigned char *)&regbuf },

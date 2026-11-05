@@ -323,13 +323,14 @@ did. This also explains why the bootloader-mode read worked in 0188: that
 part drives its stream differently, and the internal pull-up is enough when
 the slave is doing the work.
 
-The 0184 bit-bang is slowed to `TOUCH_I2C_DELAY_US = 100` (~5 kHz), still only
-~200 ms for the whole `0x08..0x77` scan. Next boot: rebuild and pack the
-bit-bang-only image again; if `page|a1` returns a real PDT, the F12 poll
-follows in the same boot. When the phone is next in recovery, read
+The 0184 bit-bang was slowed to `TOUCH_I2C_DELAY_US = 100` (~5 kHz) for the
+next boot; 0199 (below) reverted it to 10, because 5 kHz read all zero. The
+scan is still only ~200 ms for the whole `0x08..0x77` range at 5 kHz. When
+the phone is next in recovery, read
 `/sys/kernel/debug/regulator/regulator_summary` to see whether LDO11 is on
-after ABL; that turns the pull-up hypothesis into a measurement. If 100 us
-still reads zero, try 200 us before assuming a chip state.
+after ABL; that turns the pull-up hypothesis into a measurement. Ring 0199
+answered the timing question: 100 us read all zero too, so the half bit is
+back at 10 us and the zeros are a chip state, not a rise-time problem.
 
 A third dwell now sits immediately before the first SE write, with
 `WHYRED I2C: QUP mapped, resetting the SE` printed first, so a ring that stops
@@ -4809,6 +4810,45 @@ while the master's address ACK still works. The address byte `0xe9` has four
 or similar the slave still ACKs and simply streams from the wrong register.
 The 5 kHz image (`images/shim-boot-touch-norst-5k.img`, kernel `275f3b0`) is
 the next single-variable test, again after a full power-off.
+
+### Ring 0199 (2026-11-06): 5 kHz reads zero, and the recovery QUP cannot address the chip either
+
+Same no-reset image at a 100 us half bit (`sweeti2c=0 sweetouchreset=0`, kernel
+`275f3b0`). Every framing read `00 00 00 00 00 00`. So the 5 kHz theory is
+dead: 10 us is the only setting that has ever produced bytes, and timing is
+not the variable.
+
+That boot was a warm reboot (the DSX keeps `pm660_l11` across SoC resets), and
+the raw probe in recovery then reproduces the same wall from the known-good
+QUP:
+
+* Modes 0, 1, 2 (page select / separate start, 1- or 2-byte address) and modes
+  4, 5 (address + dummy 0x00) and 6, 7 (plain read, with and without page
+  select) all returned `00 00 00 00 00 00`.
+* Writing `1` to `/sys/class/input/input2/reset` fails with `EINVAL`, but the
+  driver still runs `synaptics_rmi4_reset_device`; it logs
+  `query_device: Failed to find F01` / `Failed to find F35`. In the second
+  after that, six back-to-back reads of `0x00e9` on the QUP returned six
+  *different* blocks: `56 36 00 01 a7 b0`, `01 10 00 10 00 70`,
+  `01 00 01 00 01 00`, `f0 00 00 22 00 ff`, then `ff` for the rest. Even the
+  vendor bus cannot make the address phase land in this state.
+* Unbinding and rebinding `1-0020` also fails the same way, so this is not the
+  raw probe racing the driver.
+
+At boot (0.92 s) the same driver did find F01/F12 and filled
+`/sys/class/input/input2/productinfo`, `buildid` and `fwblockcount`; it
+suspends at 3.25 s with `enable_wakeup_gesture is on`, and from then on every
+PDT scan fails. The chip therefore enters a sleep state on suspend and does
+not accept addressed reads until something wakes it - normally the panel
+itself, through IRQ GPIO 67. A warm reboot inherits that sleep. That is the
+`00` matrix in 0197 and 0199.
+
+This does **not** yet explain 0198: after a full power-off the chip was awake
+and returned real (if unstable) bytes, so the bit-bang's address phase still
+has its own problem. The next diagnostic adds `page|a1dup` (the page select,
+address byte, and a dummy `0x00` before the repeated start) and prints both
+reads on an unstable framing, so a streaming pointer (whole block shifts) can
+be told from one lost address bit (one byte changes).
 
 ### Open small items (do not lose these)
 
