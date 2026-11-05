@@ -73,10 +73,25 @@ Current state (2026-11-06, after commit 275f3b0)
   the DSX sleeps on suspend, a warm reboot inherits the sleep, and that is the
   0197/0199 zero matrix. Wake it by touching the panel (IRQ GPIO 67) and probe
   again in recovery; that is the next cheap test.
-- 0198 (cold boot) had real bytes but every framing was unstable, so the
-  bit-bang's address phase still has its own bug. 0189 now adds `page|a1dup`
-  and prints `a -> b` on an unstable framing to tell a streaming pointer from
-  one lost address bit. Build that kernel, cold-boot it, and compare.
+- BREAKTHROUGH 2026-11-06: the PDT is intact and readable. A 150 s loop on the
+  recovery QUP caught a coherent stream that segments into F34 `27 00 09 00 21
+  34`, F01 `2f 26 0d 04 01 01`, F12 `4c 00 13 06 01 12` (data base 0x06), then
+  the `00` terminator. So the controller, its firmware and F12 all exist.
+- But 75 reads of the same 0x00e9 walked the map 6 bytes at a time instead of
+  repeating F34, on the QUP as well. The address write is ignored: the part is
+  in a streaming mode (bootloader/ROM), which is what 0198 also saw. That is
+  not a bit-bang bug, and it is why 0197/0199 read zero: the vendor driver
+  suspends at 3.25 s with `enable_wakeup_gesture is on`, and the part never
+  returns to app mode; a warm reboot inherits it.
+- CAUTION: unbinding `1-0020` (or a failed rebind) powers off `vcc_i2c`
+  (`pm660_l11`) in the driver remove/error path, which also kills the external
+  I2C pull-ups. After that every read is random / `ff`; do not mistake that for
+  chip data. Keep the driver bound for bus experiments.
+- Next: cold boot straight into XNU (never suspends the DSX) and read a LONG
+  block (64+ bytes) at 0x00e9, parsing for fn_number instead of trusting six
+  bytes at one address. 0189's `page|a1dup` + `a -> b` print is in the CI
+  build for a1a916. Goal: prove the part is in app mode on a cold boot and can
+  be addressed before anything suspends it.
 - Do not boot the QUP path yet: every QUP1 register access still kills the SoC.
 - Do not port ginkgo's driver yet. Ginkgo is QUPv3; only its F01/F12 report
   parsing is reusable and only after the bus works.

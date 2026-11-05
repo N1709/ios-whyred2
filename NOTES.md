@@ -4850,6 +4850,54 @@ address byte, and a dummy `0x00` before the repeated start) and prints both
 reads on an unstable framing, so a streaming pointer (whole block shifts) can
 be told from one lost address bit (one byte changes).
 
+### 2026-11-06: the PDT is intact, and the part is streaming, not misaddressed
+
+After ring 0199 the recovery QUP was probed once more, this time with a loop
+that read `0x00e9` every 2 s for 150 s (75 reads). The result separates the
+states cleanly:
+
+* Reads 1-10: `00 00 00 00 00 00` (the sleeping state).
+* Reads 11-16: a coherent stream. Concatenating the six-byte blocks gives
+
+      00 00 ff ff ff ff | ff ff ff 27 00 09 | 00 21 34 2f 26 0d |
+      04 01 01 4c 00 13 | 06 01 12 00 00 00
+
+  which segments, at the right offset, into exactly the page descriptor table:
+
+      27 00 09 00 21 34   F34  query 0x27 cmd 0x00 ctrl 0x09 data 0x00 intr 1
+      2f 26 0d 04 01 01   F01  query 0x2f cmd 0x26 ctrl 0x0d data 0x04 intr 1
+      4c 00 13 06 01 12   F12  query 0x4c cmd 0x00 ctrl 0x13 data 0x06 intr 1
+      00 00 00 00 00 00   end of PDT
+
+  So the controller is alive, its firmware/PDT is intact, and F12 (2D touch)
+  is present with data base `0x06`. This is the first full PDT ever read from
+  this phone.
+* Reads 17+: every value becomes random (`ff 21 32 17 24 08`, ...) and finally
+  all `ff`. That part is an artefact of the experiment: unbinding `1-0020`
+  releases `vcc_i2c` (`pm660_l11`) in `synaptics_rmi4_remove`, which also
+  powers the external I2C pull-ups, so the bus afterwards floats. The random
+  reads and the final `ff` say nothing about the chip.
+
+Two conclusions. First, the address phase is **not** landing: 75 reads of the
+same `0x00e9` walk the register map six bytes at a time instead of repeating
+the F34 entry, and this happens on the known-good QUP too. The part is in a
+streaming mode that ignores the address write. Second, the stream still
+contains the whole PDT, so a future probe can read it by reading a long block
+and parsing for `fn_number`, without needing the address phase at all.
+
+The streaming mode is almost certainly the chip's own bootloader/ROM state:
+the vendor driver finds F01/F12 at 0.92 s after power-up, then suspends at
+3.25 s with `enable_wakeup_gesture is on`, and from then on no PDT scan
+succeeds. A warm reboot inherits it. This is the `00` matrix of 0197/0199, and
+it is not a bit-bang bug. Ring 0198 (cold boot, no reset) read real but
+unstable bytes because the part was in this same streaming state, not because
+the bit-bang was mis-sampling.
+
+What still has to be explained is why a cold boot does not stay in app mode.
+The recovery driver proves the part is in app mode right after power-up, so
+the next test must probe before anything suspends it: cold boot straight into
+XNU (which never suspends the DSX) and read a long block, not six bytes.
+
 ### Open small items (do not lose these)
 
 Collected on 2026-10-31 while the QUP work was in flight. None of them is the
