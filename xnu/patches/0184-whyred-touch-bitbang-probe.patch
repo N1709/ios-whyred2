@@ -109,8 +109,8 @@ index 0000000..2e5eb3e
 +#define WHYRED_RST		66
 +#define WHYRED_IRQ		67
 +
-+#define TOUCH_I2C_DELAY_US	10	/* half a bit, ~50 kHz: the internal
-+					 * pull-up makes the edges slow */
++#define TOUCH_I2C_DELAY_US	100	/* half a bit, ~5 kHz: app-mode reads
++					 * were all zero at 10 us (ring 0197) */
 +
 +static inline uint32_t
 +tlmm_rd(vm_offset_t addr)

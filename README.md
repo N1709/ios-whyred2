@@ -473,7 +473,8 @@ Measured on this phone, not assumed: the controller answers at I2C **`0x20`
 66 and IRQ GPIO 67 (TLMM NORTH). The 0184 boot recorded `rst cfg 000003c3 io
 00000003` (GPIO output, driven high - ABL hands it over out of reset), `irq
 cfg 00000001 io 00000001` (input, idling high) and `idle sda 1 scl 1`: the
-internal pull-up is enough at ~50 kHz. Novatek `0x62`/`0x01` does not answer
+internal pull-up was enough for the bootloader-mode stream at ~50 kHz, but
+app-mode reads need the slower ~5 kHz clock (ring 0197). Novatek `0x62`/`0x01` does not answer
 on this unit; the Tianma/Huaxing variants are where that address is expected.
 The Shenchao variant is the Synaptics one.
 

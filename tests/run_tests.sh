@@ -797,6 +797,13 @@ assert '"sweetouchi2c", &on' in src
 # whyred's vendor DTS puts TLMM at 0x03000000; 0x03400000 would point at
 # the CENTER tile and write an unrelated pad.
 assert '0x03000000' in src and '0x03400000' not in src
+# Ring 0197 is the first matrix against the app-mode part and every framing
+# read 00 00 00 00 00 00 at a 10 us half bit. The ACK still lands, so the
+# slave drives low fine; the 1-bits never rise because the LDO11 pull-ups
+# are off in XNU and only the weak internal one is left. Slow the bus to
+# ~5 kHz so the line settles before the sample.
+assert 'TOUCH_I2C_DELAY_US\t100' in src
+assert 'app-mode reads' in src
 PY
 echo "ok   0184 scans on sweetouchi2c and pulses reset only on request"
 

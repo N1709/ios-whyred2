@@ -297,6 +297,40 @@ then becomes a performance fix, not a blocker. Porting ginkgo's driver stays
 deferred: ginkgo is QUPv3 and its useful part (F01/F12 report parsing) comes
 *after* this step.
 
+### Ring 0197 (2026-11-05): the matrix finally ran, and app-mode reads are zero
+
+The bit-bang-only image (`sweeti2c=0`, kernel `6bb8de5`) booted safely and
+returned to fastboot by itself. The ring was pulled from recovery:
+
+    WHYRED TOUCH: reset pulse low 20 ms, high 200 ms + 50 ms settle
+    WHYRED TOUCH: ack 0x20
+    WHYRED TOUCH: framing matrix over bit-bang
+    WHYRED TOUCH: dsx page|a1 [0x00e9] 00 00 00 00 00 00 |......|
+    WHYRED TOUCH: frame page|a1 streams
+    ... every framing the same; a1 gives 00 04 00 00 00 00 ...
+    WHYRED TOUCH: no framing addressed the chip, keeping page|a1
+    WHYRED TOUCH: dsx no F01 in the page table
+    WHYRED TOUCH: no F12 data base, cannot poll touch
+
+The address and reset are right (0x20 ACKs), but every data bit reads 0. That
+is the signature of a **missing external pull-up**, not a wrong framing: the
+ACK is an actively driven low, while a `1` bit is a released line that needs
+the pull-up to rise. The external 2.2k pull-ups sit on `pm660_l11`
+(`vcc_i2c-supply`), and XNU has no PM660 SPMI driver, so only the weak
+internal TLMM pull-up is left. At the old 10 us half bit the line does not
+settle before the sample; the `a1` framing's lone `0x04` is the one bit that
+did. This also explains why the bootloader-mode read worked in 0188: that
+part drives its stream differently, and the internal pull-up is enough when
+the slave is doing the work.
+
+The 0184 bit-bang is slowed to `TOUCH_I2C_DELAY_US = 100` (~5 kHz), still only
+~200 ms for the whole `0x08..0x77` scan. Next boot: rebuild and pack the
+bit-bang-only image again; if `page|a1` returns a real PDT, the F12 poll
+follows in the same boot. When the phone is next in recovery, read
+`/sys/kernel/debug/regulator/regulator_summary` to see whether LDO11 is on
+after ABL; that turns the pull-up hypothesis into a measurement. If 100 us
+still reads zero, try 200 us before assuming a chip state.
+
 A third dwell now sits immediately before the first SE write, with
 `WHYRED I2C: QUP mapped, resetting the SE` printed first, so a ring that stops
 after `clocks on` but before that line is the SE's address window, while a ring
