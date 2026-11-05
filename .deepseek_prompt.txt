@@ -32,17 +32,29 @@ How results are read
   reboot watchdog armed before the first clock write. Treat "no USB" as normal,
   not as a hang, and wait at least 600 s.
 
-Current state (2026-10-31, ring /tmp/whyred-0195.txt, image fc42b0ea)
+Current state (2026-11-05, commit e8ee7d2)
 - Done and proven on hardware: kernel + panel + eMMC + rootfs + SpringBoard;
   GCC/clock path for touch (`clocks on, RCG cfg 0x1 cmd 0x2, apps 0x1`);
   watchdog auto-reboot; CI on macos-15.
-- Blocker: the BLSP1 QUP1 SE at 0x0c175000 stalls on the very first register
-  write (`WHYRED I2C: QUP mapped, resetting the SE` is the last ring line).
-  Clock and mapping are not the problem; `gcc_660_resets` has no BLSP entry.
-- Next probes, cheapest first: read QUP_HW_VERSION (0x30) before any write to
-  tell "window dead" from "SW reset never self-clears"; then the CX/NoC side of
-  the BLSP1 slave port. After that: v2 tag protocol, F01/F12, coordinates into
-  `sweet_hid_touch()`.
+- Touch itself is alive: on 2026-10-30 recovery captured real multi-touch
+  (`ABS_MT_*`, F12 present). The controller is no longer in bootloader mode;
+  it was woken by a reset cycle after the failed FORCE reflash.
+- Target confirmed offline from whyred's own DT: `sdm660-mtp_whyred.dts`
+  includes `synaptics-dsx-i2c.dtsi`, which puts `synaptics_dsx@20` on
+  `&i2c_1` (BLSP1 QUP1, 0x0c175000), IRQ GPIO 67, `vcc_i2c` pm660_l11; the
+  Novatek 0x62 alternative uses reset GPIO 66.
+- Blocker: every QUP1 register access (`QUP_HW_VERSION` at 0x30 even) stalls
+  the whole SoC; the 300 s watchdog cannot reset it either. Ring 0196 stops at
+  `QUP mapped, probing the SE`. The QUP2/QUP3 control probe is in the tree but
+  has not produced a ring yet.
+- Because the QUP init runs before `dsx_diag()`, the 0189 framing matrix has
+  only ever run against the bootloader-mode part. Next boot: the bit-bang-only
+  image `images/shim-boot-touch-bitbang.img` (build 6bb8de5 + `sweeti2c=0`),
+  which never maps the QUP window, cannot kill the SoC, and finally runs the
+  matrix + F12 poll against the app-mode controller. If a framing is accepted,
+  touch reports can be read over bit-bang; the QUP becomes a speed fix.
+- Do not port ginkgo's driver yet. Ginkgo is QUPv3; only its F01/F12 report
+  parsing is reusable and only after the bus works.
 
 Open small items that already cost a cycle are listed at the end of NOTES.md
 ("Open small items"); check them before starting.
