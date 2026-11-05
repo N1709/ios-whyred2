@@ -487,6 +487,30 @@ state, not yet a bit-bang verdict. The DT touch node has no
 `sweetouchreset=1` is the one thing the two environments do not share. Build a
 no-reset image with `SWEETRESET=0` before blaming the 5 kHz change.
 
+The page table itself is no longer in doubt. A 150 s read loop on the recovery
+QUP caught a coherent stream, and it segments into the real table:
+
+    27 00 09 00 21 34   F34 (flash update)
+    2f 26 0d 04 01 01   F01 (device control, command base 0x26)
+    4c 00 13 06 01 12   F12 (2D touch, data base 0x06)
+    00 00 00 00 00 00   end of table
+
+So the controller, its firmware and F12 all exist. The same loop also shows
+that 75 reads of the *same* address walk the table six bytes at a time on the
+known-good QUP, which means the address write is ignored: the part is
+streaming, not misaddressed, and the bit-bang is not at fault. The vendor
+driver puts the part to sleep on suspend (`enable_wakeup_gesture is on`) at
+3.25 s, and a warm reboot inherits that state - that is the `00` matrix of
+rings 0197/0199. A cold boot into XNU, which never suspends the DSX, is the
+open question; ring 0198 got real but unstable bytes because the part was
+already streaming, not because the bus was mis-sampling.
+
+One trap for anyone repeating this on the recovery side: unbinding `1-0020`
+(or a failed rebind) runs the driver's power-off path and disables `vcc_i2c`,
+which also feeds the external I2C pull-ups. Every read after that is random or
+`ff` and says nothing about the chip; keep the driver bound.
+
+
 Patch `0184` (`bsd/dev/santoni_touch.c`) re-muxes the two bus lines as GPIO
 and bit-bangs I2C, because neither a TLMM GPIO driver nor a QUP I2C master
 exists in this kernel yet. `0186` guessed RMI4 (two-byte register address at
