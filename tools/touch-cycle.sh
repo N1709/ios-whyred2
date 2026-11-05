@@ -22,7 +22,12 @@ ring=${RING:-/tmp/whyred-cycle.txt}
 say() { printf '%s\n' "$*"; }
 
 wait_fastboot() {
-	for _ in $(seq 1 60); do
+	# A phone that was just plugged in can take a few seconds to enumerate,
+	# and ABL re-enumerates after `adb reboot bootloader`. 60 s was short
+	# enough that a brief adb sighting at 13:25 made the 2026-11-05 cycle
+	# exit before fastboot appeared; wait long enough for the user to see
+	# FASTBOOT on the panel.
+	for _ in $(seq 1 600); do
 		[ -n "$(fastboot devices 2>/dev/null | awk '{print $1}')" ] && return 0
 		sleep 1
 	done
@@ -44,8 +49,9 @@ say "image   : $img"
 say "sha256  : $(sha256sum "$img" | cut -c1-16)"
 say "recovery: $recovery"
 
-if [ "$(adb get-state 2>/dev/null)" = "recovery" ]; then
-	say "phone is in recovery; rebooting to bootloader"
+adb_state=$(adb get-state 2>/dev/null)
+if [ "$adb_state" = "recovery" ] || [ "$adb_state" = "device" ]; then
+	say "phone is in $adb_state; rebooting to bootloader"
 	adb reboot bootloader
 	sleep 3
 fi

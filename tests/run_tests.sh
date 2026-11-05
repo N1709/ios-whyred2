@@ -1192,4 +1192,12 @@ grep -Fq 'sweeti2c=$qup' tools/build-touch-diag.sh
 grep -Fq 'cp shim/out/shim-boot.img "$out"' tools/build-touch-diag.sh
 echo "ok   SWEETI2C=0 / OUT_IMAGE= pack a bit-bang-only image"
 
+# A phone that was just plugged in enumerates slowly, and the 2026-11-05
+# cycle saw adb for two checks and then exited while ABL was still coming up.
+# Wait 600 s for fastboot and treat an authorized adb device as rebootable.
+grep -Fq 'for _ in $(seq 1 600); do' tools/touch-cycle.sh
+grep -Fq 'adb_state=$(adb get-state 2>/dev/null)' tools/touch-cycle.sh
+grep -Fq '[ "$adb_state" = "device" ]' tools/touch-cycle.sh
+echo "ok   the cycle waits 600 s for fastboot and reboots a plain adb device"
+
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"

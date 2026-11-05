@@ -4702,8 +4702,10 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
 Collected on 2026-10-31 while the QUP work was in flight. None of them is the
 main blocker, but each one has already cost a cycle once.
 
-1. DONE: `tools/touch-cycle.sh` now waits 600 s; the 0195 boot took 451 s, so
-   420 s still declared "no fastboot device" while the phone was running.
+1. DONE: `tools/touch-cycle.sh` now waits 600 s for the probe and 600 s for
+   fastboot; the 0195 boot took 451 s, so 420 s still declared "no fastboot
+   device" while the phone was running, and on 2026-11-05 a brief adb sighting
+   hit the old 60 s fastboot window before ABL had enumerated.
 2. DONE: the watchdog default is 300 s counted from the start of the probe. A slow
    bit-bang scan plus the framing matrix can approach that; either raise the
    default to 300 s or pass `sweetouchwatchdog=` in `tools/build-touch-diag.sh`.
