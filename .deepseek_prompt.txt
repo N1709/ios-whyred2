@@ -58,10 +58,13 @@ Current state (2026-11-06, after commit 275f3b0)
   drives GPIO66; XNU's `sweetouchreset=1` is a variable the working recovery
   kernel never exercises.
 - Next: boot `images/shim-boot-touch-norst.img` (kernel 6bb8de5,
-  `sweeti2c=0 sweetouchreset=0`, 10 us half bit, sha256 b3e25ae5...), which
-  already exists and is copied to `/home/n1709/whyred-touch-norst.img`. If the
-  matrix reads a real PDT without the reset pulse, the pulse is the problem.
-  Then pull `/tmp/whyred-0198.txt` from recovery and compare with 0197.
+  `sweeti2c=0 sweetouchreset=0`, 10 us half bit, sha256 b3e25ae5...) from
+  `/home/n1709/whyred-touch-norst.img`. If the matrix reads a real PDT without
+  the reset pulse, the pulse is the problem. A 5 kHz no-reset variant also
+  exists (`whyred-touch-norst-5k.img`, kernel 275f3b0, sha256 9f2adae7...);
+  try it only after the 10 us one, plus a full power-off, since a warm reboot
+  keeps pm660_l11 (the DSX supply) on. Pull `/tmp/whyred-0198.txt` from
+  recovery and compare with 0197.
 - Do not port ginkgo's driver yet. Ginkgo is QUPv3; only its F01/F12 report
   parsing is reusable and only after the bus works.
 

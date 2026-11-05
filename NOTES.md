@@ -4766,13 +4766,16 @@ working kernel never exercises and may be what parks the part in the state
 that reads zeros.
 
 `tools/build-touch-diag.sh` now takes `SWEETRESET=0` to drop
-`sweetouchreset=1` from the payload command line. The first image built that
-way is `images/shim-boot-touch-norst.img` (kernel `6bb8de5`, `sweeti2c=0`,
-`sweetouchreset=0`, 10 us half bit, sha256
-`b3e25ae5d4d6abee35557cf4d19125114efc33a2b745bcddc5bff6d86536182b`, copied to
-`/home/n1709/whyred-touch-norst.img`). Boot that one before rebuilding for the
-5 kHz change: if the matrix reads a real PDT without the reset pulse, the
-pulse is the problem and the 5 kHz theory is moot.
+`sweetouchreset=1` from the payload command line. Two images are ready:
+`images/shim-boot-touch-norst.img` (kernel `6bb8de5`, 10 us half bit,
+sha256 `b3e25ae5d4d6abee35557cf4d19125114efc33a2b745bcddc5bff6d86536182b`) and
+`images/shim-boot-touch-norst-5k.img` (kernel `275f3b0`, 100 us half bit,
+sha256 `9f2adae7fe83e8930989164cb3bb3a42bff757bee63d931077d0273f7f816d7b`),
+both with `sweeti2c=0 sweetouchreset=0`. Boot the 10 us one first: it changes
+only the reset variable. If the matrix reads a real PDT without the reset
+pulse, the pulse is the problem and the 5 kHz theory is moot. If both still
+read zero, try the 5 kHz image and then a full power-off before booting, since
+a SoC reboot does not remove power from the DSX (`pm660_l11` stays on).
 
 ### Open small items (do not lose these)
 
