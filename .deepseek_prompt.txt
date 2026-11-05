@@ -57,14 +57,18 @@ Current state (2026-11-06, after commit 275f3b0)
   touch node has **no `synaptics,reset-gpio`**, and the vendor driver never
   drives GPIO66; XNU's `sweetouchreset=1` is a variable the working recovery
   kernel never exercises.
-- Next: boot `images/shim-boot-touch-norst.img` (kernel 6bb8de5,
-  `sweeti2c=0 sweetouchreset=0`, 10 us half bit, sha256 b3e25ae5...) from
-  `/home/n1709/whyred-touch-norst.img`. If the matrix reads a real PDT without
-  the reset pulse, the pulse is the problem. A 5 kHz no-reset variant also
-  exists (`whyred-touch-norst-5k.img`, kernel 275f3b0, sha256 9f2adae7...);
-  try it only after the 10 us one, plus a full power-off, since a warm reboot
-  keeps pm660_l11 (the DSX supply) on. Pull `/tmp/whyred-0198.txt` from
-  recovery and compare with 0197.
+- Ring 0198 (2026-11-06, no reset pulse, full power-off) got real bytes:
+  page|a1 at 0x00e9 -> `12 0a 29 00 8f d4`, and every framing returns a
+  different non-zero block, but two reads of the same address still differ, so
+  the address phase is ignored and the part streams. The reset pulse (or the
+  warm boot) was what produced the 0197 zeros.
+- Next: boot `images/shim-boot-touch-norst-5k.img` (kernel 275f3b0,
+  `sweeti2c=0 sweetouchreset=0`, 100 us half bit, sha256 9f2adae7...) after a
+  full power-off. Rationale: only the internal TLMM pull-up is on the bus, and
+  a 10 us half bit may not let a released SDA rise before the slave samples the
+  register address (0xe9 has four 1 bits). If 5 kHz gives a stable PDT, the bus
+  is solved; if not, dump a sequential block and work out which addressing the
+  part is in.
 - Do not port ginkgo's driver yet. Ginkgo is QUPv3; only its F01/F12 report
   parsing is reusable and only after the bus works.
 

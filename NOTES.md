@@ -4777,6 +4777,39 @@ pulse, the pulse is the problem and the 5 kHz theory is moot. If both still
 read zero, try the 5 kHz image and then a full power-off before booting, since
 a SoC reboot does not remove power from the DSX (`pm660_l11` stays on).
 
+### Ring 0198 (2026-11-06): without the reset pulse the chip answers with real bytes
+
+Powered off, then `fastboot boot whyred-touch-norst.img` (kernel `6bb8de5`,
+`sweeti2c=0 sweetouchreset=0`). The ring has no `reset pulse` line, and the
+matrix finally reads non-zero data:
+
+    WHYRED TOUCH: ack 0x20
+    WHYRED TOUCH: scan done, 1 address(es) acknowledged; sda 1 scl 1
+    WHYRED TOUCH: dsx page|a1   [0x00e9] 12 0a 29 00 8f d4
+    WHYRED TOUCH: dsx page+a1   [0x00e9] 81 04 03 03 04 05
+    WHYRED TOUCH: dsx page|a2be [0x00e9] 05 01 01 01 0e 0f
+    WHYRED TOUCH: dsx page|a2le [0x00e9] 0f 04 01 00 00 01
+    WHYRED TOUCH: dsx a1        [0x00e9] c7 11 12 33 13 49
+    WHYRED TOUCH: dsx a2be/a2le [0x00e9] 00 00 00 00 00 00
+    WHYRED TOUCH: no framing addressed the chip, keeping page|a1
+    WHYRED TOUCH: dsx no F01 in the page table
+
+So the zeros in 0197 were the reset pulse (or the warm boot that kept the DSX
+powered), not the bus. Every framing now gets *distinct* bytes, but every one
+still fails the stability test (two reads at `0x00e9` differ, so the address
+phase is ignored and the part streams). The `a2be`/`a2le` framings read all
+zero, which means those address bytes probably never matched.
+
+The remaining suspect is edge rise time. The bus has only the internal TLMM
+pull-up, and `i2c_write` releases SDA for a `1` and samples the slave's SCL
+edge after `TOUCH_I2C_DELAY_US` = 10 us. A weak pull-up plus bus capacitance
+gives a rise time on that order, so the slave can latch a master `1` as `0`
+while the master's address ACK still works. The address byte `0xe9` has four
+`1` bits and is exactly the byte that must survive: if it arrives as `0x69`
+or similar the slave still ACKs and simply streams from the wrong register.
+The 5 kHz image (`images/shim-boot-touch-norst-5k.img`, kernel `275f3b0`) is
+the next single-variable test, again after a full power-off.
+
 ### Open small items (do not lose these)
 
 Collected on 2026-10-31 while the QUP work was in flight. None of them is the
