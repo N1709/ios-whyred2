@@ -61,8 +61,22 @@ if ! wait_fastboot; then
 	exit 1
 fi
 
+# ABL can report a fastboot device a beat before its bulk endpoints (and the
+# udev uaccess ACL on /dev/bus/usb/...) are ready. That window showed up as
+# "Write to device failed in SendBuffer() (Permission denied)" on 2026-11-05
+# and aborted the cycle without booting anything, so settle and retry.
+sleep 2
 say "boot: diagnostic image"
-fastboot boot "$img" || exit 1
+tries=0
+until fastboot boot "$img"; do
+	tries=$((tries + 1))
+	if [ "$tries" -ge 3 ]; then
+		say "fastboot boot failed $tries times; re-enter FASTBOOT and retry"
+		exit 1
+	fi
+	say "fastboot boot failed (attempt $tries), waiting and retrying"
+	sleep 3
+done
 
 say "waiting ${dwell}s for the probe (no tap needed)"
 sleep "$dwell"

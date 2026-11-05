@@ -1198,6 +1198,10 @@ echo "ok   SWEETI2C=0 / OUT_IMAGE= pack a bit-bang-only image"
 grep -Fq 'for _ in $(seq 1 600); do' tools/touch-cycle.sh
 grep -Fq 'adb_state=$(adb get-state 2>/dev/null)' tools/touch-cycle.sh
 grep -Fq '[ "$adb_state" = "device" ]' tools/touch-cycle.sh
-echo "ok   the cycle waits 600 s for fastboot and reboots a plain adb device"
+# ABL can expose fastboot before its bulk endpoints and the udev uaccess ACL
+# are ready: on 2026-11-05 that produced SendBuffer() EACCES and no boot.
+grep -Fq 'until fastboot boot "$img"; do' tools/touch-cycle.sh
+grep -Fq 'fastboot boot failed (attempt' tools/touch-cycle.sh
+echo "ok   the cycle waits 600 s for fastboot and retries a failed boot"
 
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"
