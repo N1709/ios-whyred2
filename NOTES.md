@@ -4731,6 +4731,49 @@ What it took today (in order): 0058 HID services (Apple IOHIDFamily-1915 user cl
   5. panic hook at top of panic_trap_to_debugger: va_copy + _doprnt(fmt, &copy, sweet_early_putc, 16).
   Verify with tools/xnu-cc.py (compile+symbols) and patch-order simulation before the single CI run.
 
+### 2026-11-06: the recovery bus is healthy, and reset is an XNU-only variable
+
+A raw I2C probe (`tools/i2cprobe.c`, static aarch64, push to
+`/data/local/tmp`) ran against the recovery's own QUP at 400 kHz. It sends the
+page select (`FF <page>`) as its own transaction, then the one-byte register
+address plus a repeated start, exactly like the vendor driver:
+
+    /data/local/tmp/i2cprobe 1 0x20 0 0xe9 6 0
+
+Results, in order:
+
+* With the recovery screen off (driver suspended: `synaptics_rmi4_suspend ...
+  SUSPEND END`), every read returned `00 00 00 00 00 00`. Wrong addresses on
+  the same bus fail with `ENOTCONN`, so 0x20 really ACKs while returning zeros.
+* Writing `1` to `/sys/class/input/input2/reset` made the driver try a reset;
+  its PDT scan failed (`Failed to find F01/F35`), but for about a second after
+  that the raw probe read **real bytes**: `0xe9 -> 56 36 00 01 a7 b0`,
+  `0x0000 -> 01 10 00 10 00 70 01 00`, `page 1 -> 01 00 01 00 f0 00 00 22`.
+* Three seconds later the same reads returned `ff ff ff ff ff ff`; later
+  again, `00`. So the part ACKs in several states and drives neither 0s nor
+  real data in most of them. Ring 0197's all-zero matrix is therefore **not
+  proof that the bit-bang is wrong**; it is a chip state that the QUP
+  reproduces.
+
+The decisive difference between XNU and the working recovery kernel is the
+reset line. whyred's live DT touch node has **no `synaptics,reset-gpio`
+property** (`compatible, interrupts, pinctrl-0/1, reg, synaptics,irq-gpio,
+synaptics,irq-on-state, power/reset delays, vcc_i2c-supply` only), so the
+vendor driver never drives GPIO66 at all. Recovery's `ts_active` pinctrl
+leaves it as an input with a pull-up; nothing pulses it. XNU's `dsx_reset()`
+drives it push-pull low for 20 ms on every diag boot, which is a variable the
+working kernel never exercises and may be what parks the part in the state
+that reads zeros.
+
+`tools/build-touch-diag.sh` now takes `SWEETRESET=0` to drop
+`sweetouchreset=1` from the payload command line. The first image built that
+way is `images/shim-boot-touch-norst.img` (kernel `6bb8de5`, `sweeti2c=0`,
+`sweetouchreset=0`, 10 us half bit, sha256
+`b3e25ae5d4d6abee35557cf4d19125114efc33a2b745bcddc5bff6d86536182b`, copied to
+`/home/n1709/whyred-touch-norst.img`). Boot that one before rebuilding for the
+5 kHz change: if the matrix reads a real PDT without the reset pulse, the
+pulse is the problem and the 5 kHz theory is moot.
+
 ### Open small items (do not lose these)
 
 Collected on 2026-10-31 while the QUP work was in flight. None of them is the

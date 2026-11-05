@@ -7,10 +7,17 @@
 # window, so it cannot take the SoC down, and it is the only image that has
 # ever reached dsx_diag() on this phone. OUT_IMAGE=name writes somewhere other
 # than images/shim-boot-touch-diag.img so both variants can coexist.
+#
+# SWEETRESET=0 drops `sweetouchreset=1`, so the probe does not pulse GPIO66
+# before the addressing matrix. Every earlier XNU boot pulsed reset first, but
+# the vendor driver never touches GPIO66 (whyred's DT has no
+# synaptics,reset-gpio property), so resetting is an XNU-only variable that
+# the working recovery kernel does not reproduce.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 qup=${SWEETI2C:-1}
+reset=${SWEETRESET:-1}
 out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}
 
 arg=${1:?usage: build-touch-diag.sh RUN_ID|KERNEL}
@@ -24,7 +31,7 @@ echo "kernel: $kernel ($(stat -c%s "$kernel") bytes)"
 
 # Same command line as the existing diag image: muted console (the ring has
 # the log), the ring on, and the touch probe with its 30 s F12 poll.
-cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweeti2c=$qup sweetouchtouch=30 sweetouchreset=1 sweetouchreboot=1"
+cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=1"
 
 rm -rf shim/out
 ROOTDEV=emmcroot0 EXTRA_CMDLINE="$cmdl" KPRINTF_SPAM= KPRINTF_MUTE=1 \

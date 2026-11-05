@@ -1194,10 +1194,22 @@ echo "== TOUCH: a bit-bang-only image can be packed without the QUP =="
 # is away from its owner, and it is the only way dsx_diag() (the 0189 framing
 # matrix and the F12 poll) has ever run against the app-mode controller.
 grep -Fq 'qup=${SWEETI2C:-1}' tools/build-touch-diag.sh
+grep -Fq 'reset=${SWEETRESET:-1}' tools/build-touch-diag.sh
 grep -Fq 'out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}' tools/build-touch-diag.sh
 grep -Fq 'sweeti2c=$qup' tools/build-touch-diag.sh
+grep -Fq 'sweetouchreset=$reset' tools/build-touch-diag.sh
 grep -Fq 'cp shim/out/shim-boot.img "$out"' tools/build-touch-diag.sh
-echo "ok   SWEETI2C=0 / OUT_IMAGE= pack a bit-bang-only image"
+echo "ok   SWEETI2C=0 / SWEETRESET=0 / OUT_IMAGE= pack a bit-bang-only image"
+
+echo "== TOUCH: the recovery I2C probe keeps the vendor framing =="
+# The probe is how the known-good QUP is compared with the XNU bit-bang. If it
+# ever stops sending the page select as its own transaction, or loses the
+# repeated-start variant, the comparison is no longer meaningful.
+grep -Fq 'MODE 0: page select (ff PAGE), then write REG + repeated start read LEN' tools/i2cprobe.c
+grep -Fq 'pagebuf[0] = (char)0xff;' tools/i2cprobe.c
+grep -Fq 'I2C_M_RD' tools/i2cprobe.c
+grep -Fq 'I2C_SLAVE_FORCE' tools/i2cprobe.c
+echo "ok   tools/i2cprobe.c does page select, one address byte, repeated start"
 
 # A phone that was just plugged in enumerates slowly, and the 2026-11-05
 # cycle saw adb for two checks and then exited while ABL was still coming up.

@@ -473,10 +473,19 @@ Measured on this phone, not assumed: the controller answers at I2C **`0x20`
 66 and IRQ GPIO 67 (TLMM NORTH). The 0184 boot recorded `rst cfg 000003c3 io
 00000003` (GPIO output, driven high - ABL hands it over out of reset), `irq
 cfg 00000001 io 00000001` (input, idling high) and `idle sda 1 scl 1`: the
-internal pull-up was enough for the bootloader-mode stream at ~50 kHz, but
-app-mode reads need the slower ~5 kHz clock (ring 0197). Novatek `0x62`/`0x01` does not answer
+internal pull-up was enough for the bootloader-mode stream at ~50 kHz.
+Novatek `0x62`/`0x01` does not answer
 on this unit; the Tianma/Huaxing variants are where that address is expected.
 The Shenchao variant is the Synaptics one.
+
+Ring 0197 (2026-11-05) is the first framing matrix against the app-mode part
+over XNU's bit-bang: `0x20` ACKs, but every framing reads
+`00 00 00 00 00 00`. A raw probe against the recovery QUP reproduces the same
+zeros while that driver is suspended (see `NOTES.md`), so the zeros are a chip
+state, not yet a bit-bang verdict. The DT touch node has no
+`synaptics,reset-gpio`, so the working kernel never pulses GPIO66 - XNU's
+`sweetouchreset=1` is the one thing the two environments do not share. Build a
+no-reset image with `SWEETRESET=0` before blaming the 5 kHz change.
 
 Patch `0184` (`bsd/dev/santoni_touch.c`) re-muxes the two bus lines as GPIO
 and bit-bangs I2C, because neither a TLMM GPIO driver nor a QUP I2C master

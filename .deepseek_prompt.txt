@@ -32,7 +32,7 @@ How results are read
   reboot watchdog armed before the first clock write. Treat "no USB" as normal,
   not as a hang, and wait at least 600 s.
 
-Current state (2026-11-05, commit e8ee7d2)
+Current state (2026-11-06, after commit 275f3b0)
 - Done and proven on hardware: kernel + panel + eMMC + rootfs + SpringBoard;
   GCC/clock path for touch (`clocks on, RCG cfg 0x1 cmd 0x2, apps 0x1`);
   watchdog auto-reboot; CI on macos-15.
@@ -45,14 +45,23 @@ Current state (2026-11-05, commit e8ee7d2)
   Novatek 0x62 alternative uses reset GPIO 66.
 - Blocker: every QUP1 register access (`QUP_HW_VERSION` at 0x30 even) stalls
   the whole SoC; the 300 s watchdog cannot reset it either. Ring 0196 stops at
-  `QUP mapped, probing the SE`. The QUP2/QUP3 control probe is in the tree but
-  has not produced a ring yet.
-- Because the QUP init runs before `dsx_diag()`, the 0189 framing matrix has
-  only ever run against the bootloader-mode part. Next boot: the bit-bang-only
-  image `images/shim-boot-touch-bitbang.img` (build 6bb8de5 + `sweeti2c=0`),
-  which never maps the QUP window, cannot kill the SoC, and finally runs the
-  matrix + F12 poll against the app-mode controller. If a framing is accepted,
-  touch reports can be read over bit-bang; the QUP becomes a speed fix.
+  `QUP mapped, probing the SE`.
+- Ring 0197 (2026-11-05) finally ran the 0189 matrix over the bit-bang-only
+  image: `0x20` ACKs, every framing reads `00 00 00 00 00 00`, so "no F01 in
+  the page table`. Commit 275f3b0 slows the bit-bang to 5 kHz on the old
+  pull-up theory; CI run 41982643228 builds it.
+- New evidence (2026-11-06): a raw probe (`tools/i2cprobe.c`) on the recovery
+  QUP reproduces the same zeros while the DSX driver is suspended, and reads
+  real bytes for ~1 s after forcing a driver reset, then `ff`/`00` again. So
+  zeros are a chip state, not proof against the bit-bang. whyred's live DT
+  touch node has **no `synaptics,reset-gpio`**, and the vendor driver never
+  drives GPIO66; XNU's `sweetouchreset=1` is a variable the working recovery
+  kernel never exercises.
+- Next: boot `images/shim-boot-touch-norst.img` (kernel 6bb8de5,
+  `sweeti2c=0 sweetouchreset=0`, 10 us half bit, sha256 b3e25ae5...), which
+  already exists and is copied to `/home/n1709/whyred-touch-norst.img`. If the
+  matrix reads a real PDT without the reset pulse, the pulse is the problem.
+  Then pull `/tmp/whyred-0198.txt` from recovery and compare with 0197.
 - Do not port ginkgo's driver yet. Ginkgo is QUPv3; only its F01/F12 report
   parsing is reusable and only after the bus works.
 
