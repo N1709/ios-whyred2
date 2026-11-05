@@ -263,12 +263,39 @@ controls whyred does not use: if either answers, BLSP1 is reachable and QUP1
 alone is held; if neither answers, no BLSP1 window is reachable from the APPS
 and the next step is the TZ/XPU or CX side, not the SE protocol.
 
-Next probes, cheapest first: read QUP_HW_VERSION (0x30) before any write, to
-separate "the window does not answer at all" from "the SW reset never
-self-clears"; if reads stall too, look at a BLSP1 QUP1 reset/gdsc in the
-vendor data - `gcc_660_resets[]` has no BLSP entry and the clock driver has no
-BCR for it, so the reset is probably deasserted by the boot chain and the real
-problem is the CX/NoC side of the BLSP1 slave port, not a missing BCR.
+### 2026-11-05: the target is confirmed, so the next boot drops the QUP
+
+Offline check against whyred's own kernel
+(`Whyred-Dev/android_kernel_xiaomi_sdm660`, branch `lineage-15.1`):
+`arch/arm/boot/dts/qcom/sdm660-mtp_whyred.dts` includes
+`synaptics-dsx-i2c.dtsi`, and that file puts the controller on **`&i2c_1`**:
+
+    &i2c_1 {
+        status = "ok";
+        synaptics_dsx@20 { reg = <0x20>; interrupts = <67 0x2008>;
+                           vcc_i2c-supply = <&pm660_l11>; ... };
+        novatek@62 { reg = <0x62>; novatek,reset-gpio = <&tlmm 66 ...>;
+                     novatek,irq-gpio = <&tlmm 67 ...>; };
+    };
+
+So `0x0c175000` (BLSP1 QUP1), address `0x20`, IRQ GPIO 67 and VDDIO PM660
+LDO11 are confirmed from the phone's own DT, not guessed. GPIO 66 is the
+Novatek reset; the DSX reset goes through pinctrl (`ts_reset_suspend`), so
+the probe's GPIO 66 pulse is only a fallback. Accessing `0x0c175000` is not an
+address mistake, and moving to another QUP would just read an unused bus.
+
+Decision for the next boot: **no QUP**. Touch already worked in recovery on
+2026-10-30 (real `ABS_MT_*` events, F12 present), and no iOS boot has ever
+reached `dsx_diag()`: the probe runs the QUP init first and dies there, so the
+0189 framing matrix has only ever run against the *bootloader-mode* part. Pack
+a bit-bang-only image (`SWEETI2C=0 OUT_IMAGE=images/shim-boot-touch-bitbang.img
+bash tools/build-touch-diag.sh <RUN>`) and boot it: it cannot touch the QUP
+window, so it cannot kill the SoC, and it prints the framing matrix plus the
+F12 poll against the app-mode controller. If `page|a1` is accepted there,
+touch reports can be read over the bit-bang without the QUP at all; the QUP
+then becomes a performance fix, not a blocker. Porting ginkgo's driver stays
+deferred: ginkgo is QUPv3 and its useful part (F01/F12 report parsing) comes
+*after* this step.
 
 A third dwell now sits immediately before the first SE write, with
 `WHYRED I2C: QUP mapped, resetting the SE` printed first, so a ring that stops
@@ -4683,16 +4710,18 @@ main blocker, but each one has already cost a cycle once.
 3. The watchdog's own line never reaches the ring, because the flusher shares
    the stalled bus. Always read the ring before concluding "the watchdog did
    not fire": the phone returning to fastboot is the proof.
-3. DONE: the probe now reads `QUP_HW_VERSION` (0x30) before the first SE
+4. DONE: the probe now reads `QUP_HW_VERSION` (0x30) before the first SE
    write, so the next ring separates "window dead" from "SW reset never
    self-clears".
-4. `origin/whyred` is a stale tracking ref (pushes go to
+5. DONE (2026-11-05): the target is confirmed from whyred's own DT
+   (`&i2c_1`, `0x20`, GPIO 67 IRQ, PM660 LDO11); see the section above.
+6. `origin/whyred` is a stale tracking ref (pushes go to
    `ssh://git@ssh.github.com:443/N1709/ios-whyred2.git`), so `git status`
    claims dozens of commits ahead. Check with `git ls-remote`, not `git status`.
-5. `/tmp/opencode/xr2` is the base tree used to regenerate `0190`; it is
-   outside the repo and will not survive a machine change. If a patch must be
-   regenerated elsewhere, recreate it from `xnu/patches/0190-*.patch` first.
-6. `/tmp/opencode/cycle-0193.sh` is a scratch copy of the cycle with the longer
+7. `/tmp/opencode/xr2` is **gone** (cleared with /tmp). The patches in
+   `xnu/patches/` are now the only source; regenerate 0190 by applying them to
+   a clean XNU tree before editing, and keep the regenerated patch in git.
+8. `/tmp/opencode/cycle-0193.sh` is a scratch copy of the cycle with the longer
    wait. Keep fixes in `tools/touch-cycle.sh`; the scratch copy is disposable.
-7. `sweetouchwait` defaults to 15 s of panel hold on every boot. Fine for the
+9. `sweetouchwait` defaults to 15 s of panel hold on every boot. Fine for the
    diag image, but remember it when timing a cycle by hand.

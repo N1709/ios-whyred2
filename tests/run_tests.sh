@@ -1181,4 +1181,15 @@ if [ -n "${XNU_SRC:-}" ]; then
 	echo "ok   all three patches apply to $XNU_SRC"
 fi
 
+echo "== TOUCH: a bit-bang-only image can be packed without the QUP =="
+# Every QUP1 register access has killed this SoC and needed a held Power key.
+# SWEETI2C=0 never maps the QUP window, so it is safe to boot while the phone
+# is away from its owner, and it is the only way dsx_diag() (the 0189 framing
+# matrix and the F12 poll) has ever run against the app-mode controller.
+grep -Fq 'qup=${SWEETI2C:-1}' tools/build-touch-diag.sh
+grep -Fq 'out=${OUT_IMAGE:-images/shim-boot-touch-diag.img}' tools/build-touch-diag.sh
+grep -Fq 'sweeti2c=$qup' tools/build-touch-diag.sh
+grep -Fq 'cp shim/out/shim-boot.img "$out"' tools/build-touch-diag.sh
+echo "ok   SWEETI2C=0 / OUT_IMAGE= pack a bit-bang-only image"
+
 echo "run_tests: all hosts tests, patch checks and shipped-code assertions passed"
