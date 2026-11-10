@@ -1,0 +1,92 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -787,6 +787,80 @@ dsx_diag(void)
+ 	}
+ }
+ 
++/*
++ * One-transaction page read.
++ *
++ * Ring 0201 settles what the matrix could not: the first read after the page
++ * select and address write lands exactly on 0x00E9 (27 00 09 00 21 34, the
++ * F34 record), and the very next read of the same register returns
++ * 2f 26 0d 04 01 01, the F01 record six bytes on at 0x00E3. So the address
++ * byte arrives intact, but the part keeps one read pointer and advances it by
++ * the number of bytes returned; the next address write never lands.
++ *
++ * That makes addressing useless and a long read useful: one transfer returns
++ * reg[n] .. reg[n+len-1] in order. Read a whole window and place it with the
++ * F12 page-descriptor record, whose bytes are known, instead of guessing where
++ * the window starts. F12's data register (0x06) then sits at a computed
++ * offset, and the 2D header there is what a touch poll has to read.
++ */
++#define DSX_PAGE_LEN	128
++static void
++dsx_page_probe(void)
++{
++	static const uint8_t f12_rec[6] = {
++		0x4c, 0x00, 0x13, 0x06, 0x01, 0x12
++	};
++	uint8_t page[DSX_PAGE_LEN];
++	int base = -1, f12off, i, off, poll;
++
++	if (dsx_read_f(DSX_ADDR, 0x0000, page, sizeof(page), dsx_frame) != 0) {
++		printf("WHYRED TOUCH: page read failed\n");
++		return;
++	}
++	printf("WHYRED TOUCH: page %d via %s\n", DSX_PAGE_LEN,
++	    dsx_frame_name[dsx_frame]);
++	for (i = 0; i < DSX_PAGE_LEN; i += 16) {
++		int n = DSX_PAGE_LEN - i > 16 ? 16 : DSX_PAGE_LEN - i;
++
++		dsx_dump("page", (uint16_t)i, page + i, n);
++	}
++	for (off = 0; off + 5 < DSX_PAGE_LEN; off++) {
++		for (i = 0; i < 6; i++) {
++			if (page[off + i] != f12_rec[i]) {
++				break;
++			}
++		}
++		if (i == 6) {
++			base = DSX_PDT_START - off;
++			break;
++		}
++	}
++	if (base < 0) {
++		printf("WHYRED TOUCH: no F12 record in the window, cannot "
++		    "place F12\n");
++		return;
++	}
++	printf("WHYRED TOUCH: F12 record at %d, window base 0x%04x\n",
++	    off, base);
++	f12off = 0x06 - base;
++	if (f12off < 0 || f12off >= DSX_PAGE_LEN) {
++		printf("WHYRED TOUCH: F12 data 0x0006 is outside the window\n");
++		return;
++	}
++	printf("WHYRED TOUCH: F12 data at %d, first 0x%02x\n",
++	    f12off, page[f12off]);
++	for (poll = 0; poll < 10; poll++) {
++		if (dsx_read_f(DSX_ADDR, 0x0000, page, sizeof(page),
++		    dsx_frame) != 0) {
++			printf("WHYRED TOUCH: poll %d failed\n", poll);
++			break;
++		}
++		printf("WHYRED TOUCH: poll %d F12 0x%02x%s\n", poll,
++		    page[f12off], (page[f12off] & 0x80) ? " valid" : "");
++		delay(300000);
++	}
++}
++
+ /*
+  * Read F12's 2D data block and report every change. The layout is not
+  * assumed: the first sample is the idle snapshot, and a difference in any of
+@@ -1215,6 +1289,7 @@ santoni_touch_probe(void)
+ 			dsx_diag();
+ 			dsx_identify(&dsx);
+ 		}
++		dsx_page_probe();
+ 		touch_s = 0;
+ 		if (PE_parse_boot_argn("sweetouchtouch", &touch_s,
+ 		    sizeof(touch_s)) && touch_s) {

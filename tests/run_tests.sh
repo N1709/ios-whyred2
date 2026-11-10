@@ -1084,6 +1084,33 @@ assert src.count(' \t\t}\n+\t\tdsx_page = hi;') == 2
 PY
 echo "ok   0191 caches the selected DSX page like the vendor driver"
 
+echo "== TOUCH: 0192 reads a whole page instead of guessing an address =="
+P192="xnu/patches/0192-whyred-touch-page-read.patch"
+python3 tools/check_patch.py "$P192" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_page_probe' \
+	--added-contains 'bsd/dev/santoni_touch.c:0x4c, 0x00, 0x13, 0x06, 0x01, 0x12' \
+	--added-contains 'bsd/dev/santoni_touch.c:f12off = 0x06 - base;'
+python3 - <<'PY'
+src = open('xnu/patches/0192-whyred-touch-page-read.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# Ring 0201: the first read after the page select lands on 0x00E9 and the
+# second returns the next six bytes, so addressing is dead but the pointer is
+# sequential. The probe must therefore read one long window and anchor it.
+assert '#define DSX_PAGE_LEN\t128' in body
+assert 'dsx_read_f(DSX_ADDR, 0x0000, page, sizeof(page), dsx_frame)' in body
+assert 'base = DSX_PDT_START - off;' in body
+assert 'for (poll = 0; poll < 10; poll++)' in body
+# The call site is in the probe, after the bootloader-mode reset, and only
+# reached when sweetouchi2c is set.
+assert '\t\tdsx_page_probe();\n' in src
+assert src.index('\n+\t\tdsx_page_probe();\n') < src.index('\n \t\ttouch_s = 0;\n')
+PY
+echo "ok   0192 reads 128 bytes, anchors F12 and polls its data register"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

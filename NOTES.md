@@ -5071,3 +5071,22 @@ survives a resume.
 `tools/recovery-dsx-test.sh` also no longer skips its push when the host binary
 already exists: a freshly booted recovery has an empty `/data/local/tmp`, which
 made every round print "No such file or directory".
+
+### 2026-11-10: 0192 reads a whole page instead of addressing it
+
+The fix for F12 follows from ring 0201 rather than from a new guess: the first
+addressed read lands on `0x00E9` and the second returns the next six bytes, so
+the part keeps one read pointer and advances it by the read length. Addressing
+cannot be repaired from the master side, but a sequential pointer is exactly
+what a long read wants.
+
+`0192-whyred-touch-page-read.patch` reads 128 bytes from `0x0000` in one
+transfer, places the window with the known F12 page-descriptor record
+(`4c 00 13 06 01 12`), computes `window base = 0x00E9 - offset`, and turns
+that into `f12off = 0x0006 - base`. It prints the whole window, the record
+offset, the computed F12 data offset and ten polls of that byte 300 ms apart,
+so a finger on the panel shows up as a changing byte with bit 7 set.
+
+If the window comes back all zero the part is asleep; if it comes back
+sequential but without the record, the window started too far along and the
+next step is a longer read, not another framing.
