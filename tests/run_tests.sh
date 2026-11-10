@@ -1111,6 +1111,43 @@ assert src.index('\n+\t\tdsx_page_probe();\n') < src.index('\n \t\ttouch_s = 0;\
 PY
 echo "ok   0192 reads 128 bytes, anchors F12 and polls its data register"
 
+echo "== TOUCH: 0193 spends the one landing read on the PDT =="
+P193="xnu/patches/0193-whyred-touch-pdt-first-read.patch"
+python3 tools/check_patch.py "$P193" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_PDT_WINDOW	256' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_pdt_scan(const char *tag)' \
+	--added-contains 'bsd/dev/santoni_touch.c:at ctrl 0x%02x data 0x%02x' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_f12_poll(void)'
+python3 - <<'PY'
+src = open('xnu/patches/0193-whyred-touch-pdt-first-read.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# Ring 0201: 0x00E9 returned the F34 entry and the next read of 0x00E9
+# returned the F01 entry, so only the first addressed read lands. The window
+# must therefore be one 256-byte transfer from the PDT start, taken before the
+# framing matrix, and it must be the first thing the probe does after the pin
+# setup.
+assert 'dsx_read_f(DSX_ADDR, DSX_PDT_START, win, sizeof(win),' in body
+assert body.index('dsx_pdt_scan("first read")') < body.index('dsx_f12_poll();')
+assert src.index('dsx_pdt_scan("first read")') < src.index('\n \t\tdsx_diag();\n')
+assert '\n \t\tdsx_identify(&dsx);\n' in src
+# A flash-programming table is F34+F01 only; the caller resets once and scans
+# again rather than trusting a missing F12.
+assert 'entries <= 3' in body
+assert 'dsx_pdt_scan("after reset")' in body
+# dsx_identify keeps fn = b[5] & 0x3f, so the scan must agree with it and also
+# print fn4 in case the window is shifted by one byte.
+assert '(e[5] & 0x3f) == DSX_F12_FUNC' in body
+assert 'fn4 %02x fn5 %02x' in body
+# The poll opens with a page-0 window read, which the page select does honour.
+assert 'dsx_read_f(DSX_ADDR, 0x0000, page, sizeof(page)' in body
+assert 'page[off] & 0x80' in body
+PY
+echo "ok   0193 reads the PDT first, retries after reset and polls F12"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

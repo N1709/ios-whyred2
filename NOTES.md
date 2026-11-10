@@ -5090,3 +5090,36 @@ so a finger on the panel shows up as a changing byte with bit 7 set.
 If the window comes back all zero the part is asleep; if it comes back
 sequential but without the record, the window started too far along and the
 next step is a longer read, not another framing.
+
+### 2026-11-11: 0192 confirmed the pointer, 0193 spends the first read
+
+The console image built from 0192 booted and wrote flush #15 of the ring. It
+reads:
+
+    WHYRED TOUCH: page|a1 unstable 27 00 09 00 21 34 -> 2f 26 0d 04 01 01
+    WHYRED TOUCH: dsx page|a1 [0x00e9] 12 0a 00 00 00 00
+    WHYRED TOUCH: page 128 via page|a1
+    WHYRED TOUCH: no F12 record in the window
+
+So the first addressed read of `0x00E9` does return the F34 entry and the very
+next read of the same address returns the F01 entry: the pointer advances by
+the previous read length and the address phase never latches again. The 128-byte
+page-0 window is all zeros, so F12 is not on page 0 and the record anchor found
+nothing. The framing matrix spends the one read that lands, which is why 0192
+arrived too late.
+
+`0193-whyred-touch-pdt-first-read.patch` removes that cost from the critical
+path: right after the reset and pin setup it does a single 256-byte read from
+`0x00E9` (42 PDT entries), dumps it 16 bytes at a time, and prints each entry
+with both candidate function bytes (`fn4`, `fn5`) so a shifted window is
+visible. F12 is taken from `fn5 & 0x3f == 0x12`, matching `dsx_identify`. If the
+table is F34+F01 only (the flash-programming table), the probe pulses reset once
+and scans again. It then polls F12 through a page-0 window at the data base the
+table reported, 12 times 300 ms apart, printing the byte and whether bit 7 is
+set. The old matrix and `dsx_identify` still run afterwards for comparison.
+
+`tests/run_tests.sh` pins the ordering (`dsx_pdt_scan("first read")` before the
+matrix), the 256-byte window, the reset retry, the fn5 match, the fn4/fn5
+diagnostic and the page-0 poll. The next step is a console image from this
+tree: the first read should print the real table, and if F12 appears the poll
+shows whether a finger moves that byte.
