@@ -18,7 +18,7 @@
 Mirrors: `SweetFramebuffer.cpp` and `SweetSurface.cpp` (the code this kernel
 actually runs, regenerated from the patches).
 
-Reference: `unixnu/WhyredDisplay` (read `../THIRD_PARTY.md` first). It solves
+Reference: `WhyredDisplay` (read `../THIRD_PARTY.md` first). It solves
 the same problem (GOP handoff to the MDP/DSI panel, present `IOSurface` layers,
 fake vsync with a timer) on the same board; compare its property sets and
 handoff order with our `AppleCLCD` path before changing this one.

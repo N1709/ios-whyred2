@@ -44,14 +44,14 @@ Order for the next steps:
 1. Prove the chip answers (0184).
 2. Read the report descriptor / point data over the bit-banged bus and decode
    one finger, with the same `SweetHIDTouch::touch()` entry point 0183 uses.
-3. Only then replace polling with the QUP1 engine if the frame rate needs it.
+3. Only then switch polling to the QUP1 engine if the frame rate needs it.
 
 Mirror: `sweet_touch.c`. This is the FT5452/Goodix GENI driver used by the
 sweet/topaz boards, **not** an NT36672 driver - it is here as a reference for
 the attach/IRQ/report structure.
 
-Reference: `unixnu/WhyredTouch`, `unixnu/WhyredInput` and
-`unixnu/WhyredHidInput` (read `../THIRD_PARTY.md` first). They target the same
+Reference: `WhyredTouch`, `WhyredInput` and
+`WhyredHidInput` (read `../THIRD_PARTY.md` first). They target the same
 Synaptics DSX controller through the BLSP1 QUP1 bus, so use them to compare the
 transport, probe and HID bridge before extending `santoni_touch.c`; the port's
 own source is ahead on the bus and page-select experiments.

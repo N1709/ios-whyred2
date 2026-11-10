@@ -1,4 +1,6 @@
-# WhyredSdhci
+# WhyredStorage
+
+Source driver: `WhyredSdhci` (the eMMC host at `0xc0c4000`).
 
 State: **adapted source**. Two implementations are staged here:
 

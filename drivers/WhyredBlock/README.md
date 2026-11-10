@@ -10,7 +10,7 @@ design notes. It is not a build input yet.
 
 Publish the eMMC as an `IOBlockStorageDevice` so `IOStorageFamily` and
 `IOGUIDPartitionScheme` do the GPT work, then expose the `userdata` windows to
-the kernel. This is the XNU-side half of the storage bring-up; `WhyredSdhci`
+the kernel. This is the XNU-side half of the storage bring-up; `WhyredStorage`
 owns the host.
 
 ## Contract

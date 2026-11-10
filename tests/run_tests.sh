@@ -639,30 +639,20 @@ echo "== DRIVERS: the mirrors under drivers/ match the patch series =="
 # mkdrv: the patch is canonical; a mirror can only be refreshed by the tool.
 python3 tools/extract_drivers.py --check
 echo "ok   driver mirrors are generated from the patches, not edited by hand"
-# The UniXNU references are byte-for-byte copies of the whyred driver tree;
-# if one is edited it stops being evidence of what that port actually did.
-python3 - <<'PY'
-import hashlib
-from pathlib import Path
-bad = []
-for line in Path('drivers/unixnu-SHA256SUMS').read_text().splitlines():
-    want, name = line.split('  ', 1)
-    p = Path('drivers') / name
-    if not p.is_file():
-        bad.append(name + ': missing')
-    elif hashlib.sha256(p.read_bytes()).hexdigest() != want:
-        bad.append(name + ': modified')
-if bad:
-    raise SystemExit('\n'.join(bad))
-PY
-echo "ok   UniXNU driver references are unmodified"
-# The HakiOS references were removed on 2026-11-10; nothing may bring them
-# back, because this port uses the UniXNU-whyred drivers instead.
-if find drivers xnu tools -iname '*hakios*' | grep -q .; then
-	echo "a HakiOS reference is back under drivers/, xnu/ or tools/" >&2
+# The whyred drivers live directly under drivers/, one directory each, with a
+# README that states the hardware contract. No checksum file and no extra
+# wrapper directory: these are source, not a frozen import.
+for d in drivers/Whyred*; do
+	if [ ! -f "$d/README.md" ]; then
+		echo "$d has no README" >&2
+		exit 1
+	fi
+done
+if [ -e drivers/unixnu ] || find drivers -maxdepth 1 -name '*-SHA256SUMS' | grep -q .; then
+	echo "drivers/: keep the whyred drivers at the top level, without checksum files" >&2
 	exit 1
 fi
-echo "ok   no HakiOS driver reference remains"
+echo "ok   whyred drivers are unpacked under drivers/"
 
 echo "== FB TEST: 0176 paints the boot framebuffer without the console =="
 P176="xnu/patches/0176-whyred-framebuffer-test-pattern.patch"
@@ -770,9 +760,10 @@ PY
 echo "ok   0182 paints the shim's own mark after the fbcon clear"
 # dxb only warns when `git apply --check` rejects a patch, so the workflow
 # fails the build itself. The guard has to name every series it now depends on,
-# or a skipped 018x ships a kernel without the logo and the ring fix.
-grep -q '018\[0-9\]' .github/workflows/xnu.yml
-echo "ok   0182 a skipped 018x patch fails the build instead of shipping"
+# or a skipped 018x/019x ships a kernel without the logo, the ring fix or the
+# DSX page select.
+grep -q '01\[89\]\[0-9\]' .github/workflows/xnu.yml
+echo "ok   0182 a skipped 018x/019x patch fails the build instead of shipping"
 
 echo "== SWIPE: 0183 proves the digitizer path without touch hardware =="
 P183="xnu/patches/0183-sweet-hid-synthetic-swipe.patch"

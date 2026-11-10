@@ -1,4 +1,6 @@
-# WhyredArmCpu
+# WhyredCpu
+
+Source driver: `WhyredArmCpu` (SDM660 CPU/GIC/timer override).
 
 State: **reference source**. `native/ArmCpu.cpp`, `Info.plist` and `README.md`
 are the SDM660 `ArmCpu` override from `qine233/UniXNU-clover` (commit

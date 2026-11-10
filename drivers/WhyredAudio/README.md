@@ -1,4 +1,6 @@
-# WhyredDsp
+# WhyredAudio
+
+Source driver: `WhyredDsp` (ADSP over GLINK/SMEM).
 
 State: **adapted source**. `native/WhyredDsp.cpp` (with `DspRegs.h` and
 `DspCore.h`) is the native UniXNU ADSP driver, ported from

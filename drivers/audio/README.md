@@ -10,7 +10,7 @@
   then decide whether a codec-only path (no ADSP) is enough for boot sounds;
   SpringBoard does not require audio to render.
 
-Reference: `unixnu/WhyredDsp` (read `../THIRD_PARTY.md` first). It targets the
+Reference: `WhyredAudio` (read `../THIRD_PARTY.md` first). It targets the
 same SDM636 ADSP over GLINK/SMEM, but it does not carry a codec path yet; its
 class layout, reset sequence and boot arguments are the starting point for a
 WCD9335 driver. The codec registers and firmware still have to be confirmed

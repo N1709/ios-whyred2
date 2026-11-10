@@ -13,9 +13,9 @@ Mirrors: `SweetBattery.cpp` and `sweet_i2c1.c` from the sweet/topaz power path;
 the PM660 register programming still has to come from the whyred Android
 sources.
 
-Reference: `unixnu/WhyredPower`, `unixnu/WhyredPMGR` and `unixnu/WhyredArmCpu`
+Reference: `WhyredPower`, `WhyredPMGR` and `WhyredCpu`
 (read `../THIRD_PARTY.md` first). They target the same PM660/PM660L pair and
 clock tree. `WhyredPower` carries the rail table and the `IOPMPowerSource`
-shape; `WhyredPMGR` the clock/reset scheduling; `WhyredArmCpu` the CPU/GIC/
+shape; `WhyredPMGR` the clock/reset scheduling; `WhyredCpu` the CPU/GIC/
 timer override. Charge detection and the fuel-gauge registers are still
 missing from both trees.

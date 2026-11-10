@@ -1139,7 +1139,7 @@ magic, and `tests/run_tests.sh` covers both cases with a stub `adb`.
 
 On 2026-10-27 a read-only copy of the HakiOS XNU kernel drivers was imported
 as a reference. It has been removed: this port now uses the drivers from the
-UniXNU-whyred tree (`drivers/unixnu/`, see `drivers/THIRD_PARTY.md`), which
+UniXNU-whyred tree (`drivers/Whyred*`, see `drivers/THIRD_PARTY.md`), which
 target the same SDM660/SDM636 board instead of a POCO X5 Pro. The HakiOS
 licence, checksum list, third-party notice file and firmware pull script were
 deleted with it; no HakiOS file is compiled or shipped here.
@@ -4948,22 +4948,23 @@ The next ring should only be taken after this series builds, with
 `tools/build-touch-diag.sh` and the E9/E3/E9 test deciding between the three
 outcomes above.
 
-### 2026-11-10: driver references now come from UniXNU-whyred
+### 2026-11-10: the UniXNU whyred drivers now sit under drivers/
 
-Every `drivers/*/hakios/` reference tree was removed, together with the HakiOS
-licence, checksum list, third-party notice and firmware pull script. They were
-replaced with a byte-for-byte copy of `UniXNU-whyred/drivers` under
-`drivers/unixnu/`: `WhyredSdhci`, `WhyredBlock`, `WhyredDisplay`, `WhyredGpu`,
-`WhyredTouch`, `WhyredInput`, `WhyredHidInput`, `WhyredDsp`, `WhyredPower`,
-`WhyredPMGR`, `WhyredArmCpu` and `WhyredKeyStore`. These target the same
+Every `drivers/*/hakios/` tree was deleted, together with the HakiOS licence,
+checksum list, third-party notice and firmware pull script. The driver sources
+from `UniXNU-whyred/drivers` now live directly under `drivers/`:
+`WhyredStorage` (the eMMC host, source `WhyredSdhci`), `WhyredBlock`,
+`WhyredDisplay`, `WhyredGpu`, `WhyredTouch`, `WhyredInput`, `WhyredHidInput`,
+`WhyredAudio` (source `WhyredDsp`), `WhyredPower`, `WhyredPMGR`, `WhyredCpu`
+(source `WhyredArmCpu`) and `WhyredKeyStore`. These target the same
 SDM660/SDM636 board, unlike the SM7325 code that was there before.
 
 `drivers/THIRD_PARTY.md` records the provenance (BSD-2-Clause-Patent from
-`qine233/UniXNU-clover` commit `4c5652e`, plus the earlier whyred XNU port) and
-`drivers/unixnu-SHA256SUMS` lets the tests prove the copy is untouched.
-Nothing under `unixnu/` is a build input; the patch series remains canonical.
-There is no Wi-Fi driver in the UniXNU tree yet, so `drivers/wifi/README.md`
-now says so instead of pointing at WCN6750 code.
+`qine233/UniXNU-clover` commit `4c5652e`, plus the earlier whyred XNU port).
+No checksum file is kept: these are source, not a frozen import. Nothing under
+`Whyred*/` is a build input; the patch series remains canonical. There is no
+Wi-Fi driver in the UniXNU tree yet, so `drivers/wifi/README.md` says so
+instead of pointing at WCN6750 code.
 
 ### Open small items (do not lose these)
 
