@@ -1027,8 +1027,45 @@ assert 'fifo_bytes = sweet_fifo_bytes(' in body
 # The pin mux is the last step of init, so a failed init leaves the bit-bang
 # pins (plain GPIO + pull-up) untouched.
 assert '\tsweet_pins(1);\n\tsweet_i2c_ready = 1;' in body
+
+# 0190 has to apply on top of 0189, not on the pre-0189 file. dxb only warns
+# when a patch fails, and this hunk went stale when 0189 added
+# DFRAME_PAGE_A1_DUMMY to the page-select condition: the whole QUP path was
+# silently skipped on every build. Require the context line and the offsets
+# that match the patched 0189 file.
+context = [l[1:] for l in src.splitlines()
+           if l.startswith(' ') and l[1:].strip()]
+assert ' \tif (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A1_DUMMY ||' in src
+assert '\t    frame == DFRAME_PAGE_A2_BE ||' in context
+assert '@@ -429,6 +496,10 @@' in src
 PY
 echo "ok   0190 adds the QUP master and keeps bit-bang as the fallback"
+
+echo "== TOUCH: 0191 selects the DSX page only when it changes =="
+P191="xnu/patches/0191-whyred-touch-page-cache.patch"
+python3 tools/check_patch.py "$P191" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:static int dsx_page = -1;' \
+	--added-contains 'bsd/dev/santoni_touch.c:hi != dsx_page' \
+	--added-contains 'bsd/dev/santoni_touch.c:forget the cached page' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_page = -1;'
+python3 - <<'PY'
+src = open('xnu/patches/0191-whyred-touch-page-cache.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The vendor's synaptics_rmi4_i2c_set_page() writes 0xFF <page> only when
+# the page differs from the last one. Every read used to re-send the page
+# select, which returns the part to page 0 mid-stream and is why the read
+# back disagreed with the address phase.
+assert body.count('dsx_page = hi;') == 4  # bit-bang + QUP, page select + combined
+assert body.count('\tdsx_page = -1;') == 2  # reset + QUP init
+# A failed page write must not be cached, or the next read skips the select:
+# the cache is set only after both the rc/EIO block closes.
+assert src.count(' \t\t}\n+\t\tdsx_page = hi;') == 2
+PY
+echo "ok   0191 caches the selected DSX page like the vendor driver"
 
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
@@ -1211,6 +1248,20 @@ grep -Fq 'pagebuf[0] = (char)0xff;' tools/i2cprobe.c
 grep -Fq 'I2C_M_RD' tools/i2cprobe.c
 grep -Fq 'I2C_SLAVE_FORCE' tools/i2cprobe.c
 echo "ok   tools/i2cprobe.c does page select, one address byte, repeated start"
+
+# The E9/E3/E9 test is the one that separates "address phase works, page select
+# is the bug" from "the pointer really does auto-advance". It must keep using
+# mode 2 as the vendor framing and mode 0 as ours, and it must force continuous
+# reporting mode instead of unbinding the driver (unbinding kills vcc_i2c).
+[ -x tools/recovery-dsx-test.sh ]
+grep -Fq 'for a in 0xe9 0xe3 0xe9' tools/recovery-dsx-test.sh
+grep -Fq 'echo 0 > /sys/bus/i2c/devices/${BUS}-0020/wake_gesture' tools/recovery-dsx-test.sh
+grep -Fq 'for mode in 2 0' tools/recovery-dsx-test.sh
+if grep -Fq 'unbind' tools/recovery-dsx-test.sh; then
+	echo "fail recovery-dsx-test.sh must not unbind the DSX driver"
+	exit 1
+fi
+echo "ok   tools/recovery-dsx-test.sh runs the E9/E3/E9 page-select test"
 
 # A phone that was just plugged in enumerates slowly, and the 2026-11-05
 # cycle saw adb for two checks and then exited while ABL was still coming up.

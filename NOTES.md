@@ -4898,6 +4898,78 @@ The recovery driver proves the part is in app mode right after power-up, so
 the next test must probe before anything suspends it: cold boot straight into
 XNU (which never suspends the DSX) and read a long block, not six bytes.
 
+### 2026-11-06: "streaming" may just be the page select, not the chip
+
+The conclusion above (address phase ignored, part in a bootloader/ROM stream)
+has one hole: the vendor driver works, and it reads the F12 data base
+(`0x0006`) over and over during a touch. If every address write were ignored,
+continuous touch could not work. So the part is addressable in app mode, and
+our probe is doing something the driver never does.
+
+There are exactly two differences between `tools/i2cprobe.c` mode 0 and the
+vendor's read path:
+
+1. **Page select on every read.** The vendor's `synaptics_rmi4_i2c_set_page()`
+   writes `FF <page>` only when the page changes, and initialises
+   `current_page` to `0xFF`. Our probe, and the XNU diag, write `FF 00`
+   before *every* read. The vendor code goes out of its way to avoid that.
+2. **The same register twice in a row.** The self test in patch 0189 reads
+   `0x00E9` twice and expects the same six bytes. The vendor never does that;
+   its PDT scan walks `E9, E3, DD, D7, D1`, and its later reads alternate
+   between `0x2F/0x0D/0x26/0x2F/0x4C/0x13/0x06`.
+
+A test that tells the two apart without a reboot: read `E9`, then `E3`, then
+`E9` again.
+
+* address phase works, page select is the bug: `F34, F01, F34`
+* pure stream: `F34, F01, F12` (the next records in memory)
+* all `00`: the part is asleep; touch the panel once first
+
+`tools/recovery-dsx-test.sh` automates this on the recovery QUP (mode 2 = the
+vendor's framing, no page select; mode 0 = page select every read) and first
+forces the driver back to continuous reporting mode with
+`echo 0 > wake_gesture; echo 0 > suspend`. Keep the driver bound: unbinding
+it disables `vcc_i2c` and the pull-ups, after which every read is floating.
+
+If the `F34, F01, F34` result comes back, the fix is small: XNU's
+`dsx_read_f()` must cache the page and send `FF <page>` only when it changes,
+exactly like `synaptics_rmi4_i2c_set_page()`. Do not spend another ring on a
+long-block parse until this test has run.
+
+### 2026-11-10: 0190 was never applied, and the page cache lands
+
+The `F34, F01, F34` fix is now in the tree, but it came with a second bug
+worth recording: **0190 has not been in any kernel since 0189 changed the
+file.** dxb runs `git apply --check` and only warns when a patch fails, so
+the QUP hunk was skipped silently. Its context still said
+
+```
+	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
+	    frame == DFRAME_PAGE_A2_LE) {
+```
+
+while 0189's `DFRAME_PAGE_A1_DUMMY` had already turned that into a three-line
+condition. Every QUP image since then was actually the bit-bang build with
+`sweeti2c=1` parsed and never used, which matches the rings where the QUP
+never printed its first line.
+
+Fix:
+
+1. Rebuild the post-0189 file by applying 0184..0189 to a scratch tree, then
+   regenerate `0190` as a diff from that exact file (hunk offsets
+   `@@ -429,6 +496,10 @@` and the `DFRAME_PAGE_A1_DUMMY` context line).
+   `tests/run_tests.sh` now asserts both, so this cannot regress silently.
+2. New `0191-whyred-touch-page-cache.patch`: `dsx_read_f()` and `dsx_read_q()`
+   cache the selected page in `dsx_page` and send `FF <page>` only when it
+   differs, like `synaptics_rmi4_i2c_set_page()`. The cache is dropped on a
+   controller reset and when the QUP takes the bus. It is set only after the
+   page write returns success, so a failed select is retried instead of
+   being remembered.
+
+The next ring should only be taken after this series builds, with
+`tools/build-touch-diag.sh` and the E9/E3/E9 test deciding between the three
+outcomes above.
+
 ### Open small items (do not lose these)
 
 Collected on 2026-10-31 while the QUP work was in flight. None of them is the

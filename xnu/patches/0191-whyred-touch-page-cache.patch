@@ -1,0 +1,101 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+index 4690d02..99ef500 100644
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -438,6 +438,16 @@ static int dsx_frame = DFRAME_PAGE_A1;
+ /* Nonzero once the QUP1 master owns the bus; all DSX reads then use it. */
+ static int dsx_qup;
+ 
++/*
++ * The DSX keeps its register page until it is told otherwise, exactly like
++ * the vendor driver's synaptics_rmi4_i2c_set_page(): current_page starts at
++ * 0xFF and 0xFF <page> goes out only when the page differs from the last one.
++ * Writing the page before every read (what this probe used to do) puts the
++ * part back into page 0 mid-stream and is not what the working driver does.
++ * A controller reset returns it to page 0, so drop the cache there too.
++ */
++static int dsx_page = -1;
++
+ /*
+  * The same seven framings, built as QUP transactions. Each /page/ prefix is a
+  * separate write transaction with a real stop; the address phase and the read
+@@ -453,14 +463,15 @@ dsx_read_q(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 	uint8_t lo = (uint8_t)(reg & 0xff);
+ 	int wl, rc;
+ 
+-	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
+-	    frame == DFRAME_PAGE_A2_LE) {
++	if ((frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
++	    frame == DFRAME_PAGE_A2_LE) && hi != dsx_page) {
+ 		p[0] = 0xff;
+ 		p[1] = hi;
+ 		rc = sweet_i2c_xfer(addr, p, 2, NULL, 0);
+ 		if (rc != 0) {
+ 			return rc;
+ 		}
++		dsx_page = hi;
+ 	}
+ 	wl = 0;
+ 	switch (frame) {
+@@ -486,7 +497,12 @@ dsx_read_q(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 	default:
+ 		return EINVAL;
+ 	}
+-	return sweet_i2c_xfer(addr, w, wl, buf, len);
++	rc = sweet_i2c_xfer(addr, w, wl, buf, len);
++	if (rc == 0 && frame == DFRAME_PAGE_A1_COMB) {
++		/* the combined write carries the page select */
++		dsx_page = hi;
++	}
++	return rc;
+ }
+ 
+ static int
+@@ -500,9 +516,9 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 		return dsx_read_q(addr, reg, buf, len, frame);
+ 	}
+ 
+-	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A1_DUMMY ||
++	if ((frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A1_DUMMY ||
+ 	    frame == DFRAME_PAGE_A2_BE ||
+-	    frame == DFRAME_PAGE_A2_LE) {
++	    frame == DFRAME_PAGE_A2_LE) && hi != dsx_page) {
+ 		/* page select: 0xFF <page>, its own transaction */
+ 		i2c_start();
+ 		ok &= i2c_write((uint8_t)(addr << 1));
+@@ -512,6 +528,7 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 		if (!ok) {
+ 			return EIO;
+ 		}
++		dsx_page = hi;
+ 	}
+ 
+ 	i2c_start();
+@@ -551,6 +568,10 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+ 		i2c_stop();
+ 		return EIO;
+ 	}
++	if (frame == DFRAME_PAGE_A1_COMB) {
++		/* the combined write carries the page select */
++		dsx_page = hi;
++	}
+ 	i2c_start();
+ 	ok &= i2c_write((uint8_t)((addr << 1) | 1));
+ 	if (!ok) {
+@@ -972,6 +993,8 @@ dsx_reset(vm_offset_t north)
+ 	delay(20000);
+ 	pin_out(&rst, 1);
+ 	delay(250000);
++	/* the controller comes back in page 0; forget the cached page */
++	dsx_page = -1;
+ 	printf("WHYRED TOUCH: reset pulse low 20 ms, high 200 ms + 50 ms "
+ 	    "settle\n");
+ }
+@@ -1168,6 +1191,7 @@ santoni_touch_probe(void)
+ 		if (PE_parse_boot_argn("sweeti2c", &qup, sizeof(qup)) && qup) {
+ 			if (sweet_i2c_init() == 0) {
+ 				dsx_qup = 1;
++				dsx_page = -1;
+ 				printf("WHYRED TOUCH: DSX reads over QUP1 "
+ 				    "(hardware I2C, repeated start)\n");
+ 			} else {

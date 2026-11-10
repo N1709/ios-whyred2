@@ -78,20 +78,28 @@ Current state (2026-11-06, after commit 275f3b0)
   34`, F01 `2f 26 0d 04 01 01`, F12 `4c 00 13 06 01 12` (data base 0x06), then
   the `00` terminator. So the controller, its firmware and F12 all exist.
 - But 75 reads of the same 0x00e9 walked the map 6 bytes at a time instead of
-  repeating F34, on the QUP as well. The address write is ignored: the part is
-  in a streaming mode (bootloader/ROM), which is what 0198 also saw. That is
-  not a bit-bang bug, and it is why 0197/0199 read zero: the vendor driver
-  suspends at 3.25 s with `enable_wakeup_gesture is on`, and the part never
-  returns to app mode; a warm reboot inherits it.
+  repeating F34, on the QUP as well. That looked like the address write being
+  ignored, but the vendor driver reads the F12 data base 0x0006 repeatedly
+  during touch, so a truly ignored address phase would break touch. The
+  remaining difference is the **page select**: the vendor writes `FF <page>`
+  only when the page changes (current_page starts 0xFF) and the probe writes
+  `FF 00` before every read. The second difference is that the 0189 self test
+  reads the *same* register twice, which the vendor never does.
+- DECISIVE CHEAP TEST (no reboot, no CI): read `E9`, `E3`, `E9` with
+  `tools/recovery-dsx-test.sh`. `F34, F01, F34` = address phase works and the
+  repeated page select is the bug; `F34, F01, F12` = the pointer really does
+  auto-advance and the part is not in app mode; all `00` = asleep, touch once.
+  Mode 2 is the vendor framing (no page select), mode 0 is ours.
+  If it is the page select, `0191` caches the page in
+  `dsx_read_f()`/`dsx_read_q()` and writes `FF <page>` only when it changes.
+  Note that `0190` had been silently skipped since 0189 changed its hunk
+  context (dxb only warns); it is regenerated as of 2026-11-10.
 - CAUTION: unbinding `1-0020` (or a failed rebind) powers off `vcc_i2c`
   (`pm660_l11`) in the driver remove/error path, which also kills the external
   I2C pull-ups. After that every read is random / `ff`; do not mistake that for
   chip data. Keep the driver bound for bus experiments.
-- Next: cold boot straight into XNU (never suspends the DSX) and read a LONG
-  block (64+ bytes) at 0x00e9, parsing for fn_number instead of trusting six
-  bytes at one address. 0189's `page|a1dup` + `a -> b` print is in the CI
-  build for a1a916. Goal: prove the part is in app mode on a cold boot and can
-  be addressed before anything suspends it.
+- Do not burn a CI run on a long-block PDT parse until the E9/E3/E9 test has
+  answered which of the two it is.
 - Do not boot the QUP path yet: every QUP1 register access still kills the SoC.
 - Do not port ginkgo's driver yet. Ginkgo is QUPv3; only its F01/F12 report
   parsing is reusable and only after the bus works.

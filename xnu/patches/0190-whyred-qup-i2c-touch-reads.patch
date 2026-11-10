@@ -11,10 +11,10 @@ index 4b27ddc..2e79620 100644
  bsd/dev/munge.c 			optional config_requires_u32_munging
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
-index 9a84d1d..8939247 100644
+index 7948d63..4690d02 100644
 --- a/bsd/dev/santoni_touch.c
 +++ b/bsd/dev/santoni_touch.c
-@@ -20,6 +20,9 @@
+@@ -21,6 +21,9 @@
   *
   * Boot-args:
   *   sweetouchi2c=1    enable the probe
@@ -24,7 +24,7 @@ index 9a84d1d..8939247 100644
   *   sweetouchreset=1  drive reset (GPIO 66) low for 10 ms and high for
   *                     60 ms before the scan; use it only in the boot that
   *                     asks whether the bootloader hand-off left the
-@@ -50,6 +53,7 @@
+@@ -51,6 +54,7 @@
  #include <sys/systm.h>
  #include <sys/errno.h>
  #include <kern/clock.h>
@@ -32,7 +32,7 @@ index 9a84d1d..8939247 100644
  #include <machine/machine_routines.h>
  #include <pexpert/pexpert.h>
  #include <vm/memory_types.h>
-@@ -59,6 +63,15 @@
+@@ -60,6 +64,15 @@
  extern vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size,
      uint32_t flags);
  
@@ -48,7 +48,7 @@ index 9a84d1d..8939247 100644
  #define WHYRED_TLMM_BASE	0x03000000ULL	/* vendor DTS: pinctrl@03000000 */
  #define WHYRED_TLMM_SOUTH	0x00100000u	/* GPIO 0..15 */
  #define WHYRED_TLMM_NORTH	0x00900000u	/* GPIO 66..67 */
-@@ -418,6 +431,60 @@ static const char *dsx_frame_name[DFRAME_COUNT] = {
+@@ -422,6 +435,60 @@ static const char *dsx_frame_name[DFRAME_COUNT] = {
  /* The vendor driver's framing until the self test says otherwise. */
  static int dsx_frame = DFRAME_PAGE_A1;
  
@@ -109,7 +109,7 @@ index 9a84d1d..8939247 100644
  static int
  dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
  {
-@@ -425,6 +492,10 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
+@@ -429,6 +496,10 @@ dsx_read_f(uint8_t addr, uint16_t reg, uint8_t *buf, int len, int frame)
  	uint8_t lo = (uint8_t)(reg & 0xff);
  	int i, ok = 1;
  
@@ -117,10 +117,10 @@ index 9a84d1d..8939247 100644
 +		return dsx_read_q(addr, reg, buf, len, frame);
 +	}
 +
- 	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A2_BE ||
+ 	if (frame == DFRAME_PAGE_A1 || frame == DFRAME_PAGE_A1_DUMMY ||
+ 	    frame == DFRAME_PAGE_A2_BE ||
  	    frame == DFRAME_PAGE_A2_LE) {
- 		/* page select: 0xFF <page>, its own transaction */
-@@ -639,6 +710,8 @@ dsx_diag(void)
+@@ -664,6 +735,8 @@ dsx_diag(void)
  	uint8_t a[DSX_PDT_ENTRY_SIZE], b[DSX_PDT_ENTRY_SIZE];
  	int frame, best = -1;
  
@@ -129,7 +129,7 @@ index 9a84d1d..8939247 100644
  	for (frame = 0; frame < DFRAME_COUNT; frame++) {
  		if (dsx_frame_works(frame, a)) {
  			dsx_dump(dsx_frame_name[frame], DSX_PDT_START, a,
-@@ -878,11 +951,100 @@ dsx_reset(vm_offset_t north)
+@@ -903,11 +976,100 @@ dsx_reset(vm_offset_t north)
  	    "settle\n");
  }
  
@@ -231,7 +231,7 @@ index 9a84d1d..8939247 100644
  	uint8_t id[3] = { 0, 0, 0 };
  	uint8_t first_ack = 0;
  	struct dsx_funcs dsx;
-@@ -898,6 +1060,17 @@ santoni_touch_probe(void)
+@@ -923,6 +1085,17 @@ santoni_touch_probe(void)
  	}
  	touch_probe_done = 1;
  
@@ -249,7 +249,7 @@ index 9a84d1d..8939247 100644
  	south = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_SOUTH,
  	    0x10000, VM_WIMG_IO);
  	north = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_NORTH,
-@@ -960,6 +1133,23 @@ santoni_touch_probe(void)
+@@ -985,6 +1158,23 @@ santoni_touch_probe(void)
  	    "scl %d\n", acks, pin_read(&touch_sda), pin_read(&touch_scl));
  
  	if (saw_rmi) {
@@ -273,7 +273,7 @@ index 9a84d1d..8939247 100644
  		touch_irq_setup(north);
  		dsx_diag();
  		dsx_identify(&dsx);
-@@ -1019,6 +1209,16 @@ santoni_touch_probe(void)
+@@ -1044,6 +1234,16 @@ santoni_touch_probe(void)
  		printf("WHYRED TOUCH: holding the panel %u s\n", wait);
  		delay((int)(wait * 1000000u));
  	}
