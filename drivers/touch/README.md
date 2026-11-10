@@ -50,8 +50,8 @@ Mirror: `sweet_touch.c`. This is the FT5452/Goodix GENI driver used by the
 sweet/topaz boards, **not** an NT36672 driver - it is here as a reference for
 the attach/IRQ/report structure.
 
-Reference: `WhyredTouch`, `WhyredInput` and
-`WhyredHidInput` (read `../THIRD_PARTY.md` first). They target the same
-Synaptics DSX controller through the BLSP1 QUP1 bus, so use them to compare the
-transport, probe and HID bridge before extending `santoni_touch.c`; the port's
-own source is ahead on the bus and page-select experiments.
+Reference: `dsx/`, `input/` and `hid/` (read `../THIRD_PARTY.md` first). They
+target the same Synaptics DSX controller through the BLSP1 QUP1 bus, so use
+them to compare the transport, probe and HID bridge before extending
+`santoni_touch.c`; the port's own source is ahead on the bus and page-select
+experiments.

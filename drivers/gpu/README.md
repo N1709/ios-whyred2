@@ -14,9 +14,9 @@
      `IOSurface` users is enough for SpringBoard first; full 3D is a later,
      much larger project.
 
-Reference: `WhyredGpu` (read `../THIRD_PARTY.md` first):
-- `native/WhyredGpu.cpp` and `GpuRegs.h` - the Adreno 509 clock/chip-ID
-  bring-up for this board; the register names match the SDM636 `gpucc` block;
+Reference: `adreno/` (read `../THIRD_PARTY.md` first):
+- `native/Gpu.cpp` and `GpuRegs.h` - the Adreno 509 clock/chip-ID bring-up for
+  this board; the register names match the SDM636 `gpucc` block;
 - `native/GpuCore.h` - the core split to extend with the a5xx ringbuffer,
   firmware and GMU/zap steps before writing an `IOAccelerator`;
-- `native/tests/whyred_gpu_host.cpp` - the host model of the same constants.
+- `native/tests/gpu_host.cpp` - the host model of the same constants.

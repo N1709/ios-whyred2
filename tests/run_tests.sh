@@ -639,20 +639,28 @@ echo "== DRIVERS: the mirrors under drivers/ match the patch series =="
 # mkdrv: the patch is canonical; a mirror can only be refreshed by the tool.
 python3 tools/extract_drivers.py --check
 echo "ok   driver mirrors are generated from the patches, not edited by hand"
-# The whyred drivers live directly under drivers/, one directory each, with a
-# README that states the hardware contract. No checksum file and no extra
-# wrapper directory: these are source, not a frozen import.
-for d in drivers/Whyred*; do
+# One folder per subsystem, one subfolder per driver, each with a README that
+# states the hardware contract. Display and storage use the kernel's built-in
+# drivers, so they must not carry a second copy here.
+for d in drivers/audio/dsp drivers/gpu/adreno drivers/touch/dsx \
+	drivers/touch/input drivers/touch/hid drivers/power/pmic \
+	drivers/power/pmgr drivers/power/cpu drivers/key-store/keystore; do
 	if [ ! -f "$d/README.md" ]; then
 		echo "$d has no README" >&2
 		exit 1
 	fi
 done
-if [ -e drivers/unixnu ] || find drivers -maxdepth 1 -name '*-SHA256SUMS' | grep -q .; then
-	echo "drivers/: keep the whyred drivers at the top level, without checksum files" >&2
+if [ -e drivers/unixnu ] || [ -e drivers/WhyredDisplay ] \
+	|| [ -e drivers/WhyredStorage ] || [ -e drivers/WhyredBlock ] \
+	|| find drivers -name '*-SHA256SUMS' | grep -q .; then
+	echo "drivers/: display/storage stay built-in; no wrapper directory or checksums" >&2
 	exit 1
 fi
-echo "ok   whyred drivers are unpacked under drivers/"
+if find drivers -iname '*whyred*' | grep -q .; then
+	echo "drivers/: a driver still carries the board name" >&2
+	exit 1
+fi
+echo "ok   drivers/ is one folder per subsystem, one per driver, no board names"
 
 echo "== FB TEST: 0176 paints the boot framebuffer without the console =="
 P176="xnu/patches/0176-whyred-framebuffer-test-pattern.patch"

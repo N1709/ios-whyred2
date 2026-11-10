@@ -14,4 +14,6 @@
 The host-side mock lives in `tests/test_sdhci_mock.c` and `tests/test_gpt_parser.c`.
 
 Mirror: `santoni_sdhci.c` in this folder (regenerated from the patch series by
-`tools/extract_drivers.py`; do not edit it here).
+`tools/extract_drivers.py`; do not edit it here). Storage has **no driver
+sources here**: this port uses the kernel's built-in `santoni_sdhci.c` from
+the patch series, so a second copy would only drift.

@@ -4948,23 +4948,25 @@ The next ring should only be taken after this series builds, with
 `tools/build-touch-diag.sh` and the E9/E3/E9 test deciding between the three
 outcomes above.
 
-### 2026-11-10: the UniXNU whyred drivers now sit under drivers/
+### 2026-11-10: drivers are now one folder per subsystem
 
 Every `drivers/*/hakios/` tree was deleted, together with the HakiOS licence,
 checksum list, third-party notice and firmware pull script. The driver sources
-from `UniXNU-whyred/drivers` now live directly under `drivers/`:
-`WhyredStorage` (the eMMC host, source `WhyredSdhci`), `WhyredBlock`,
-`WhyredDisplay`, `WhyredGpu`, `WhyredTouch`, `WhyredInput`, `WhyredHidInput`,
-`WhyredAudio` (source `WhyredDsp`), `WhyredPower`, `WhyredPMGR`, `WhyredCpu`
-(source `WhyredArmCpu`) and `WhyredKeyStore`. These target the same
-SDM660/SDM636 board, unlike the SM7325 code that was there before.
+from `UniXNU-whyred/drivers` now sit under a subsystem folder, one subfolder
+per driver: `audio/dsp`, `gpu/adreno`, `touch/{dsx,input,hid}`,
+`power/{pmic,pmgr,cpu}` and `key-store/keystore`. None of those paths, files
+or symbols carries the board name any more.
+
+Display and storage have **no driver folder**: the port uses the kernel's
+built-in `AppleCLCD`/`sweetfb` and `santoni_sdhci.c` through the patch series.
+`WhyredDisplay`, `WhyredStorage` and `WhyredBlock` were removed with the
+checksum file, so there is no second copy to drift.
 
 `drivers/THIRD_PARTY.md` records the provenance (BSD-2-Clause-Patent from
-`qine233/UniXNU-clover` commit `4c5652e`, plus the earlier whyred XNU port).
-No checksum file is kept: these are source, not a frozen import. Nothing under
-`Whyred*/` is a build input; the patch series remains canonical. There is no
-Wi-Fi driver in the UniXNU tree yet, so `drivers/wifi/README.md` says so
-instead of pointing at WCN6750 code.
+`qine233/UniXNU-clover` commit `4c5652e`, plus the earlier XNU port). Nothing
+under the driver subfolders is a build input; the patch series remains
+canonical. There is no Wi-Fi driver in the UniXNU tree yet, so
+`drivers/wifi/README.md` says so instead of pointing at WCN6750 code.
 
 ### Open small items (do not lose these)
 
