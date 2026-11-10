@@ -13,6 +13,11 @@
 # the vendor driver never touches GPIO66 (whyred's DT has no
 # synaptics,reset-gpio property), so resetting is an XNU-only variable that
 # the working recovery kernel does not reproduce.
+#
+# DIAG_CONSOLE=1 keeps the kernel text console on the panel instead of muting
+# it, so the probe's own lines can be read on the phone without a recovery
+# round trip. It costs boot time (every line is painted), so it is off by
+# default.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,16 +37,27 @@ echo "kernel: $kernel ($(stat -c%s "$kernel") bytes)"
 # Same command line as the existing diag image: muted console (the ring has
 # the log), the ring on, and the touch probe with its 30 s F12 poll.
 cmdl="emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 sweetfbtest=1 sweetlog=1 sweetouchi2c=1 sweeti2c=$qup sweetouchtouch=30 sweetouchreset=$reset sweetouchreboot=1"
+panel_noconsole=1
+kprintf_mute=1
+kprintf_spam=
+if [ "${DIAG_CONSOLE:-0}" = 1 ]; then
+	# Disable_kprintf_output=0 (mute off) needs the stayon/hz pair that the
+	# muted command line gets from shim/build.sh; add it here because that
+	# branch is not taken.
+	cmdl="$cmdl sweetfb_stayon=1 sweetfb_hz=60"
+	panel_noconsole=0
+	kprintf_mute=0
+fi
 
 rm -rf shim/out
-ROOTDEV=emmcroot0 EXTRA_CMDLINE="$cmdl" KPRINTF_SPAM= KPRINTF_MUTE=1 \
-	PANEL_NOCONSOLE=1 bash shim/build.sh "$kernel"
+ROOTDEV=emmcroot0 EXTRA_CMDLINE="$cmdl" KPRINTF_SPAM="$kprintf_spam" KPRINTF_MUTE=$kprintf_mute \
+	PANEL_NOCONSOLE=$panel_noconsole bash shim/build.sh "$kernel"
 # zopfli only exists on the CI runner; gzip -9 already lands under the ABL
 # download limit on this kernel, so fall back instead of failing.
 if command -v zopfli >/dev/null; then
 	zopfli --i15 -c shim/out/Image > shim/out/Image.z.gz
-	ROOTDEV=emmcroot0 EXTRA_CMDLINE="$cmdl" KPRINTF_SPAM= KPRINTF_MUTE=1 \
-		PANEL_NOCONSOLE=1 IMAGE_GZ="$PWD/shim/out/Image.z.gz" \
+	ROOTDEV=emmcroot0 EXTRA_CMDLINE="$cmdl" KPRINTF_SPAM="$kprintf_spam" KPRINTF_MUTE=$kprintf_mute \
+		PANEL_NOCONSOLE=$panel_noconsole IMAGE_GZ="$PWD/shim/out/Image.z.gz" \
 		bash shim/build.sh "$kernel"
 fi
 

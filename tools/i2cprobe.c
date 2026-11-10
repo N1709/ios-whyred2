@@ -11,6 +11,13 @@
  * MODE 5: no page select, write REG + dummy 0x00, then repeated start read
  * MODE 6: page select, then a plain read of LEN bytes
  * MODE 7: a plain read of LEN bytes, no write at all
+ * MODE 8: page select, then write LEN as one byte to REG
+ * MODE 9: no page select, write LEN as one byte to REG
+ *
+ * Modes 8 and 9 exist because the vendor driver's first act in probe is an
+ * F01 command write (register 0x0026 = 0x01, a device reset). If the part is
+ * streaming its register space, that command is the documented way back into
+ * app mode, and it can only be tried from the host.
  *
  * Why it exists: this is the only way to compare the chip's answers on the
  * known-good recovery QUP with what the XNU bit-bang sees. Wrong addresses
@@ -80,12 +87,23 @@ main(int argc, char **argv)
 	pagebuf[1] = (char)page;
 	regbuf = (char)reg;
 
-	if (mode <= 1 || mode == 4 || mode == 6) {
+	if (mode <= 1 || mode == 4 || mode == 6 || mode == 8) {
 		struct i2c_msg p = { .addr = addr, .flags = 0, .len = 2,
 		    .buf = (unsigned char *)pagebuf };
 
 		if (xfer(fd, &p, 1, "page select"))
 			return 1;
+	}
+
+	if (mode == 8 || mode == 9) {
+		char wb[2] = { (char)reg, (char)len };
+		struct i2c_msg w = { .addr = addr, .flags = 0, .len = 2,
+		    .buf = (unsigned char *)wb };
+
+		if (xfer(fd, &w, 1, "write reg=value"))
+			return 1;
+		printf("wrote %02x=%02x\n", reg & 0xff, len & 0xff);
+		return 0;
 	}
 
 	if (mode == 4 || mode == 5) {

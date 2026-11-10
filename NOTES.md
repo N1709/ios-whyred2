@@ -5027,3 +5027,17 @@ Consequence for the next boot: the QUP image (`sweeti2c=1 sweetouchreset=1`,
 kernel `76ca451` = run 42743027729, which does contain the regenerated 0190 and
 the 0191 page cache) has never been booted. It is the only artifact that uses
 the same hardware I2C block as the vendor driver, so it is the next ring.
+
+### 2026-11-10: a console image, so the probe can be read on the panel
+
+`tools/build-touch-diag.sh` takes `DIAG_CONSOLE=1`. It drops
+`disable_kprintf_output=1` and `sweetfb_noconsole=1`, adds the
+`sweetfb_stayon=1 sweetfb_hz=60` pair the muted command line used to get
+from `shim/build.sh`, and turns the console back on over the colour bars.
+Everything the probe prints then scrolls on the panel; the SYSTEM ring keeps
+recording it, so a recovery round trip is no longer needed to read a result.
+
+Scrolling the console with a finger is not possible yet: the only input source
+is F12, and the whole open problem is that F12's data base cannot be read.
+Once an addressed read repeats, the same poll can translate a vertical drag
+into a console scroll.
