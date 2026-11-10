@@ -5041,3 +5041,33 @@ Scrolling the console with a finger is not possible yet: the only input source
 is F12, and the whole open problem is that F12's data base cannot be read.
 Once an addressed read repeats, the same poll can translate a vertical drag
 into a console scroll.
+
+### 2026-11-10: the QUP control probe is what took the phone off USB
+
+The ring pulled after the failed cycle (`flush #4`, cmdline `sweeti2c=1
+sweetouchreset=1`) stops on
+
+    WHYRED I2C: clocks on, RCG cfg 0x00000001 cmd 0x00000002, apps 0x00000001
+    WHYRED I2C: probe QUP2/QUP3 windows (controls)
+
+and nothing follows. So the hang is the *control* read of the QUP2 window at
+`0x0c176000`, not QUP1: reading an unclocked BLSP1 sibling stalls the NoC, and
+the 300 s watchdog was the only way back. The window probe is now opt-in
+(`sweetqupctl=1`) and the default boot never touches a sibling window. This
+also explains the phone vanishing from `lsusb` during the cycle.
+
+The same ring, plus the live recovery probe, still says the I2C problem is the
+chip, not the bus. After
+
+    echo 0 > /sys/class/input/input2/wake_gesture
+    echo 0 > /sys/class/input/input2/suspend     # setenforce 0 first
+
+the first reads come back non-zero (`00 00 f0 00 00 22`) and 14 one-byte reads
+of `0x00E9` give `00 00 f0 00 00 22 22 00 00 ...`: the same value is not
+returned twice, so the address phase still does not latch even on the known
+good QUP with the driver awake. The part is streaming, and the streaming state
+survives a resume.
+
+`tools/recovery-dsx-test.sh` also no longer skips its push when the host binary
+already exists: a freshly booted recovery has an empty `/data/local/tmp`, which
+made every round print "No such file or directory".

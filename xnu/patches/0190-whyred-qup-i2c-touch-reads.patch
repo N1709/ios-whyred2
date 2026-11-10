@@ -295,7 +295,7 @@ new file mode 100644
 index 0000000..e86b762
 --- /dev/null
 +++ b/bsd/dev/sweet_i2c.c
-@@ -0,0 +1,614 @@
+@@ -0,0 +1,616 @@
 +/*
 + * whyred / SDM636: BLSP1 QUP v2 I2C master on i2c_1 (0x0c175000).
 + *
@@ -730,19 +730,21 @@ index 0000000..e86b762
 +	 * means the QUP slave stalled the bus, not the GCC block.
 +	 */
 +	/*
-+	 * Never touch QUP1 before the controls answer: ring 0196 read
-+	 * QUP1+0x30 and the whole SoC died, watchdog included, so a stalled
-+	 * read is not survivable and has to be attributed in one boot.
++	 * The controls are opt-in. Ring 0200 stopped on the very next access and
++	 * the phone stayed off USB until the 300 s watchdog: a read of an
++	 * unclocked BLSP1 sibling window stalls the NoC, so the control killed
++	 * the boot it exists to diagnose. sweetqupctl=1 re-enables it.
 +	 */
-+	printf("WHYRED I2C: probe QUP2/QUP3 windows (controls)\n");
-+	delay(1500000);
 +	v = 0;
-+	if (sweet_probe_window(0x0c176000u, &v) == 0) {
-+		printf("WHYRED I2C: QUP2 version 0x%08x\n", v);
-+	}
-+	v = 0;
-+	if (sweet_probe_window(0x0c177000u, &v) == 0) {
-+		printf("WHYRED I2C: QUP3 version 0x%08x\n", v);
++	if (PE_parse_boot_argn("sweetqupctl", &v, sizeof(v)) && v != 0) {
++		printf("WHYRED I2C: probe QUP2/QUP3 windows (controls)\n");
++		delay(1500000);
++		if (sweet_probe_window(0x0c176000u, &v) == 0) {
++			printf("WHYRED I2C: QUP2 version 0x%08x\n", v);
++		}
++		if (sweet_probe_window(0x0c177000u, &v) == 0) {
++			printf("WHYRED I2C: QUP3 version 0x%08x\n", v);
++		}
 +	}
 +
 +	printf("WHYRED I2C: QUP mapped, probing the SE\n");

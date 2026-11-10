@@ -1014,10 +1014,13 @@ assert 'refusing the QUP' in body
 assert body.count('delay(1500000);') == 4
 assert 'QUP mapped, probing the SE' in body
 # Ring 0196 died on the first QUP1 read with the watchdog dead too, so the
-# control windows are probed first: QUP2/QUP3 answering means QUP1 alone is
-# held in reset; nothing answering means BLSP1 is unreachable from the APPS.
+# control windows were probed first. Ring 0200 then died on that first
+# control read and stayed off USB until the watchdog, so the probe is opt-in
+# now: reading an unclocked BLSP1 sibling stalls the NoC.
 assert 'sweet_probe_window(uint32_t base, uint32_t *ver)' in body
-assert 'probe QUP2/QUP3 windows (controls)' in body
+assert 'sweetqupctl' in body
+assert body.index('sweetqupctl') < body.index('probe QUP2/QUP3 windows (controls)')
+assert body.index('probe QUP2/QUP3 windows (controls)') > body.index('PE_parse_boot_argn("sweetqupctl"')
 assert 'SE version 0x%08x, STATE 0x%08x' in body
 assert 'WHYRED I2C: resetting the SE' in body
 

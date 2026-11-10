@@ -44,7 +44,7 @@ if ! $ADB shell "test -e /sys/bus/i2c/devices/${BUS}-00${ADDR#0x}" 2>/dev/null; 
 	exit 1
 fi
 
-if [ ! -x "${PROBE:-/tmp/opencode/i2cprobe}" ] && ! $ADB shell "test -x $BIN" 2>/dev/null; then
+if [ ! -x "${PROBE:-/tmp/opencode/i2cprobe}" ]; then
 	say "building i2cprobe"
 	command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 || {
 		say "aarch64-linux-gnu-gcc missing; build i2cprobe yourself"
@@ -52,6 +52,11 @@ if [ ! -x "${PROBE:-/tmp/opencode/i2cprobe}" ] && ! $ADB shell "test -x $BIN" 2>
 	}
 	aarch64-linux-gnu-gcc -O2 -static -o /tmp/opencode/i2cprobe \
 	    "$(dirname "$0")/i2cprobe.c" || exit 1
+fi
+# Push whenever the phone lacks a runnable copy: a freshly booted recovery does
+# not keep /data/local/tmp, and checking only the host binary left every round
+# failing with "No such file or directory".
+if ! $ADB shell "test -x $BIN" 2>/dev/null; then
 	$ADB push /tmp/opencode/i2cprobe "$BIN" >/dev/null || exit 1
 	$ADB shell "chmod 755 $BIN" || exit 1
 fi
