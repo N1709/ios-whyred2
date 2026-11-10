@@ -4998,3 +4998,32 @@ main blocker, but each one has already cost a cycle once.
    wait. Keep fixes in `tools/touch-cycle.sh`; the scratch copy is disposable.
 9. `sweetouchwait` defaults to 15 s of panel hold on every boot. Fine for the
    diag image, but remember it when timing a cycle by hand.
+
+### 2026-11-10: the pulled ring repeats the first PDT record, then advances
+
+The ring pulled from recovery (`tools/sweet-log-pull.sh`, flush #27) was taken
+with `sweeti2c=0 sweetouchreset=0`, so it is the bit-bang image, not the QUP
+one. The addressing matrix on that run is sharper than "unstable":
+
+    WHYRED TOUCH: page|a1 unstable 27 00 09 00 21 34 -> 2f 26 0d 04 01 01
+
+Both reads are exactly page-descriptor records: `27 00 09 00 21 34` is the
+F34 entry at `0x00E9`, and the second read is the F01 entry that follows it at
+`0x00E3`. So the first addressed read after the page select lands correctly,
+and the *next* read of the same register returns the next six bytes. The
+address byte itself, the page select and the bit-bang transmitter are all
+fine; the part keeps a read pointer that advances by the read length and
+ignores the following address write. Every later framing in the matrix reads
+further down that stream, which is why it looks random.
+
+The recovery QUP was then probed on the live vendor driver. `synaptics_rmi4_resume`
+runs (the driver logs `RESUME END`) but its own reads hit `I2C retry 1/2`, and
+`tools/recovery-dsx-test.sh` (E9, E3, E9 in modes 2 and 0, three rounds) returns
+`00 00 00 00 00 00` for every read. That is the sleeping state the 2026-11-06
+notes describe: the chip only accepts I2C reads while the panel is awake, and
+it cannot be woken over adb.
+
+Consequence for the next boot: the QUP image (`sweeti2c=1 sweetouchreset=1`,
+kernel `76ca451` = run 42743027729, which does contain the regenerated 0190 and
+the 0191 page cache) has never been booted. It is the only artifact that uses
+the same hardware I2C block as the vendor driver, so it is the next ring.
