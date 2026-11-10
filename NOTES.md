@@ -4965,6 +4965,8 @@ Fix:
    controller reset and when the QUP takes the bus. It is set only after the
    page write returns success, so a failed select is retried instead of
    being remembered.
+3. The workflow's "a critical patch was skipped" guard stopped at `018[0-9]`,
+   so a skipped 0190/0191 did not fail the build. It now matches `01[89][0-9]`.
 
 The next ring should only be taken after this series builds, with
 `tools/build-touch-diag.sh` and the E9/E3/E9 test deciding between the three
