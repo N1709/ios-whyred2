@@ -10,9 +10,8 @@
   then decide whether a codec-only path (no ADSP) is enough for boot sounds;
   SpringBoard does not require audio to render.
 
-Borrowed reference: `hakios/` from HakiOS (read `../THIRD_PARTY.md` first).
-HakiOS runs a WCD938x through the ADSP, while whyred's SDM636 uses a WCD9335;
-the codec registers and firmware are therefore not reusable. What is useful:
-`hakios.adsp.c` (GLINK/QMI to the DSP), `hakios.sound.c` (the
-`IOAudioFamily` stream), and `hakios.audio.c`/`hakios.mic.c`/`hakios.speaker.c`
-as the shape of the user-visible audio device.
+Reference: `unixnu/WhyredDsp` (read `../THIRD_PARTY.md` first). It targets the
+same SDM636 ADSP over GLINK/SMEM, but it does not carry a codec path yet; its
+class layout, reset sequence and boot arguments are the starting point for a
+WCD9335 driver. The codec registers and firmware still have to be confirmed
+from the Android DTS.

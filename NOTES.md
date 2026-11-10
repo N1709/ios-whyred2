@@ -1135,45 +1135,21 @@ tail. It now keeps the matched *name* and reads 8193 sectors from SYSTEM,
 fails with exit 2 and the flusher hint when sector 0 has no `SANTONILOG1`
 magic, and `tests/run_tests.sh` covers both cases with a stub `adb`.
 
-## HakiOS driver references (2026-10-27)
+## HakiOS driver references (2026-10-27, removed 2026-11-10)
 
-Inspected `https://github.com/oosexgang/hackios-xnu-kernel` at commit
-`88513176b1e96ecf0b764cd62c6f4e6ac71345e3` (2026-10-26). It is the closest
-working precedent: XNU 8796 + iOS 16.5 userland on a Qualcomm phone, with
-lock screen, touch, GPU (Mesa/freedreno), Wi-Fi, audio and battery.
+On 2026-10-27 a read-only copy of the HakiOS XNU kernel drivers was imported
+as a reference. It has been removed: this port now uses the drivers from the
+UniXNU-whyred tree (`drivers/unixnu/`, see `drivers/THIRD_PARTY.md`), which
+target the same SDM660/SDM636 board instead of a POCO X5 Pro. The HakiOS
+licence, checksum list, third-party notice file and firmware pull script were
+deleted with it; no HakiOS file is compiled or shipped here.
 
-The phone is a POCO X5 Pro (`redwood`, SM7325): **Adreno 642L (a660)**,
-**WCN6750**, Goodix GT9916 / FocalTech FT3680 on SPI, WCD938x codec. Whyred is
-**Adreno 509 (a5xx)**, **WCN3990 (ath10k)**, NT36672 on I2C and WCD9335, so no
-chip driver is a drop-in. The reusable parts are the hardware-independent
-layers: the DRM/msm user-client bridge, the LinuxKPI host layer for Wi-Fi,
-the touch input queue, `IOPMPowerSource`, and the ADSP/`IOAudioFamily` path.
-
-Imported as read-only references (not compiled, byte-for-byte, hashes in
-`drivers/hakios-SHA256SUMS`):
-
-- `drivers/gpu/hakios/` - `hakios.adreno.c` (a660), `hakios.gpu.cpp`,
-  `MiniIOSurface.*`
-- `drivers/display/hakios/MiniIOMobileFramebuffer.cpp`
-- `drivers/touch/hakios/` - `hakios.goodix.c`, `hakios.input.c/.h`
-- `drivers/wifi/hakios/` - `hakios.wifi.c` (WCN6750), `hakios.lx.c`,
-  `hakios.apple80211.c`, `hakios.wlan.cpp`, and the MIT `lx/` layer
-- `drivers/power/hakios/` - `hakios.battery.c/.cpp`, `hakios.cpufreq.c`
-- `drivers/audio/hakios/` - `hakios.adsp.c`, `hakios.sound.c`, `hakios.audio.c`,
-  `hakios.mic.c`, `hakios.speaker.c`
-
-Licences: `xnu/files` is APSL 2.0 (`drivers/hakios-LICENSE.APSL`), `wifi/lx`
-is MIT, and the Linux/FreeBSD compatibility headers keep their own notices
-(`drivers/hakios-THIRD_PARTY_LICENSES.md`). The FocalTech firmware blob was
-left out (upstream marks its licence "to verify").
-
-The port matrix and "do not copy this" notes are in `drivers/THIRD_PARTY.md`.
-HakiOS also confirms that iOS 16 keeps the dyld shared cache as a set of
-subcache files under `System/Library/Caches/com.apple.dyld`, extracted
-unchanged from the OS cryptex. Our root has the same split (43 subcaches plus
-`.symbols`), so the slide fault is not a missing subcache; the remaining
-difference is that our cache is 16.7.16 and theirs is 16.5, so the slide
-format may still differ.
+One finding from that inspection is kept because it is not about the drivers:
+iOS 16 stores the dyld shared cache as subcache files under
+`System/Library/Caches/com.apple.dyld`, extracted unchanged from the OS
+cryptex. Our root has the same split (43 subcaches plus `.symbols`), so the
+slide fault is not a missing subcache; our cache is 16.7.16 while the observed
+one was 16.5, so the slide format may still differ.
 
 ## 0173 handoff (2026-10-26): diagnostics for CS 85 and the shared-cache slide
 
@@ -4971,6 +4947,23 @@ Fix:
 The next ring should only be taken after this series builds, with
 `tools/build-touch-diag.sh` and the E9/E3/E9 test deciding between the three
 outcomes above.
+
+### 2026-11-10: driver references now come from UniXNU-whyred
+
+Every `drivers/*/hakios/` reference tree was removed, together with the HakiOS
+licence, checksum list, third-party notice and firmware pull script. They were
+replaced with a byte-for-byte copy of `UniXNU-whyred/drivers` under
+`drivers/unixnu/`: `WhyredSdhci`, `WhyredBlock`, `WhyredDisplay`, `WhyredGpu`,
+`WhyredTouch`, `WhyredInput`, `WhyredHidInput`, `WhyredDsp`, `WhyredPower`,
+`WhyredPMGR`, `WhyredArmCpu` and `WhyredKeyStore`. These target the same
+SDM660/SDM636 board, unlike the SM7325 code that was there before.
+
+`drivers/THIRD_PARTY.md` records the provenance (BSD-2-Clause-Patent from
+`qine233/UniXNU-clover` commit `4c5652e`, plus the earlier whyred XNU port) and
+`drivers/unixnu-SHA256SUMS` lets the tests prove the copy is untouched.
+Nothing under `unixnu/` is a build input; the patch series remains canonical.
+There is no Wi-Fi driver in the UniXNU tree yet, so `drivers/wifi/README.md`
+now says so instead of pointing at WCN6750 code.
 
 ### Open small items (do not lose these)
 

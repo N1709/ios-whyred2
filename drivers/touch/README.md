@@ -50,10 +50,8 @@ Mirror: `sweet_touch.c`. This is the FT5452/Goodix GENI driver used by the
 sweet/topaz boards, **not** an NT36672 driver - it is here as a reference for
 the attach/IRQ/report structure.
 
-Borrowed reference: `hakios/` from HakiOS (read `../THIRD_PARTY.md` first).
-- `hakios.input.c/.h` - a small `/dev/hakios-touch` queue that hands touch
-  samples to user space; useful if publishing an `IOHIDDevice` for NT36672
-  turns out to be more than SpringBoard needs.
-- `hakios.goodix.c` - Goodix GT9916 / FocalTech FT3680 on a GENI **SPI** bus.
-  NT36672 is on **I2C** and has a different report protocol, so this is a
-  reference for power sequencing, polling and report decoding only.
+Reference: `unixnu/WhyredTouch`, `unixnu/WhyredInput` and
+`unixnu/WhyredHidInput` (read `../THIRD_PARTY.md` first). They target the same
+Synaptics DSX controller through the BLSP1 QUP1 bus, so use them to compare the
+transport, probe and HID bridge before extending `santoni_touch.c`; the port's
+own source is ahead on the bus and page-select experiments.

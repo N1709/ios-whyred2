@@ -13,8 +13,9 @@ Mirrors: `SweetBattery.cpp` and `sweet_i2c1.c` from the sweet/topaz power path;
 the PM660 register programming still has to come from the whyred Android
 sources.
 
-Borrowed reference: `hakios/` from HakiOS (read `../THIRD_PARTY.md` first).
-`hakios.battery.cpp` is a working `IOPMPowerSource` that powerd accepts, so it
-is the shape our PM660 source should feed; `hakios.battery.c` itself talks to
-a PM7325B through the ADSP and does not apply. `hakios.cpufreq.c` is SM7325 /
-RPMh, not SDM636 / RPM.
+Reference: `unixnu/WhyredPower`, `unixnu/WhyredPMGR` and `unixnu/WhyredArmCpu`
+(read `../THIRD_PARTY.md` first). They target the same PM660/PM660L pair and
+clock tree. `WhyredPower` carries the rail table and the `IOPMPowerSource`
+shape; `WhyredPMGR` the clock/reset scheduling; `WhyredArmCpu` the CPU/GIC/
+timer override. Charge detection and the fuel-gauge registers are still
+missing from both trees.

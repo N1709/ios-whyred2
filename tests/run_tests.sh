@@ -639,15 +639,30 @@ echo "== DRIVERS: the mirrors under drivers/ match the patch series =="
 # mkdrv: the patch is canonical; a mirror can only be refreshed by the tool.
 python3 tools/extract_drivers.py --check
 echo "ok   driver mirrors are generated from the patches, not edited by hand"
-# The HakiOS references are byte-for-byte upstream; if one is edited it stops
-# being evidence of what the other port actually did.
-if command -v sha256sum >/dev/null 2>&1; then
-	sha256sum -c drivers/hakios-SHA256SUMS --quiet
-else
-	# macOS runner: GNU coreutils is not installed yet at this step.
-	shasum -a 256 -c drivers/hakios-SHA256SUMS >/dev/null
+# The UniXNU references are byte-for-byte copies of the whyred driver tree;
+# if one is edited it stops being evidence of what that port actually did.
+python3 - <<'PY'
+import hashlib
+from pathlib import Path
+bad = []
+for line in Path('drivers/unixnu-SHA256SUMS').read_text().splitlines():
+    want, name = line.split('  ', 1)
+    p = Path('drivers') / name
+    if not p.is_file():
+        bad.append(name + ': missing')
+    elif hashlib.sha256(p.read_bytes()).hexdigest() != want:
+        bad.append(name + ': modified')
+if bad:
+    raise SystemExit('\n'.join(bad))
+PY
+echo "ok   UniXNU driver references are unmodified"
+# The HakiOS references were removed on 2026-11-10; nothing may bring them
+# back, because this port uses the UniXNU-whyred drivers instead.
+if find drivers xnu tools -iname '*hakios*' | grep -q .; then
+	echo "a HakiOS reference is back under drivers/, xnu/ or tools/" >&2
+	exit 1
 fi
-echo "ok   borrowed HakiOS driver references are unmodified"
+echo "ok   no HakiOS driver reference remains"
 
 echo "== FB TEST: 0176 paints the boot framebuffer without the console =="
 P176="xnu/patches/0176-whyred-framebuffer-test-pattern.patch"
