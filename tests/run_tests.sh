@@ -1148,6 +1148,54 @@ assert 'page[off] & 0x80' in body
 PY
 echo "ok   0193 reads the PDT first, retries after reset and polls F12"
 
+echo "== TOUCH: 0194 re-arms the read pointer with the page select =="
+P194="xnu/patches/0194-whyred-touch-page-reselect.patch"
+python3 tools/check_patch.py "$P194" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_PDT_WINDOW	24' \
+	--added-contains 'bsd/dev/santoni_touch.c:static int dsx_f12_query;' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_six("reselect e9", DSX_PDT_START);' \
+	--added-contains 'bsd/dev/santoni_touch.c:f->f12_ctrl = b[2];'
+python3 - <<'PY'
+src = open('xnu/patches/0194-whyred-touch-page-reselect.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# Ring 0199 recovered the whole table and it is three records long. A 256-byte
+# window reads past the end marker and the F12 record lands off the six-byte
+# grid (ring 0193: `81 4c 00 13 06 01 12`), so read exactly four records.
+assert '#define DSX_PDT_WINDOW\t24' in body
+# The record fields are query/cmd/ctrl/data/intr/fn from the LSB, not a
+# big-endian pair: 0193 polled 0x01 instead of F12 data 0x06.
+assert 'f->f12_query = b[0];' in body
+assert 'f->f12_ctrl = b[2];' in body
+assert 'f->f12_data = b[3];' in body
+assert 'f->f01_query = b[0];' in body
+# Accept the record at any offset, because the 0193 dump had one stray byte in
+# front of it; the record itself names the data base.
+assert 'static const uint8_t f12_rec[DSX_PDT_ENTRY_SIZE]' in body
+assert '0x4c, 0x00, 0x13, 0x06, 0x01, 0x12' in body
+assert 'F12 record at offset' in body
+# The page select must be forced before the PDT read and before every sample:
+# 0191 caches it, and the cache is what the E9/E3/E9 test has to defeat.
+assert 'dsx_page = -1;' in body
+assert body.count('dsx_page = -1;') >= 3
+assert 'dsx_six("repeat cached"' in body
+assert 'dsx_six("then e3"' in body
+assert 'dsx_six("reselect e9"' in body
+assert 'force FF <page>' in body
+# whyred's DT has no synaptics,reset-gpio and GPIO 66 is the Novatek reset;
+# ring 0197 showed that pulse parks the part in an all-zero state. The retry
+# paths must not drive it.
+assert 'dsx_reset(north)' not in body
+assert 'pulsing GPIO 66 (it is the Novatek reset)' in body
+# dsx_identify runs after the framing matrix, so its own walk starts wherever
+# that left the stream; the scan above is the authoritative F12 source.
+assert 'dsx.f12_data = (uint16_t)((dsx_f12_page << 8) |' in body
+PY
+echo "ok   0194 reads 24 bytes, fixes the PDT field offsets, reselects the page"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

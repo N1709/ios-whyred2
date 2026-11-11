@@ -1,0 +1,289 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -703,15 +703,16 @@
+ 		}
+ 		fn = b[5] & 0x3f;
+ 		f->entries++;
+-		printf("WHYRED TOUCH: dsx fn %02x query %02x%02x cmd %02x "
+-		    "ctrl %02x data %02x\n", fn, b[0], b[1], b[2], b[3], b[4]);
++		printf("WHYRED TOUCH: dsx fn %02x query %02x cmd %02x "
++		    "ctrl %02x data %02x intr %02x\n", fn, b[0], b[1], b[2],
++		    b[3], b[4]);
+ 		if (fn == 0x01 && !f->found_f01) {
+-			f->f01_query = (uint16_t)((b[0] << 8) | b[1]);
++			f->f01_query = b[0];
+ 			f->found_f01 = 1;
+ 		} else if (fn == 0x12 && !f->found_f12) {
+-			f->f12_query = (uint16_t)((b[0] << 8) | b[1]);
+-			f->f12_ctrl = b[3];
+-			f->f12_data = b[4];
++			f->f12_query = b[0];
++			f->f12_ctrl = b[2];
++			f->f12_data = b[3];
+ 			f->found_f12 = 1;
+ 		}
+ 	}
+@@ -879,27 +880,56 @@
+  * matrix spends that one read on itself, which is why 0192 saw zeros: by the
+  * time it read a page the address was already dead.
+  *
+- * Spend the first read on the page descriptor table instead. One 256-byte
+- * transfer from 0x00E9 covers 42 entries, so F12 is in the window whenever
+- * the part is in application firmware. A table with only F34 and F01 is the
+- * flash-programming table, and the caller can pulse reset once and scan again.
++ * Ring 0199 recovered the whole table from the stream, and it is only three
++ * records long: F34 at 0xE9, F01 at 0xE3, F12 at 0xDD, then the end marker.
++ * The 256-byte window of 0193 therefore read four times more than the table
++ * and mixed register data in after the marker, which is why the F12 record
++ * fell off the six-byte grid. 0194 reads exactly 24 bytes, then runs the
++ * E9/E3/E9 test the 2026-11-10 notes asked for: the cached read must not send
++ * FF <page>, the forced read must, and the two results say whether that write
++ * re-arms the pointer.
+  */
+-#define DSX_PDT_WINDOW	256
++#define DSX_PDT_WINDOW	24
+ #define DSX_F12_FUNC	0x12
+ 
+ static int dsx_f12_found;
++static int dsx_f12_query;
+ static int dsx_f12_ctrl;
+ static int dsx_f12_data;
++static int dsx_f12_page;
++
++static void
++dsx_six(const char *label, uint16_t reg)
++{
++	uint8_t b[DSX_PDT_ENTRY_SIZE];
++
++	if (dsx_read_f(DSX_ADDR, reg, b, sizeof(b), dsx_frame) == 0) {
++		dsx_dump(label, reg, b, sizeof(b));
++	} else {
++		printf("WHYRED TOUCH: %s read failed\n", label);
++	}
++}
+ 
+ static int
+ dsx_pdt_scan(const char *tag)
+ {
++	static const uint8_t f12_rec[DSX_PDT_ENTRY_SIZE] = {
++		0x4c, 0x00, 0x13, 0x06, 0x01, 0x12
++	};
+ 	uint8_t win[DSX_PDT_WINDOW];
+-	int entries = 0, off;
++	int entries = 0, off, match;
+ 
+ 	dsx_f12_found = 0;
++	dsx_f12_query = 0;
+ 	dsx_f12_ctrl = 0;
+ 	dsx_f12_data = 0;
++	dsx_f12_page = 0;
++	/*
++	 * Force the FF <page> write. 0191 caches the current page and skips
++	 * it when unchanged, which is right for the vendor driver but hides
++	 * whether that write is what re-arms the read pointer.
++	 */
++	dsx_page = -1;
+ 	if (dsx_read_f(DSX_ADDR, DSX_PDT_START, win, sizeof(win),
+ 	    dsx_frame) != 0) {
+ 		printf("WHYRED TOUCH: %s: PDT window read failed\n", tag);
+@@ -907,73 +937,101 @@
+ 	}
+ 	printf("WHYRED TOUCH: %s: %d bytes from 0x%04x via %s\n", tag,
+ 	    (int)sizeof(win), DSX_PDT_START, dsx_frame_name[dsx_frame]);
+-	for (off = 0; off < DSX_PDT_WINDOW; off += 16) {
+-		int n = DSX_PDT_WINDOW - off > 16 ? 16 : DSX_PDT_WINDOW - off;
++	dsx_dump("pdt", DSX_PDT_START, win, sizeof(win));
+ 
+-		dsx_dump("pdt", (uint16_t)(DSX_PDT_START + off), win + off, n);
+-	}
+ 	for (off = 0; off + DSX_PDT_ENTRY_SIZE <= DSX_PDT_WINDOW;
+ 	    off += DSX_PDT_ENTRY_SIZE) {
+ 		const uint8_t *e = win + off;
+ 
+ 		if (!e[0] && !e[1] && !e[2] && !e[3] && !e[4] && !e[5]) {
+-			continue;	/* unused slot */
++			printf("WHYRED TOUCH: %s entry %d end of PDT\n", tag,
++			    off / DSX_PDT_ENTRY_SIZE);
++			continue;
+ 		}
+ 		entries++;
+-		/*
+-		 * Print both candidate function bytes: the vendor driver keeps
+-		 * the function number in the last byte, but a shifted window
+-		 * would move it, and the ring has to say which one is F12.
+-		 */
+-		printf("WHYRED TOUCH: %s entry %d q %02x%02x cmd %02x ctrl "
+-		    "%02x data %02x fn4 %02x fn5 %02x\n", tag,
++		printf("WHYRED TOUCH: %s entry %d query %02x cmd %02x ctrl "
++		    "%02x data %02x intr %02x fn %02x\n", tag,
+ 		    off / DSX_PDT_ENTRY_SIZE, e[0], e[1], e[2], e[3], e[4],
+-		    e[5]);
++		    e[5] & 0x3f);
+ 		if ((e[5] & 0x3f) == DSX_F12_FUNC && !dsx_f12_found) {
+ 			dsx_f12_found = 1;
++			dsx_f12_query = e[0];
+ 			dsx_f12_ctrl = e[2];
+ 			dsx_f12_data = e[3];
+ 		}
+ 	}
++	if (!dsx_f12_found) {
++		/*
++		 * Ring 0193 had one extra byte before the F12 record, so the
++		 * record can sit off the grid. The record itself names the
++		 * data base, so accept it at any offset.
++		 */
++		for (off = 0; off + DSX_PDT_ENTRY_SIZE <= DSX_PDT_WINDOW;
++		    off++) {
++			for (match = 0; match < DSX_PDT_ENTRY_SIZE; match++) {
++				if (win[off + match] != f12_rec[match]) {
++					break;
++				}
++			}
++			if (match == DSX_PDT_ENTRY_SIZE) {
++				dsx_f12_found = 1;
++				dsx_f12_query = f12_rec[0];
++				dsx_f12_ctrl = f12_rec[2];
++				dsx_f12_data = f12_rec[3];
++				printf("WHYRED TOUCH: %s F12 record at offset "
++				    "%d\n", tag, off);
++				break;
++			}
++		}
++	}
+ 	printf("WHYRED TOUCH: %s: %d entries, F12 %s", tag, entries,
+ 	    dsx_f12_found ? "found" : "missing");
+ 	if (dsx_f12_found) {
+-		printf(" at ctrl 0x%02x data 0x%02x", dsx_f12_ctrl,
++		printf(" at page %d query 0x%02x ctrl 0x%02x data 0x%02x",
++		    dsx_f12_page, dsx_f12_query, dsx_f12_ctrl,
+ 		    dsx_f12_data);
+ 	}
+ 	printf("\n");
++
++	/* E9, then E3, then E9, with the page select sent only on the last. */
++	dsx_page = dsx_f12_page;	/* cached: the next read sends no FF */
++	dsx_six("repeat cached", DSX_PDT_START);
++	dsx_six("then e3", (uint16_t)(DSX_PDT_START - DSX_PDT_ENTRY_SIZE));
++	dsx_page = -1;			/* forced: FF <page> again */
++	dsx_six("reselect e9", DSX_PDT_START);
++
+ 	return entries;
+ }
+ 
+ /*
+- * Poll F12 through a page-0 window. The address phase does not latch after
+- * the first read, but the page select does return the part to 0x0000 (0192
+- * read a zero page there), so the data register is the page offset equal to
+- * its PDT data base. Contact reports show up as this byte changing and bit 7
+- * setting.
++ * Poll F12's 2D data block. The vendor record gives page 0, data base 0x06;
++ * the first byte is the finger-status register, whose bit 7 is set when an
++ * object is present. Every sample is preceded by a forced page write so the
++ * address phase gets the same first-read chance.
+  */
+ static void
+ dsx_f12_poll(void)
+ {
+-	uint8_t page[DSX_PAGE_LEN];
+-	int i, off = dsx_f12_data;
++	uint8_t b[8];
++	uint16_t reg;
++	int i;
+ 
+ 	if (!dsx_f12_found) {
+ 		printf("WHYRED TOUCH: no F12 entry, cannot poll touch\n");
+ 		return;
+ 	}
+-	if (off >= DSX_PAGE_LEN) {
+-		printf("WHYRED TOUCH: F12 data 0x%04x is outside page 0\n", off);
+-		return;
+-	}
++	reg = (uint16_t)((dsx_f12_page << 8) | dsx_f12_data);
++	printf("WHYRED TOUCH: poll F12 0x%04x, 12 samples\n", reg);
+ 	for (i = 0; i < 12; i++) {
+-		if (dsx_read_f(DSX_ADDR, 0x0000, page, sizeof(page),
+-		    dsx_frame) != 0) {
++		dsx_page = -1;	/* force FF <page> before each sample */
++		if (dsx_read_f(DSX_ADDR, reg, b, sizeof(b), dsx_frame) != 0) {
+ 			printf("WHYRED TOUCH: poll %d read failed\n", i);
+ 			break;
+ 		}
+-		printf("WHYRED TOUCH: poll %d F12[%d] 0x%02x%s\n", i, off,
+-		    page[off], (page[off] & 0x80) ? " valid" : "");
++		printf("WHYRED TOUCH: poll %d F12[%02x] %02x %02x %02x %02x "
++		    "%02x %02x %02x %02x%s\n", i, reg, b[0], b[1], b[2],
++		    b[3], b[4], b[5], b[6], b[7],
++		    (b[0] & 0x80) ? " valid" : "");
+ 		delay(300000);
+ 	}
+ }
+@@ -1000,6 +1058,7 @@
+ 	if (seconds > 60) {
+ 		seconds = 60;	/* keep the boot bounded */
+ 	}
++	dsx_page = -1;	/* force FF <page> so the data address can land */
+ 	if (dsx_read(DSX_ADDR, f->f12_data, idle, sizeof(idle)) != 0) {
+ 		printf("WHYRED TOUCH: F12 data read failed\n");
+ 		return;
+@@ -1028,6 +1087,7 @@
+ 				}
+ 			}
+ 		}
++		dsx_page = -1;	/* each sample re-arms the read pointer */
+ 		if (dsx_read(DSX_ADDR, f->f12_data, b, sizeof(b)) != 0) {
+ 			printf("WHYRED TOUCH: F12 data read failed\n");
+ 			break;
+@@ -1383,30 +1443,36 @@
+ 		{
+ 			int entries = dsx_pdt_scan("first read");
+ 
+-			if (entries >= 0 && !dsx_f12_found && entries <= 3) {
++			/*
++			 * F34+F01+F12 is application firmware. A table with
++			 * no F12 is the flash-programming one, but do not pulse
++			 * GPIO 66: whyred's DT gives the DSX no reset line and
++			 * GPIO 66 is the Novatek reset next to it. Ring 0197
++			 * showed that pulse parks the part in a zero state.
++			 */
++			if (entries >= 0 && !dsx_f12_found && entries <= 2) {
+ 				printf("WHYRED TOUCH: %d entries with no F12 is "
+-				    "the flash-programming table; resetting "
+-				    "once\n", entries);
+-				dsx_reset(north);
+-				dsx_pdt_scan("after reset");
++				    "the flash-programming table\n", entries);
+ 			}
+ 			dsx_f12_poll();
+ 		}
+ 		dsx_diag();
+ 		dsx_identify(&dsx);
+-		if (!dsx.found_f12 && dsx.found_f01 && dsx.entries <= 2) {
++		if (dsx_f12_found) {
+ 			/*
+-			 * F34 + F01 and nothing else is exactly the table the
+-			 * flash-programming (bootloader) firmware exposes, and
+-			 * it is what a part left in flash-pgm mode looks like.
+-			 * One reset boots it back into application firmware.
++			 * dsx_identify() runs after the framing matrix, so its
++			 * own PDT walk starts wherever that left the stream.
++			 * The scan above ran first and is the authoritative F12
++			 * source; use it for the touch poll.
+ 			 */
+-			printf("WHYRED TOUCH: PDT has %d entries, F01 and no "
+-			    "F12 - bootloader mode; resetting once\n",
+-			    dsx.entries);
+-			dsx_reset(north);
+-			dsx_diag();
+-			dsx_identify(&dsx);
++			dsx.found_f12 = 1;
++			dsx.f12_query = (uint16_t)dsx_f12_query;
++			dsx.f12_ctrl = (uint16_t)dsx_f12_ctrl;
++			dsx.f12_data = (uint16_t)((dsx_f12_page << 8) |
++			    dsx_f12_data);
++		} else if (dsx.found_f01) {
++			printf("WHYRED TOUCH: no F12 in the stream; not "
++			    "pulsing GPIO 66 (it is the Novatek reset)\n");
+ 		}
+ 		dsx_page_probe();
+ 		touch_s = 0;

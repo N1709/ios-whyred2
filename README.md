@@ -628,6 +628,10 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0188 | Open-drain bit-bang with clock-stretch wait, DT reset timing, read matrix, IRQ edge witness |
 | 0189 | Seven address framings tried against `0x00e9`, auto-selected by repetition, plus a bootloader-mode reset retry |
 | 0190 | BLSP1 QUP1 hardware I2C master (vendor v2 tag protocol, GCC `0x100000` RCG/branches, TLMM `blsp_i2c1` function index 3) behind `sweeti2c=1`, bit-bang kept as fallback; `sweetouchreboot=1` writes the IMEM bootloader reason and drops PS_HOLD so the diag boot returns to fastboot, with a kernel-thread watchdog (`sweetouchwatchdog`, 240 s) armed before the first clock write so a stalled GCC/QUP window still ends in fastboot |
+| 0191 | Cache the DSX page and send `FF <page>` only when it changes, matching the vendor driver; the first addressed read after a reset is the only one that lands and later reads stream forward from the previous length |
+| 0192 | Read a whole 128-byte page instead of guessing addresses, and place the F12 record inside it |
+| 0193 | Spend the one landing read on a 256-byte PDT window from `0x00E9`, print both candidate function bytes, retry once after reset, poll F12 |
+| 0194 | Read 24 bytes (four PDT records), force the page select before the read, parse `query/ctrl/data/fn` from the LSB, accept the F12 record at any offset, run E9/E3/E9 to test whether `FF <page>` re-arms the pointer, poll F12 at `(page << 8) \| data`, fix `dsx_identify` offsets and stop pulsing GPIO 66 (the Novatek reset) |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

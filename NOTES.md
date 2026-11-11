@@ -5123,3 +5123,76 @@ matrix), the 256-byte window, the reset retry, the fn5 match, the fn4/fn5
 diagnostic and the page-0 poll. The next step is a console image from this
 tree: the first read should print the real table, and if F12 appears the poll
 shows whether a finger moves that byte.
+
+### 2026-11-11: 0193 found the record off the grid; 0194 reads four entries
+
+The 0193 console image booted and pulled flush #16 of the ring
+(`/tmp/opencode/touchlog/pdt0193.log`, 20236 bytes). The 256-byte PDT window
+starts like this:
+
+    27 00 09 00 21 34  2f 26 0d 04 01 01  81 4c 00 13 06 01
+    12 0a 29 00 8f d4  1e 08 00 40 38 0e  0f 15 c7 11 12 33
+
+The first 36 bytes are byte-identical to what the vendor driver's `0x00E9`
+reads returned in 0188, so the bit-bang transfer itself is right. The F12
+record `4c 00 13 06 01 12` is plainly there, at offset 13, behind one stray
+`0x81`. That byte shifts it off the 6-byte grid: the scan counted 41
+"entries" (it counted the register bytes after the end marker too), never
+matched `fn == 0x12`, and because `entries` was 41 the `entries <= 3` reset
+retry never fired. `dsx_identify()` then ran after the framing matrix, started
+wherever that left the stream, and printed `dsx no F01 in the page table`.
+
+Two conclusions:
+
+* The table is three records long - F34 at `0xE9`, F01 at `0xE3`, F12 at
+  `0xDD`, then the end marker. Reading 256 bytes reads four times more than
+  the table and mixes register data in after the marker.
+* The F12 record must be accepted **at any offset**, because the chip can put
+  one stray byte in front of it. The record itself names the data base.
+* `dsx_identify()` was also decoding the entry with the wrong fields:
+  `f01_query = b[0]<<8|b[1]`, `f12_ctrl = b[3]`, `f12_data = b[4]`. With the
+  authoritative record `4c 00 13 06 01 12` (query `0x4c`, cmd `0x00`, ctrl
+  `0x13`, data `0x06`, intr `0x01`, fn `0x12`) that made the touch test poll
+  `0x01` instead of F12 data `0x06`. The fields are `e[0]`, `e[2]`, `e[3]`.
+
+`0194-whyred-touch-page-reselect.patch` therefore:
+
+* reads exactly 24 bytes (four records) from `0x00E9` and dumps them in one
+  line, so the whole table is visible;
+* forces `FF <page>` before that read (`dsx_page = -1`), because 0191 caches
+  the page and the cache hides whether the write re-arms the pointer;
+* parses `query = e[0]`, `ctrl = e[2]`, `data = e[3]`, `fn = e[5] & 0x3f`,
+  records `f12_page`, and falls back to finding `4c 00 13 06 01 12` at any
+  offset;
+* runs the E9/E3/E9 test the 2026-11-10 notes asked for: a cached read of
+  `0xE9` (no `FF`), then `0xE3`, then a forced read of `0xE9` (with `FF`). If
+  the last one returns the F34 entry again, the page select is what re-arms
+  the pointer and every later read can be prefixed with it;
+* polls F12 at `(page << 8) | data`, eight bytes, forcing `FF <page>` before
+  every one of the 12 samples, so each sample gets the first-read chance;
+* fixes the `dsx_identify()` field offsets, and overrides `dsx.f12_*` with the
+  scan result because `dsx_identify()` runs after the matrix and is not a
+  reliable source;
+* removes **both** GPIO-66 resets from the retry paths. whyred's DT has no
+  `synaptics,reset-gpio`; GPIO 66 is the Novatek reset, and ring 0197 showed
+  that pulsing it parks the DSX in an all-zero state.
+
+Recovery-side evidence from the same day, on a fresh OrangeFox boot:
+
+    test_scan_pdt: Failed to find F54
+    udg_scan_pdt: Failed to find F12
+    buildid 2788281   fwblockcount 432   configblockcount 16
+    productinfo 0x01 0x00
+    flashprog: I/O error
+    echo 1 > reset -> I2C write over retry limit (10 retries)
+
+Reads work (`buildid`, `fwblockcount`), writes do not: the F01 reset and even
+the page select NACK, so `doreflash` (`FORCE = 2`, touch controller only, no
+partition) cannot run and the part cannot be reset from userspace. The
+`input2` report has ABS_MT 0-1079 / 0-2159 and 10 slots, so the kernel's view
+of the panel is intact and only the boot-time state is wrong. The panel is
+probably asleep; a physical tap is the only wake source left.
+
+`tests/run_tests.sh` pins the 24-byte window, the corrected offsets, the
+any-offset record fallback, the forced `dsx_page = -1` before every read, the
+E9/E3/E9 sequence, and the absence of `dsx_reset(north)` in the patch.
