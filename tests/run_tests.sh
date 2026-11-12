@@ -1319,6 +1319,11 @@ assert 'if (at > 4000)' in body
 # The early path only dumps; the poll and the panel band stay late.
 assert 'dsx_reset_probe();' in body
 assert 'dsx_early_found = dsx_f12_found;' in body
+# The timestamps survive into the late probe, so a lost early console line
+# still tells us which window the dump ran in.
+assert 'dsx_early_start_ms = touch_now_ms();' in body
+assert 'dsx_early_end_ms = touch_now_ms();' in body
+assert 'early probe ran %llu..%llu ms' in body
 assert 'late probe reuses the early PDT' in body
 assert 'dsx_early_ran && dsx_early_found' in body
 # One watchdog for both paths.
