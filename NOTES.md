@@ -5196,3 +5196,69 @@ probably asleep; a physical tap is the only wake source left.
 `tests/run_tests.sh` pins the 24-byte window, the corrected offsets, the
 any-offset record fallback, the forced `dsx_page = -1` before every read, the
 E9/E3/E9 sequence, and the absence of `dsx_reset(north)` in the patch.
+
+### 2026-11-12: 0194 lands the PDT, IRQ moves on a tap, and the part is in LPWG
+
+Ring 0194 (flush #181, console image `shim-boot-touch-pdt24-console.img`)
+settles the framing question and opens a different one:
+
+    first read: 24 bytes from 0x00e9 via page|a1
+    dsx pdt [0x00e9] 27 00 09 00 21 34 2f 26 0d 04 01 01 81 4c 00 13 06 01 12 0a 29 00 8f d4
+    first read entry 0 query 27 cmd 00 ctrl 09 data 00 intr 21 fn 34
+    first read entry 1 query 2f cmd 26 ctrl 0d data 04 intr 01 fn 01
+    first read entry 2 query 81 cmd 4c ctrl 00 data 13 intr 06 fn 01
+    first read entry 3 query 12 cmd 0a ctrl 29 data 00 intr 8f fn 14
+    first read F12 record at offset 13
+    first read: 4 entries, F12 found at page 0 query 0x4c ctrl 0x13 data 0x06
+    dsx repeat cached [0x00e9] 1e 08 00 40 38 0e
+    dsx then e3 [0x00e3] 0f 00 00 00 00 00
+    dsx reselect e9 [0x00e9] 00 00 00 00 00 00
+    poll F12 0x0006, 12 samples -> 00 00 00 00 00 00 00 00 (stray 04)
+    irq 1 -> 0 (edge 1) ... irq 0 -> 1 (edge 15)
+
+So: the one landing read still works and the 24-byte window is correct (the
+F12 record really is `4c 00 13 06 01 12`), the cached repeat returns the tail
+of the previous transfer (`1e 08 00 40 38 0e`), and the forced page select
+turns the next read into zeros. But **IRQ GPIO 67 moves on every tap** while
+F12 data stays zero. The controller is alive and sensing; it is not reporting
+2D data.
+
+That is exactly the vendor driver's wakeup-gesture (LPWG) state. The vendor
+probe finds F01/F12 at 0.9 s, then suspends at 3.2 s with
+`enable_wakeup_gesture is on`; a warm reboot inherits it. `synaptics_rmi4_resume()`
+leaves it with two writes:
+
+* `synaptics_rmi4_sleep_enable(false)`: F01 control `0x0D`, bits [2:0] =
+  `NORMAL_OPERATION` (0), keeping `CONFIGURED` (bit 7) and the no-sleep bit;
+* `synaptics_rmi4_f12_wg(false)`: read three bytes at `F12 ctrl 0x13 +
+  ctrl20_offset` and write them back with `reporting_control[set_wakeup_gesture]
+  = F12_CONTINUOUS_MODE` (`0x00`).
+
+`0195-whyred-touch-wake-lpwg.patch` therefore:
+
+* adds `dsx_write_f()` - START, address+W, register, data, STOP - and only
+  sends `FF <page>` when the cached page really changes;
+* sends **no page select at all**: `dsx_page = 0` before the first read, which
+  is where F01 `0x0D`, F12 query `0x4C`, F12 ctrl `0x13` and F12 data `0x06`
+  live;
+* spends the one landing read on F01 control, derives the wake value as
+  `(v & ~0x07u) | 0x80u`, and writes it back;
+* scans the PDT again after that write, then dumps F12 data/query/ctrl, so the
+  ring shows whether the write re-armed the address and whether the reporting
+  mode really changed;
+* in `dsx_f12_poll()`, sends the F01 normal-operation write before each of the
+  12 samples instead of a page select, and prints `valid` when the
+  finger-status bit 7 is set;
+* drops the framing matrix, `dsx_identify()` and `dsx_page_probe()` from the
+  touch path, because each of them spends the landing read; F12 comes from the
+  fixed record instead.
+
+The F12 query dump is the next input: its byte 4/5 presence map gives
+`ctrl20_offset`, and query5 bit 3 (`ctrl27_is_present`) says whether byte 0 or
+byte 2 of the reporting control is the gesture byte. 0196 will use that to
+write continuous mode if 0195's `0x13` block is not the right address.
+
+`tests/run_tests.sh` pins `dsx_write_f`, the four fixed addresses, the
+`(v & ~0x07u) | 0x80u` wake value, `dsx_wake_normal()` before every sample,
+the complete absence of `dsx_page = -1` and `dsx_reset(north)`, and the
+removal of `dsx_diag`/`dsx_identify`/`dsx_page_probe` from the patch.

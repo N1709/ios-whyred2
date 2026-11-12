@@ -1196,6 +1196,52 @@ assert 'dsx.f12_data = (uint16_t)((dsx_f12_page << 8) |' in body
 PY
 echo "ok   0194 reads 24 bytes, fixes the PDT field offsets, reselects the page"
 
+echo "== TOUCH: 0195 leaves the wakeup-gesture state without a page select =="
+P195="xnu/patches/0195-whyred-touch-wake-lpwg.patch"
+python3 tools/check_patch.py "$P195" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_F01_CTRL	0x0d' \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_F12_QUERY	0x4c' \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_F12_CTRL	0x13' \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_F12_DATA	0x06' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_write_f(uint8_t addr' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_wake_normal(void)' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_wake_probe(void)'
+python3 - <<'PY'
+src = open('xnu/patches/0195-whyred-touch-wake-lpwg.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# Ring 0194: IRQ GPIO 67 moves on every tap while F12 data stays zero. That
+# is the vendor's wakeup-gesture state. Leave it the way resume() does: F01
+# control bits [2:0] = 0 (normal operation), configured bit kept.
+assert '#define DSX_F01_CTRL\t0x0d' in body
+assert 'dsx_f01_normal = (uint8_t)((v & ~0x07u) | 0x80u);' in body
+assert 'dsx_write_f(DSX_ADDR, DSX_F01_CTRL, &dsx_f01_normal, 1)' in body
+# Ring 0192/0193/0194: FF <page> is what turns every later read into zeros,
+# so the wake probe must select page 0 by cache and never force it.
+assert 'dsx_page = 0;' in body
+assert 'dsx_page = -1;' not in body
+# The one landing read is spent on F01 control, then the wake write re-arms
+# the address before each F12 sample.
+assert 'dsx_read_f(DSX_ADDR, DSX_F01_CTRL, &v, 1, dsx_frame)' in body
+assert 'dsx_wake_normal();\t/* each sample re-arms the address */' in body
+assert 'dsx_read_f(DSX_ADDR, DSX_F12_DATA, b, sizeof(b),' in body
+# Addresses come from the 0193/0194 PDT dumps and the recovery ring.
+assert 'DSX_F12_QUERY\t0x4c' in body
+assert 'DSX_F12_CTRL\t0x13' in body
+assert 'DSX_F12_DATA\t0x06' in body
+# GPIO 66 is the Novatek reset; ring 0197 showed it parks the DSX in zeros.
+assert 'dsx_reset(north)' not in body
+# The old framing matrix, the identify walk and the page probe each spend the
+# landing read, so 0195 drops them from the touch path.
+assert 'dsx_diag()' not in body
+assert 'dsx_identify(&dsx)' not in body
+assert 'dsx_page_probe()' not in body
+PY
+echo "ok   0195 reads F01 first, wakes to normal operation, polls without page select"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
