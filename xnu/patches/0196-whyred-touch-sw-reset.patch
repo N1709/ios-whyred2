@@ -1,11 +1,10 @@
 diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 --- a/bsd/dev/santoni_touch.c
 +++ b/bsd/dev/santoni_touch.c
-@@ -944,18 +944,41 @@
- static int dsx_f12_page;
- static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
+@@ -937,25 +937,41 @@
+ #define DSX_F12_CTRL	0x13
+ #define DSX_F12_DATA	0x06
  
--static int dsx_pdt_scan(const char *tag);
 +/*
 + * Every vendor read starts with the page select and then a repeated start.
 + * 0195 showed that F01 control is writable but that reads after the write
@@ -20,17 +19,19 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 +#define DSX_F01_DATA	0x11
 +#define DSX_F01_QUERY	0x00
 +
-+static int dsx_f12_found;
-+static int dsx_f12_query;
-+static int dsx_f12_ctrl;
-+static int dsx_f12_data;
-+static int dsx_f12_page;
+ static int dsx_f12_found;
+ static int dsx_f12_query;
+ static int dsx_f12_ctrl;
+ static int dsx_f12_data;
+ static int dsx_f12_page;
 +static int dsx_f01_ctrl;
 +static int dsx_f01_cmd;
 +static int dsx_f01_data;
 +static int dsx_f01_query;
-+static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
+ static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
  
+-static int dsx_pdt_scan(const char *tag);
+-
 -static void
 -dsx_six(const char *label, uint16_t reg)
 +/*
@@ -53,7 +54,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  }
  
  static void
-@@ -966,167 +989,169 @@
+@@ -966,167 +982,169 @@
  	if (len > (int)sizeof(b)) {
  		len = (int)sizeof(b);
  	}
@@ -332,7 +333,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  		    (b[0] & 0x80) ? " valid" : "");
  		delay(300000);
  	}
-@@ -1154,8 +1179,7 @@
+@@ -1154,8 +1172,7 @@
  	if (seconds > 60) {
  		seconds = 60;	/* keep the boot bounded */
  	}
@@ -342,7 +343,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  		printf("WHYRED TOUCH: F12 data read failed\n");
  		return;
  	}
-@@ -1183,8 +1207,7 @@
+@@ -1183,8 +1200,7 @@
  				}
  			}
  		}
@@ -352,7 +353,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  			printf("WHYRED TOUCH: F12 data read failed\n");
  			break;
  		}
-@@ -1537,25 +1560,23 @@
+@@ -1537,25 +1553,23 @@
  		}
  		touch_irq_setup(north);
  		/*
