@@ -1,0 +1,156 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -963,6 +963,36 @@
+ static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
+ 
+ /*
++ * 0197: the window. The vendor driver probes the DSX at 0.92 s and registers
++ * input2, then suspends into wakeup-gesture mode at 3.26 s; after that every
++ * addressed read returns the same byte stream. XNU probed at the end of
++ * santoni_sdhci_init(), i.e. after eMMC enumeration, and always missed it.
++ * santoni_touch_early() runs at the top of that init, waits until
++ * sweetouchearly=MS from kernel start and dumps the PDT there. The addresses
++ * it finds are cached for the later touch test, which then does not reset the
++ * part a second time.
++ */
++static int dsx_early_ran;
++static int dsx_early_found;
++
++static uint64_t
++touch_now_ms(void)
++{
++	uint64_t ns = 0;
++
++	absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++	return ns / 1000000ULL;
++}
++
++static void
++touch_wait_until_ms(uint32_t target_ms)
++{
++	while (touch_now_ms() < (uint64_t)target_ms) {
++		delay(1000);
++	}
++}
++
++/*
+  * Force the two-byte page select before the read. The vendor caches the page
+  * and 0191 copied that, but after a reset the first addressed read is the one
+  * that matters, so every diagnostic read asks for page 0 explicitly.
+@@ -1440,6 +1470,66 @@
+ 	}
+ }
+ 
++/*
++ * The early probe: same bit-bang setup the late probe does, but placed inside
++ * the 0.9-3.2 s window instead of after eMMC init. It only reads: reset, read
++ * F01 status, walk the PDT, dump F12 query/control/data. The touch poll and
++ * the panel band stay in the late probe, where the framebuffer exists.
++ */
++int
++santoni_touch_early(void)
++{
++	vm_offset_t south, north;
++	uint32_t on = 0, at = 0;
++
++	if (dsx_early_ran) {
++		return 0;
++	}
++	if (!PE_parse_boot_argn("sweetouchi2c", &on, sizeof(on)) || !on) {
++		return 0;
++	}
++	if (!PE_parse_boot_argn("sweetouchearly", &at, sizeof(at)) || !at) {
++		return 0;
++	}
++	if (at > 4000) {
++		at = 4000;
++	}
++	dsx_early_ran = 1;
++	whyred_arm_reboot_watchdog();
++	touch_wait_until_ms(at);
++	printf("WHYRED TOUCH: early probe requested %u ms, starts at %llu ms "
++	    "kernel time\n", at, (unsigned long long)touch_now_ms());
++
++	south = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_SOUTH,
++	    0x10000, VM_WIMG_IO);
++	north = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_NORTH,
++	    0x50000, VM_WIMG_IO);
++	if (south == 0 || north == 0) {
++		printf("WHYRED TOUCH: early TLMM map failed (south %p north %p)\n",
++		    (void *)south, (void *)north);
++		return ENOMEM;
++	}
++	(void)north;
++	pin_setup(&touch_sda, south, WHYRED_SDA);
++	pin_setup(&touch_scl, south, WHYRED_SCL);
++	printf("WHYRED TOUCH: early sda%d scl%d idle sda %d scl %d\n",
++	    WHYRED_SDA, WHYRED_SCL, pin_read(&touch_sda),
++	    pin_read(&touch_scl));
++	(void)i2c_clear_bus();
++	dsx_page = -1;
++	dsx_reset_probe();
++	dsx_early_found = dsx_f12_found;
++	printf("WHYRED TOUCH: early done at %llu ms, F12 %s",
++	    (unsigned long long)touch_now_ms(), dsx_f12_found ?
++	    "found" : "missing");
++	if (dsx_f12_found) {
++		printf(" at page %d query 0x%02x ctrl 0x%02x data 0x%02x",
++		    dsx_f12_page, dsx_f12_query, dsx_f12_ctrl, dsx_f12_data);
++	}
++	printf("\n");
++	return 0;
++}
++
+ int
+ santoni_touch_probe(void)
+ {
+@@ -1467,7 +1557,7 @@
+ 	 * here.
+ 	 */
+ 	if (PE_parse_boot_argn("sweetouchreboot", &reboot, sizeof(reboot)) &&
+-	    reboot) {
++	    reboot && !dsx_early_ran) {
+ 		whyred_arm_reboot_watchdog();
+ 	}
+ 
+@@ -1561,7 +1651,12 @@
+ 		 * downwards with a real page select before each addressed read,
+ 		 * exactly like synaptics_rmi4_query_device().
+ 		 */
+-		dsx_reset_probe();
++		if (dsx_early_ran && dsx_early_found) {
++			printf("WHYRED TOUCH: late probe reuses the early PDT "
++			    "result, no second reset\n");
++		} else {
++			dsx_reset_probe();
++		}
+ 		dsx_f12_poll();
+ 		dsx.found_f12 = dsx_f12_found;
+ 		if (dsx_f12_found) {
+diff --git a/bsd/dev/santoni_sdhci.c b/bsd/dev/santoni_sdhci.c
+--- a/bsd/dev/santoni_sdhci.c
++++ b/bsd/dev/santoni_sdhci.c
+@@ -64,6 +64,7 @@
+ static void santoni_fb_test(void);
+ #if defined(ARM64_BOARD_CONFIG_WHYRED)
+ extern int santoni_touch_probe(void);
++extern int santoni_touch_early(void);
+ #endif
+ 
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+@@ -4207,6 +4208,14 @@
+ 	int error, rw = 0;
+ 	const char *stage = "init";
+ 
++	/*
++	 * 0197: the DSX only answers between roughly 0.9 s and 3.2 s after
++	 * kernel start; eMMC enumeration takes longer than that. Ask it here,
++	 * at the very top of BSD init, while the window is still open.
++	 */
++#if defined(ARM64_BOARD_CONFIG_WHYRED)
++	santoni_touch_early();
++#endif
+ 	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 2 * sizeof(uintptr_t)) {

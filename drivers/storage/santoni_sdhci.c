@@ -64,6 +64,7 @@ static void santoni_log_start(void);
 static void santoni_fb_test(void);
 #if defined(ARM64_BOARD_CONFIG_WHYRED)
 extern int santoni_touch_probe(void);
+extern int santoni_touch_early(void);
 #endif
 
 extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
@@ -4207,6 +4208,14 @@ santoni_sdhci_init(void)
 	int error, rw = 0;
 	const char *stage = "init";
 
+	/*
+	 * 0197: the DSX only answers between roughly 0.9 s and 3.2 s after
+	 * kernel start; eMMC enumeration takes longer than that. Ask it here,
+	 * at the very top of BSD init, while the window is still open.
+	 */
+#if defined(ARM64_BOARD_CONFIG_WHYRED)
+	santoni_touch_early();
+#endif
 	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
 	    size < 2 * sizeof(uintptr_t)) {

@@ -5325,3 +5325,74 @@ state and the next move is an early probe, before the 3 s suspend.
 select per record, the F01 bases taken from the record, the scan-before-
 configure order, and the removal of the fixed-address `dsx_wake_probe()` /
 `dsx_pdt_scan()` path.
+
+### 2026-11-12: the part answers only in a window, so 0197 probes before eMMC
+
+Ring 0196 (flush #208, console `shim-boot-touch-swreset-console.img`) did what
+it was asked to do and still lost:
+
+    f01 cmd 0x06 <- 0x01 ack, waiting 300 ms
+    f01 status 0x27
+    after reset pdt[0x00e9] 00 09 00 21 34 2f fn 2f
+    after reset pdt[0x00e3] 26 0d 04 01 01 81 fn 01
+    after reset pdt[0x00dd] 4c 00 13 06 01 12 fn 12
+    after reset pdt[0x00d7] 0a 29 00 8f d4 1e fn 1e
+    ... (every following record is the same 33-byte stream shifted by one)
+
+The reset ACKs, and the chip does respond, but the first record is already
+`00 09 00 21 34 2f` instead of `27 00 09 00 21 34`: the status read consumed
+stream byte 0, and every addressed read after it returns the same bytes with
+the address ignored. 0194 without any reset produced the identical stream, so
+this is not caused by the reset. It is the state the part is in **at the time
+XNU probes**.
+
+The vendor timestamps settle when that state starts:
+
+    0.922790  input: synaptics_dsx as .../input/input2   (real probe, real PDT)
+    3.245487  synaptics_rmi4_suspend: enable_wakeup_gesture is on
+    4.798132  udg_scan_pdt: Failed to find F12               (window has closed)
+
+So the DSX is addressable from roughly 0.9 s to 3.2 s of kernel time. XNU
+probed at the **end** of `santoni_sdhci_init()` (after eMMC enumeration and
+the framebuffer test), which is later than that, and every experiment so far -
+wake writes, software reset, page-select variants - has been fighting a part
+that had already left application mode. Recovery confirms the same split: raw
+`rmidev/data` reads are `00 00 f0 00 00 22` at 0x000 and zeros at 0x0e9 after
+the driver has suspended, and writes fail with `EIO`; only a full power-off
+(via LDO11) brings the part back into the window.
+
+`0197-whyred-touch-early-probe.patch` therefore changes **when**, not what:
+
+* `santoni_touch_early()` is called at the very top of
+  `santoni_sdhci_init()`, before the `/santoni-sdhci` lookup, so it runs
+  before eMMC enumeration, the SYSTEM log start and `santoni_fb_test()`;
+* it waits with `absolutetime_to_nanoseconds(mach_absolute_time(), ...)` until
+  `sweetouchearly=MS` milliseconds of kernel time (clamped to 4000; the test
+  image uses 1000), then does the 0196 sequence unchanged: F01 command
+  `0x06 <- 0x01`, F01 status, the downward PDT walk, and the F12
+  query/control/data dumps;
+* it prints the **actual** start and finish timestamps, so the next ring
+  says whether the window was really reached;
+* the result is cached in `dsx_early_found` / the existing `dsx_f12_*`
+  statics, and the late probe (inside `santoni_sdhci_init()`, after the
+  framebuffer exists) skips its own reset and goes straight to the F12 poll
+  and the panel touch test when the early dump found F12. If the early dump
+  fails, the late probe still runs the full 0196 path as a fallback;
+* the reboot watchdog is armed once, in whichever probe runs first;
+* `tools/build-touch-diag.sh` grows `SWEETEARLY=MS` and appends
+  `sweetouchearly=MS` to the kernel command line.
+
+Expected ring for the next boot, if the hypothesis is right:
+
+    WHYRED TOUCH: early probe requested 1000 ms, starts at <~1000> ms kernel time
+    WHYRED TOUCH: f01 cmd 0x06 <- 0x01 ack, waiting 300 ms
+    WHYRED TOUCH: f01 status 0x..                      (device status, 0x27 in bl)
+    WHYRED TOUCH: after reset pdt[0x00e9] 27 00 09 00 21 34 fn 34
+    WHYRED TOUCH: after reset pdt[0x00e3] 2f 26 0d 04 01 01 fn 01
+    WHYRED TOUCH: after reset pdt[0x00dd] 4c 00 13 06 01 12 fn 12
+    WHYRED TOUCH: after reset end of PDT at 0x.....
+    WHYRED TOUCH: dsx f12 query ... (real query bytes)
+    WHYRED TOUCH: early done at <~1100> ms, F12 found at page 0 ...
+
+`tests/run_tests.sh` pins the early hook position, the kernel-time wait, the
+cached-result reuse and the single watchdog, and the build-script knob.

@@ -1292,6 +1292,43 @@ assert 'dsx_read_page(DSX_ADDR, f->f12_data, b, sizeof(b))' in body
 PY
 echo "ok   0196 resets F01, walks the PDT downwards and page-selects every read"
 
+echo "== TOUCH: 0197 probes inside the post-boot window, before eMMC init =="
+P197="xnu/patches/0197-whyred-touch-early-probe.patch"
+python3 tools/check_patch.py "$P197" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:santoni_touch_early(void)' \
+	--added-contains 'bsd/dev/santoni_touch.c:sweetouchearly' \
+	--added-contains 'bsd/dev/santoni_touch.c:touch_wait_until_ms(uint32_t target_ms)' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_early_ran' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:santoni_touch_early();'
+python3 - <<'PY'
+src = open('xnu/patches/0197-whyred-touch-early-probe.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The window: the probe is called from the top of santoni_sdhci_init(), so it
+# runs before DT lookup, eMMC enumeration and the framebuffer test.
+assert 'santoni_touch_early();' in body
+# The call sits in santoni_sdhci_init() above the /santoni-sdhci lookup, so it
+# also runs before eMMC enumeration and the framebuffer test.
+assert 'if (SecureDTLookupEntry(NULL, "/santoni-sdhci"' in src
+assert 'touch_wait_until_ms(at);' in body
+assert 'absolutetime_to_nanoseconds(mach_absolute_time(), &ns);' in body
+assert 'if (at > 4000)' in body
+# The early path only dumps; the poll and the panel band stay late.
+assert 'dsx_reset_probe();' in body
+assert 'dsx_early_found = dsx_f12_found;' in body
+assert 'late probe reuses the early PDT' in body
+assert 'dsx_early_ran && dsx_early_found' in body
+# One watchdog for both paths.
+assert 'whyred_arm_reboot_watchdog();' in body
+assert 'reboot && !dsx_early_ran' in body
+PY
+grep -q 'SWEETEARLY=MS' tools/build-touch-diag.sh
+grep -q 'sweetouchearly=\$early' tools/build-touch-diag.sh
+echo "ok   0197 runs the PDT dump before eMMC init and reuses it late"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
