@@ -1242,6 +1242,56 @@ assert 'dsx_page_probe()' not in body
 PY
 echo "ok   0195 reads F01 first, wakes to normal operation, polls without page select"
 
+echo "== TOUCH: 0196 issues the vendor software reset before the scan =="
+P196="xnu/patches/0196-whyred-touch-sw-reset.patch"
+python3 tools/check_patch.py "$P196" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_F01_CMD	0x06' \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_F01_DATA	0x11' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_sw_reset(void)' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_pdt_walk(const char *tag)' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_reset_probe(void)' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_read_page(uint8_t addr'
+python3 - <<'PY'
+src = open('xnu/patches/0196-whyred-touch-sw-reset.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+removed = [l[1:] for l in src.splitlines()
+           if l.startswith('-') and not l.startswith('---')]
+body = '\n'.join(added)
+gone = '\n'.join(removed)
+
+# Ring 0195: the F01 control write ACKs but every read after it returns
+# zero, so 0195's order was wrong. The vendor recovers the part with the F01
+# software reset (command base 0x06, value 0x01) and rescans the PDT.
+assert 'dsx_write_f(DSX_ADDR, DSX_F01_CMD, &cmd, 1)' in body
+assert 'uint8_t cmd = 0x01;' in body
+assert 'delay(300000);' in body
+assert '#define DSX_F01_CMD\t0x06' in body
+# The scan is the vendor one: addressed six-byte reads downwards from 0xE9,
+# stopping at the 0x00 end marker, with the page select forced for each read.
+assert 'addr = DSX_PDT_START;' in body
+assert 'addr -= DSX_PDT_ENTRY_SIZE;' in body
+assert 'dsx_read_page(DSX_ADDR, addr, e, sizeof(e))' in body
+assert 'dsx_page = -1;\n\treturn dsx_read_f(addr, reg, buf, len, dsx_frame);' in body
+assert 'end of PDT at 0x%04x' in body
+# F01 base addresses come from the scanned record, not a guess.
+assert 'dsx_f01_cmd = e[1];' in body
+assert 'dsx_f01_ctrl = e[2];' in body
+assert 'dsx_f01_data = e[3];' in body
+# The control write happens only after the scan and only when unconfigured,
+# and its value is read back first.
+assert body.index('dsx_pdt_walk("after reset")') < body.index('dsx_wake_normal();')
+assert 'if (!(v & 0x80))' in body
+# The fixed-address probe and the 24-byte window are gone.
+assert 'dsx_wake_probe' in gone
+assert 'dsx_pdt_scan' in gone
+# Both poll loops page-select before every sample, like the vendor read.
+assert 'dsx_read_page(DSX_ADDR, reg, b, sizeof(b))' in body
+assert 'dsx_read_page(DSX_ADDR, f->f12_data, b, sizeof(b))' in body
+PY
+echo "ok   0196 resets F01, walks the PDT downwards and page-selects every read"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

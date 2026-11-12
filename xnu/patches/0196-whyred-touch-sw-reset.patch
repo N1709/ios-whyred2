@@ -1,0 +1,395 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -944,18 +944,41 @@
+ static int dsx_f12_page;
+ static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
+ 
+-static int dsx_pdt_scan(const char *tag);
++/*
++ * Every vendor read starts with the page select and then a repeated start.
++ * 0195 showed that F01 control is writable but that reads after the write
++ * return zeros, and the recovery driver shows the part is only sane in the
++ * ~3 s between its probe and its first suspend into wakeup-gesture mode.
++ * The way back to that state is the F01 command register: the vendor's
++ * synaptics_rmi4_sw_reset() writes 0x01 there, waits
++ * reset_delay_ms and rescans the PDT. 0196 does exactly that once, with the
++ * bit-bang that now has a working register write.
++ */
++#define DSX_F01_CMD	0x06
++#define DSX_F01_DATA	0x11
++#define DSX_F01_QUERY	0x00
++
++static int dsx_f12_found;
++static int dsx_f12_query;
++static int dsx_f12_ctrl;
++static int dsx_f12_data;
++static int dsx_f12_page;
++static int dsx_f01_ctrl;
++static int dsx_f01_cmd;
++static int dsx_f01_data;
++static int dsx_f01_query;
++static uint8_t dsx_f01_normal = 0x80;	/* configured + normal operation */
+ 
+-static void
+-dsx_six(const char *label, uint16_t reg)
++/*
++ * Force the two-byte page select before the read. The vendor caches the page
++ * and 0191 copied that, but after a reset the first addressed read is the one
++ * that matters, so every diagnostic read asks for page 0 explicitly.
++ */
++static int
++dsx_read_page(uint8_t addr, uint16_t reg, uint8_t *buf, int len)
+ {
+-	uint8_t b[DSX_PDT_ENTRY_SIZE];
+-
+-	if (dsx_read_f(DSX_ADDR, reg, b, sizeof(b), dsx_frame) == 0) {
+-		dsx_dump(label, reg, b, sizeof(b));
+-	} else {
+-		printf("WHYRED TOUCH: %s read failed\n", label);
+-	}
++	dsx_page = -1;
++	return dsx_read_f(addr, reg, buf, len, dsx_frame);
+ }
+ 
+ static void
+@@ -966,167 +989,169 @@
+ 	if (len > (int)sizeof(b)) {
+ 		len = (int)sizeof(b);
+ 	}
+-	if (dsx_read_f(DSX_ADDR, reg, b, len, dsx_frame) == 0) {
++	if (dsx_read_page(DSX_ADDR, reg, b, len) == 0) {
+ 		dsx_dump(label, reg, b, len);
+ 	} else {
+ 		printf("WHYRED TOUCH: %s read at 0x%04x failed\n", label, reg);
+ 	}
+ }
+ 
+-/*
+- * The vendor's "normal operation" wake: F01 control bits [2:0] = 0, keep the
+- * configured bit. This is also the write that 0195 tests as an address key;
+- * every sample sends it before the F12 read.
+- */
+ static int
+ dsx_wake_normal(void)
+ {
+-	int rc = dsx_write_f(DSX_ADDR, DSX_F01_CTRL, &dsx_f01_normal, 1);
++	int rc = dsx_write_f(DSX_ADDR, (uint16_t)dsx_f01_ctrl,
++	    &dsx_f01_normal, 1);
+ 
+ 	printf("WHYRED TOUCH: f01 ctrl 0x%04x <- 0x%02x %s\n",
+-	    DSX_F01_CTRL, dsx_f01_normal, rc == 0 ? "ack" : "nack");
++	    dsx_f01_ctrl, dsx_f01_normal, rc == 0 ? "ack" : "nack");
+ 	return rc;
+ }
+ 
+-/*
+- * No page select at all. The first read after power-up is the only one whose
+- * address lands, so spend it on F01 control: the value read there decides
+- * which other bits the wake write has to preserve.
+- */
+-static void
+-dsx_wake_probe(void)
++static int
++dsx_sw_reset(void)
+ {
+-	uint8_t v = 0;
++	uint8_t cmd = 0x01;
++	int rc;
+ 
+-	dsx_page = 0;	/* page 0 is where all four addresses live */
+-	if (dsx_read_f(DSX_ADDR, DSX_F01_CTRL, &v, 1, dsx_frame) == 0) {
+-		printf("WHYRED TOUCH: f01 ctrl first read 0x%02x\n", v);
+-		dsx_f01_normal = (uint8_t)((v & ~0x07u) | 0x80u);
+-	} else {
+-		printf("WHYRED TOUCH: f01 ctrl first read failed\n");
++	dsx_page = -1;
++	rc = dsx_write_f(DSX_ADDR, DSX_F01_CMD, &cmd, 1);
++	printf("WHYRED TOUCH: f01 cmd 0x%02x <- 0x01 %s, waiting 300 ms\n",
++	    DSX_F01_CMD, rc == 0 ? "ack" : "nack");
++	if (rc == 0) {
++		delay(300000);
+ 	}
+-	dsx_wake_normal();
+-	dsx_pdt_scan("after wake");
+-	dsx_block("f12 data after wake", DSX_F12_DATA, 8);
+-	dsx_block("f12 query", DSX_F12_QUERY, 16);
+-	dsx_block("f12 ctrl", DSX_F12_CTRL, 16);
++	return rc;
+ }
+ 
++/*
++ * The vendor scan: downwards from 0x00E9 in six-byte records, each one an
++ * addressed read. The record is query, command, control, data, interrupt
++ * count/version, function number. Stop at the 0x00 end marker instead of
++ * reading a fixed window, so nothing past the table can be mistaken for a
++ * function.
++ */
+ static int
+-dsx_pdt_scan(const char *tag)
++dsx_pdt_walk(const char *tag)
+ {
+-	static const uint8_t f12_rec[DSX_PDT_ENTRY_SIZE] = {
+-		0x4c, 0x00, 0x13, 0x06, 0x01, 0x12
+-	};
+-	uint8_t win[DSX_PDT_WINDOW];
+-	int entries = 0, off, match;
++	uint8_t e[DSX_PDT_ENTRY_SIZE];
++	uint16_t addr;
++	int i, found = 0;
+ 
+ 	dsx_f12_found = 0;
+ 	dsx_f12_query = 0;
+ 	dsx_f12_ctrl = 0;
+ 	dsx_f12_data = 0;
+ 	dsx_f12_page = 0;
+-	/*
+-	 * No page select: 0195 runs with page 0 already selected, and every
+-	 * FF <page> write in 0192/0193/0194 turned the next read into zeros.
+-	 */
+-	dsx_page = 0;
+-	if (dsx_read_f(DSX_ADDR, DSX_PDT_START, win, sizeof(win),
+-	    dsx_frame) != 0) {
+-		printf("WHYRED TOUCH: %s: PDT window read failed\n", tag);
+-		return -1;
+-	}
+-	printf("WHYRED TOUCH: %s: %d bytes from 0x%04x via %s\n", tag,
+-	    (int)sizeof(win), DSX_PDT_START, dsx_frame_name[dsx_frame]);
+-	dsx_dump("pdt", DSX_PDT_START, win, sizeof(win));
+-
+-	for (off = 0; off + DSX_PDT_ENTRY_SIZE <= DSX_PDT_WINDOW;
+-	    off += DSX_PDT_ENTRY_SIZE) {
+-		const uint8_t *e = win + off;
+-
+-		if (!e[0] && !e[1] && !e[2] && !e[3] && !e[4] && !e[5]) {
+-			printf("WHYRED TOUCH: %s entry %d end of PDT\n", tag,
+-			    off / DSX_PDT_ENTRY_SIZE);
+-			continue;
++	dsx_f01_ctrl = 0;
++	dsx_f01_cmd = 0;
++	dsx_f01_data = 0;
++	dsx_f01_query = 0;
++
++	addr = DSX_PDT_START;
++	for (i = 0; i < 42; i++) {
++		if (dsx_read_page(DSX_ADDR, addr, e, sizeof(e)) != 0) {
++			printf("WHYRED TOUCH: %s pdt[0x%04x] read failed\n",
++			    tag, addr);
++			break;
+ 		}
+-		entries++;
+-		printf("WHYRED TOUCH: %s entry %d query %02x cmd %02x ctrl "
+-		    "%02x data %02x intr %02x fn %02x\n", tag,
+-		    off / DSX_PDT_ENTRY_SIZE, e[0], e[1], e[2], e[3], e[4],
+-		    e[5] & 0x3f);
+-		if ((e[5] & 0x3f) == DSX_F12_FUNC && !dsx_f12_found) {
++		printf("WHYRED TOUCH: %s pdt[0x%04x] %02x %02x %02x %02x "
++		    "%02x %02x fn %02x\n", tag, addr, e[0], e[1], e[2], e[3],
++		    e[4], e[5], e[5] & 0x3f);
++		found++;
++		if ((e[5] & 0x3f) == 0x00 || e[5] == 0xff) {
++			printf("WHYRED TOUCH: %s end of PDT at 0x%04x\n", tag,
++			    addr);
++			break;
++		}
++		if ((e[5] & 0x3f) == 0x01) {
++			dsx_f01_query = e[0];
++			dsx_f01_cmd = e[1];
++			dsx_f01_ctrl = e[2];
++			dsx_f01_data = e[3];
++		}
++		if ((e[5] & 0x3f) == DSX_F12_FUNC) {
+ 			dsx_f12_found = 1;
+ 			dsx_f12_query = e[0];
+ 			dsx_f12_ctrl = e[2];
+ 			dsx_f12_data = e[3];
++			dsx_f12_page = (addr >> 8) & 0xff;
+ 		}
++		if (addr < DSX_PDT_ENTRY_SIZE) {
++			break;
++		}
++		addr -= DSX_PDT_ENTRY_SIZE;
+ 	}
+-	if (!dsx_f12_found) {
+-		/*
+-		 * Ring 0193 had one extra byte before the F12 record, so the
+-		 * record can sit off the grid. The record itself names the
+-		 * data base, so accept it at any offset.
+-		 */
+-		for (off = 0; off + DSX_PDT_ENTRY_SIZE <= DSX_PDT_WINDOW;
+-		    off++) {
+-			for (match = 0; match < DSX_PDT_ENTRY_SIZE; match++) {
+-				if (win[off + match] != f12_rec[match]) {
+-					break;
+-				}
+-			}
+-			if (match == DSX_PDT_ENTRY_SIZE) {
+-				dsx_f12_found = 1;
+-				dsx_f12_query = f12_rec[0];
+-				dsx_f12_ctrl = f12_rec[2];
+-				dsx_f12_data = f12_rec[3];
+-				printf("WHYRED TOUCH: %s F12 record at offset "
+-				    "%d\n", tag, off);
+-				break;
+-			}
++	printf("WHYRED TOUCH: %s: %d records; F01 %s q %02x c %02x d %02x; "
++	    "F12 %s q %02x c %02x d %02x\n", tag, found,
++	    dsx_f01_query || dsx_f01_cmd || dsx_f01_ctrl || dsx_f01_data ?
++	    "found" : "missing", dsx_f01_query, dsx_f01_ctrl, dsx_f01_data,
++	    dsx_f12_found ? "found" : "missing", dsx_f12_query,
++	    dsx_f12_ctrl, dsx_f12_data);
++	return found;
++}
++
++/*
++ * After the reset: read the device status, then the PDT, then only touch the
++ * F01 control register if the configured bit is still clear. 0195 wrote it
++ * before scanning and every read afterwards returned zero, so the scan comes
++ * first this time and the write is verified by a read-back.
++ */
++static void
++dsx_reset_probe(void)
++{
++	uint8_t v = 0;
++
++	dsx_sw_reset();
++	if (dsx_read_page(DSX_ADDR, DSX_F01_DATA, &v, 1) == 0) {
++		printf("WHYRED TOUCH: f01 status 0x%02x\n", v);
++	} else {
++		printf("WHYRED TOUCH: f01 status read failed\n");
++	}
++	dsx_pdt_walk("after reset");
++	if (!dsx_f01_ctrl) {
++		printf("WHYRED TOUCH: no F01 control base, skipping configure\n");
++	} else if (dsx_read_page(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1) ==
++	    0) {
++		printf("WHYRED TOUCH: f01 ctrl read 0x%02x\n", v);
++		if (!(v & 0x80)) {
++			dsx_f01_normal = (uint8_t)(v | 0x80);
++			dsx_wake_normal();
+ 		}
++	} else {
++		printf("WHYRED TOUCH: f01 ctrl read failed\n");
+ 	}
+-	printf("WHYRED TOUCH: %s: %d entries, F12 %s", tag, entries,
+-	    dsx_f12_found ? "found" : "missing");
+ 	if (dsx_f12_found) {
+-		printf(" at page %d query 0x%02x ctrl 0x%02x data 0x%02x",
+-		    dsx_f12_page, dsx_f12_query, dsx_f12_ctrl,
+-		    dsx_f12_data);
+-	}
+-	printf("\n");
+-
+-	/* E9, then E3, then E9, all with the page already selected. */
+-	dsx_page = dsx_f12_page;	/* cached: the next read sends no FF */
+-	dsx_six("repeat cached", DSX_PDT_START);
+-	dsx_six("then e3", (uint16_t)(DSX_PDT_START - DSX_PDT_ENTRY_SIZE));
+-	dsx_six("reselect e9", DSX_PDT_START);
+-
+-	return entries;
++		dsx_block("f12 query", (uint16_t)dsx_f12_query, 32);
++		dsx_block("f12 ctrl", (uint16_t)dsx_f12_ctrl, 32);
++		dsx_block("f12 data", (uint16_t)dsx_f12_data, 1);
++	}
+ }
+ 
+ /*
+- * Poll F12's 2D data block. The vendor record gives page 0, data base 0x06;
+- * the first byte is the finger-status register, whose bit 7 is set when an
+- * object is present. Ring 0194 showed the page-select write is what zeroes
+- * the reads, so each sample sends the F01 normal-operation write instead and
+- * then reads F12 data with no page select at all.
++ * Poll F12's 2D data block. The base is whatever the scan found; every sample
++ * re-sends the page select, like synaptics_rmi4_i2c_read() does.
+  */
+ static void
+ dsx_f12_poll(void)
+ {
+ 	uint8_t b[8];
++	uint16_t reg;
+ 	int i;
+ 
+-	printf("WHYRED TOUCH: poll F12 0x%04x, 12 samples\n", DSX_F12_DATA);
++	if (!dsx_f12_found) {
++		printf("WHYRED TOUCH: no F12 in the PDT, cannot poll touch\n");
++		return;
++	}
++	reg = (uint16_t)((dsx_f12_page << 8) | dsx_f12_data);
++	printf("WHYRED TOUCH: poll F12 0x%04x, 12 samples\n", reg);
+ 	for (i = 0; i < 12; i++) {
+-		dsx_wake_normal();
+-		if (dsx_read_f(DSX_ADDR, DSX_F12_DATA, b, sizeof(b),
+-		    dsx_frame) != 0) {
++		if (dsx_read_page(DSX_ADDR, reg, b, sizeof(b)) != 0) {
+ 			printf("WHYRED TOUCH: poll %d read failed\n", i);
+ 			break;
+ 		}
+ 		printf("WHYRED TOUCH: poll %d F12[%02x] %02x %02x %02x %02x "
+-		    "%02x %02x %02x %02x%s\n", i, DSX_F12_DATA, b[0], b[1],
+-		    b[2], b[3], b[4], b[5], b[6], b[7],
++		    "%02x %02x %02x %02x%s\n", i, reg, b[0], b[1], b[2],
++		    b[3], b[4], b[5], b[6], b[7],
+ 		    (b[0] & 0x80) ? " valid" : "");
+ 		delay(300000);
+ 	}
+@@ -1154,8 +1179,7 @@
+ 	if (seconds > 60) {
+ 		seconds = 60;	/* keep the boot bounded */
+ 	}
+-	dsx_wake_normal();	/* leave LPWG, normal operation */
+-	if (dsx_read(DSX_ADDR, f->f12_data, idle, sizeof(idle)) != 0) {
++	if (dsx_read_page(DSX_ADDR, f->f12_data, idle, sizeof(idle)) != 0) {
+ 		printf("WHYRED TOUCH: F12 data read failed\n");
+ 		return;
+ 	}
+@@ -1183,8 +1207,7 @@
+ 				}
+ 			}
+ 		}
+-		dsx_wake_normal();	/* each sample re-arms the address */
+-		if (dsx_read(DSX_ADDR, f->f12_data, b, sizeof(b)) != 0) {
++		if (dsx_read_page(DSX_ADDR, f->f12_data, b, sizeof(b)) != 0) {
+ 			printf("WHYRED TOUCH: F12 data read failed\n");
+ 			break;
+ 		}
+@@ -1537,25 +1560,23 @@
+ 		}
+ 		touch_irq_setup(north);
+ 		/*
+-		 * Ring 0194: the part sits in wakeup-gesture mode (IRQ moves on
+-		 * a tap, F12 data stays zero) and every FF <page> write parks
+-		 * it in an all-zero state. 0195 therefore sends no page select,
+-		 * spends the one landing read on F01 control, and uses the
+-		 * normal-operation write as the address key before each F12
+-		 * read. The addresses come from the 0193/0194 PDT dumps and the
+-		 * recovery ring, which agree.
++		 * Ring 0195: F01 control is writable, but after that write every
++		 * read returned zero, while the recovery driver shows the part
++		 * sane right after its own probe and asleep in wakeup-gesture mode
++		 * a few seconds later. 0196 therefore issues the vendor software
++		 * reset (F01 command 0x01) through the bit-bang and scans the PDT
++		 * downwards with a real page select before each addressed read,
++		 * exactly like synaptics_rmi4_query_device().
+ 		 */
+-		dsx_wake_probe();
++		dsx_reset_probe();
+ 		dsx_f12_poll();
+-		dsx_f12_found = 1;
+-		dsx_f12_query = DSX_F12_QUERY;
+-		dsx_f12_ctrl = DSX_F12_CTRL;
+-		dsx_f12_data = DSX_F12_DATA;
+-		dsx_f12_page = 0;
+-		dsx.found_f12 = 1;
+-		dsx.f12_query = (uint16_t)dsx_f12_query;
+-		dsx.f12_ctrl = (uint16_t)dsx_f12_ctrl;
+-		dsx.f12_data = (uint16_t)((dsx_f12_page << 8) | dsx_f12_data);
++		dsx.found_f12 = dsx_f12_found;
++		if (dsx_f12_found) {
++			dsx.f12_query = (uint16_t)dsx_f12_query;
++			dsx.f12_ctrl = (uint16_t)dsx_f12_ctrl;
++			dsx.f12_data = (uint16_t)((dsx_f12_page << 8) |
++			    dsx_f12_data);
++		}
+ 		touch_s = 0;
+ 		if (PE_parse_boot_argn("sweetouchtouch", &touch_s,
+ 		    sizeof(touch_s)) && touch_s) {

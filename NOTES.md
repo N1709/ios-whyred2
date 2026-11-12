@@ -5262,3 +5262,66 @@ write continuous mode if 0195's `0x13` block is not the right address.
 `(v & ~0x07u) | 0x80u` wake value, `dsx_wake_normal()` before every sample,
 the complete absence of `dsx_page = -1` and `dsx_reset(north)`, and the
 removal of `dsx_diag`/`dsx_identify`/`dsx_page_probe` from the patch.
+
+### 2026-11-12: 0195 proves the F01 write works and that it is not the wake
+
+Ring 0195 (flush #221, console `shim-boot-touch-pdt-wake-console.img`) is the
+first run with a register write on the bit-bang, and it answers two questions
+at once:
+
+    f01 ctrl first read 0x00
+    f01 ctrl 0x000d <- 0x80 ack
+    after wake pdt[0x00e9] 00 00 00 00 00 00 ... 00
+    after wake: 1 entries, F12 missing
+    dsx repeat cached [0x00e9] 00 00 00 00 00 00
+    dsx reselect e9 [0x00e9] 00 00 00 00 00 00
+    dsx f12 data after wake [0x0006] 00 00 04 00 00 00 04 00
+    dsx f12 query [0x004c] 00 00 ... 00
+    dsx f12 ctrl [0x0013] 00 00 ... 00
+    poll 0..11 F12[06] 00 00 00 00 00 00 00 00 (stray 04)
+    irq 1 -> 0 (edge 1) ... irq 0 -> 1 (edge 87)
+
+So the bit-bang **can write**: every byte of `F01 control 0x0D <- 0x80` was
+ACKed (the scan only ever ACKs 0x20, so the ACK sampling itself is sound).
+The write is not the wake, though. Every read after it returns zero, including
+a fresh PDT scan and the F12 query/control blocks, while IRQ 67 still moves on
+every tap. Writing `CONFIGURED` into a part that is in wakeup-gesture mode does
+not take it out of that mode.
+
+The recovery driver shows the real order. It probes at 0.92 s and registers
+`input2` (so the PDT is readable then), suspends at 3.2 s with
+`enable_wakeup_gesture is on`, and its later `udg_scan_pdt` cannot find F12.
+The vendor's error path for exactly this state is `synaptics_rmi4_sw_reset()`:
+write `0x01` to the F01 **command** base (`0x06`, fixed by the RMI4 spec),
+wait `reset_delay_ms`, then `synaptics_rmi4_query_device()` rescans the PDT
+downwards from `0x00E9` in six-byte records. The command base is not the guess
+the 0194 stream suggested (`2f 26 0d 04 01 01` is not a decodable F01 record);
+F01's query/command/control/data/interrupt bases are fixed at
+`00/06/0D/11/0E`.
+
+`0196-whyred-touch-sw-reset.patch` therefore:
+
+* adds `dsx_read_page()`, which always forces the two-byte page select
+  (`FF 00`) before the addressed read, matching
+  `synaptics_rmi4_i2c_read()`;
+* issues the software reset (`F01 command 0x06 <- 0x01`) and waits 300 ms;
+* reads the F01 device status (`0x11`) and then walks the PDT **downwards**,
+  one addressed six-byte record at a time, taking the F01/F12 base addresses
+  from the records and stopping at the `0x00` end marker instead of reading a
+  fixed 24-byte window;
+* only after that scan reads F01 control and sets `CONFIGURED` if it is still
+  clear, so the 0195 mistake (write first, then scan) cannot repeat;
+* dumps the F12 query and control blocks at the bases the scan found, which is
+  the input for the reporting-mode write;
+* page-selects before every F12 poll and touch-test sample, because after a
+  real reset the vendor framing is the one that addresses the part.
+
+If the reset ACKs and the walk returns a real F01 record, 0197 only has to
+compute `ctrl20_offset` from the F12 query dump and write continuous reporting
+mode. If the walk still returns zeros, the reset itself is refused in this
+state and the next move is an early probe, before the 3 s suspend.
+
+`tests/run_tests.sh` pins the reset write, the downward walk with a page
+select per record, the F01 bases taken from the record, the scan-before-
+configure order, and the removal of the fixed-address `dsx_wake_probe()` /
+`dsx_pdt_scan()` path.

@@ -633,6 +633,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0193 | Spend the one landing read on a 256-byte PDT window from `0x00E9`, print both candidate function bytes, retry once after reset, poll F12 |
 | 0194 | Read 24 bytes (four PDT records), force the page select before the read, parse `query/ctrl/data/fn` from the LSB, accept the F12 record at any offset, run E9/E3/E9 to test whether `FF <page>` re-arms the pointer, poll F12 at `(page << 8) \| data`, fix `dsx_identify` offsets and stop pulsing GPIO 66 (the Novatek reset) |
 | 0195 | Leave the wakeup-gesture (LPWG) state the vendor `resume()` way: add an addressed `dsx_write_f()`, send no page select, spend the one landing read on F01 control `0x0D`, write `(v & ~0x07u) \| 0x80u` back, re-scan the PDT, dump F12 data/query/ctrl, and send the F01 normal-operation write before every F12 sample instead of `FF <page>` |
+| 0196 | Issue the vendor software reset (`F01 command 0x06 <- 0x01`, 300 ms) after the write was proven to ACK in 0195, then walk the PDT downwards in addressed six-byte records with a forced page select, take the F01/F12 bases from the records, configure F01 only after the scan, and page-select before every F12 sample |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.
