@@ -5396,3 +5396,57 @@ Expected ring for the next boot, if the hypothesis is right:
 
 `tests/run_tests.sh` pins the early hook position, the kernel-time wait, the
 cached-result reuse and the single watchdog, and the build-script knob.
+
+### 2026-11-13: what the fork found, and the F12 setup 0198 adopts
+
+Checked the two forks of this repository for a working touch path:
+
+* `tahamsaglam/ios-whyred2` is the Novatek NT36672 variant from 28 Oct and
+  still reports "Touch: not yet enabled"; nothing to reuse.
+* `akshayrathore110/ios-whyred2` is the only serious attempt (six commits,
+  3-5 Nov). Its README at the tip still says "nothing is fed into
+  `SweetHIDTouch` yet, so the lock screen still ignores touch", it opened no
+  touch PR, and its last commits are still adding F12 parsing - so no fork has
+  confirmed working touch either.
+
+It did, however, get three things right that this tree lacked, and `0198`
+ports them from the **vendor reference driver** rather than from the fork
+(two of the fork's details are wrong):
+
+1. F12 must be parsed before it can be used. `query_5` (control presence) is
+   at `query_base + 5`: byte 0 is `size_of_query6`, the rest are ctrl0..
+   presence bits. `query_8` (data presence) is at `query_base + 8` with byte 0
+   `size_of_query9`. The fork read these at offsets 4 and 7 *within* a 20-byte
+   query block, which lands inside the size byte.
+2. Reporting is **control 28**, and the vendor writes `RPT_DEFAULT` (`0x1F`:
+   type + X/Y LSB/MSB) to it in `synaptics_rmi4_f12_set_enables()`. The fork
+   wrote `0x01` and therefore enabled only the type bit.
+3. The 2D finger data is at `data_base + data1_offset`, where
+   `data1_offset = query_8->data0_is_present`. Data0 is the wakeup-gesture
+   register and sits in front of the fingers. The fork added the count of
+   *all* present data registers, which points past the finger block.
+
+Control register offsets are the number of present registers below the target
+(each control register is one byte); the vendor spells this out for ctrl_8,
+ctrl_20, ctrl_23, ctrl_28, ctrl_31 and ctrl_58. `0198` only needs ctrl_28.
+
+`0198-whyred-touch-f12-reporting.patch` therefore adds `dsx_f12_program()` and
+calls it right after the early PDT dump:
+
+* refuses to program unless the PDT proves it is real - F01 must be the
+  standard `00 06 0D 11` record. The shifted byte stream that all late probes
+  saw can fake a `fn 0x12` record, so "F12 found" alone is not enough;
+* reads the query_5/query_8 sizes and presence bytes, prints them, computes
+  ctrl28 and the touch data register, and writes `0x1F` to ctrl28 with a
+  read-back;
+* stores the computed registers and uses them for the F12 poll and the late
+  touch test (the late probe falls back to a late reset + program when
+  `sweetouchearly` is off);
+* keeps every diagnostic line in the ring, including the F01 record, the
+  query bytes, ctrl28 read-back and the chosen data register.
+
+If the early window is real, this boot should print `F01 ... 00 06 0d 11`,
+`f12 ctrl28 <- 0x1f ack` and a read-back of `0x1f`, then the late poll should
+show touch data changing with a finger. If the window is not real, the gate
+prints `not programming F12` and the ring still contains the full early dump
+that tells us where the part really is.

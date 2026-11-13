@@ -1334,6 +1334,50 @@ grep -q 'SWEETEARLY=MS' tools/build-touch-diag.sh
 grep -q 'sweetouchearly=\$early' tools/build-touch-diag.sh
 echo "ok   0197 runs the PDT dump before eMMC init and reuses it late"
 
+echo "== TOUCH: 0198 programs F12 the way the vendor reference driver does =="
+P198="xnu/patches/0198-whyred-touch-f12-reporting.patch"
+python3 tools/check_patch.py "$P198" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_f12_program(void)' \
+	--added-contains 'bsd/dev/santoni_touch.c:#define DSX_F12_RPT_DEFAULT	0x1f' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_bits_present(const uint8_t *bytes' \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_f12_touch_reg'
+python3 - <<'PY'
+src = open('xnu/patches/0198-whyred-touch-f12-reporting.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# Query registers, exactly where synaptics_rmi4_f12_init() reads them:
+# size of query_5 at query_base+4, its data at +5; query_8 at +7 and +8.
+assert '#define DSX_F12_Q5_SIZE\t0x04' in body
+assert '#define DSX_F12_Q5_DATA\t0x05' in body
+assert '#define DSX_F12_Q8_SIZE\t0x07' in body
+assert '#define DSX_F12_Q8_DATA\t0x08' in body
+# Reporting is control 28 and the vendor value is RPT_DEFAULT (0x1F), not 0x01.
+assert '#define DSX_F12_RPT_DEFAULT\t0x1f' in body
+assert 'rpt = DSX_F12_RPT_DEFAULT;' in body
+assert 'dsx_write_f(DSX_ADDR, (uint16_t)dsx_f12_report_ctrl, &rpt, 1)' in body
+assert 'f12 ctrl28 readback' in body
+# control register offsets are the count of present registers below them,
+# because each control register is one byte (vendor ctrl_20/ctrl_28 offset).
+assert 'dsx_bits_present(q5 + 1, q5n - 1, 28)' in body
+assert 'dsx_f12_report_ctrl = dsx_f12_ctrl + ctrl28;' in body
+# The 2D data starts after data0 (the gesture register), not after every
+# declared data register.
+assert 'data0 = (q8[1] & 0x01) ? 1 : 0;' in body
+assert 'dsx_f12_touch_reg = dsx_f12_data + data0;' in body
+# Never program a part whose PDT is the shifted stream: F01 must be the
+# standard 00/06/0D/11 record.
+assert 'dsx_f01_query != 0x00 || dsx_f01_cmd != 0x06' in body
+assert 'dsx_f01_ctrl != 0x0d || dsx_f01_data != 0x11' in body
+assert 'not programming F12' in body
+# Poll and the late touch test use the computed data register.
+assert 'dsx_f12_touch_reg ? (uint16_t)dsx_f12_touch_reg :' in body
+assert 'dsx.f12_data = dsx_f12_touch_reg ?' in body
+PY
+echo "ok   0198 parses query_5/query_8, writes RPT_DEFAULT and polls data0+1"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
