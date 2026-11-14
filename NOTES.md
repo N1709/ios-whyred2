@@ -5563,3 +5563,15 @@ The 0200 image is `images/shim-boot-touch-early-marks-detail.img` (kernel
 `e9afbc6c7faf0708875d6eb0c42680ba64faacf45ea0402f2a5db4dbc2ab2d9e`,
 6,119,424 B), built with the same knobs
 (`SWEETEARLY=1000 SWEETI2C=0 SWEETRESET=0`) and the muted console.
+
+Boot of the detail image showed bands all the way to white (19), so
+`santoni_touch_early()` completes when it is given the time; the 0199 "stop at
+blue" was the same probe still running, not a hang. The ring pulled right
+after that boot is still flush #208, so the probe's lines never reached the
+SYSTEM flush: either eMMC init had not finished when the phone was rebooted to
+recovery, or the boot really stops between the early probe and
+`santoni_log_start()`. `images/shim-boot-touch-early-console.img` (kernel
+`7f520ca`, sha256
+`524a89e134f2a7ead15b6fd79690e729ae7006a398a8c8751f1363b64f1d8078`) keeps the
+text console on the panel so the next boot shows where the log stops without
+needing a recovery round trip.
