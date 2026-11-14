@@ -1,0 +1,19 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -1826,7 +1826,14 @@
+ 	}
+ 	touch_early_mark(19, 0xffffffff);	/* white: done */
+ 	dsx_early_end_ms = touch_now_ms();
+-	printf("WHYRED TOUCH: early done at %llu ms, F12 %s%s",
++	/*
++	 * 0204: this format had two %s but only one string argument. The
++	 * second %s read the next register (1) and vprintf_internal took a
++	 * data abort on address 0x1, painting white and then panicking - the
++	 * "hang" at the last band. The suffix is printed by the separate
++	 * printf() calls below.
++	 */
++	printf("WHYRED TOUCH: early done at %llu ms, F12 %s",
+ 	    (unsigned long long)dsx_early_end_ms, dsx_f12_found ?
+ 	    "found" : "missing");
+ 	if (dsx_f12_found) {

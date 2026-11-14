@@ -1551,6 +1551,45 @@ assert 1450 + 12 * 54 + 40 <= 2160
 PY2
 echo "ok   0203 uses bright colours and splits take-over into five bands"
 
+echo "== TOUCH: 0204 fixes the early-done format that panicked on white =="
+P204="xnu/patches/0204-whyred-touch-early-format.patch"
+python3 tools/check_patch.py "$P204" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:early done at %llu ms, F12 %s'
+python3 - <<'PY2'
+src = open('xnu/patches/0204-whyred-touch-early-format.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+removed = [l[1:] for l in src.splitlines()
+           if l.startswith('-') and not l.startswith('---')]
+body = '\n'.join(added)
+gone = '\n'.join(removed)
+
+# 0203 booted to the white band and then panicked in vprintf_internal with
+# far 0x1: the format carried two %s but only one string argument, so the
+# second %s consumed register value 1. The bad format must be gone.
+bad = 'early done at %llu ms, F12 %s%s'
+assert bad in gone, '0204 must remove the two-%s early-done format'
+assert bad not in body, '0204 must not re-add the two-%s format'
+
+# The unchanged second line of the call is context, not an added line.
+context = '\n'.join(l[1:] for l in src.splitlines()
+                    if l.startswith(' ') and len(l) > 1)
+assert '"found" : "missing"' in context, 'the one %s argument is missing'
+
+# The replacement format may only promise what the argument list supplies:
+# one %s and one ternary string after the 64-bit millisecond value.
+fmt = [l for l in added if 'early done at' in l]
+assert len(fmt) == 1, fmt
+line = fmt[0]
+assert line.count('%s') == 1, line
+assert line.count('%llu') == 1, line
+
+# The comment must record why the suffix is a separate printf() call.
+assert 'printf() calls below' in body
+PY2
+echo "ok   0204 removes the %s%s format and keeps one string argument"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

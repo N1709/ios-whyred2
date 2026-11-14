@@ -5680,3 +5680,46 @@ DMA), yellow (take-over entry), green (core check + snapshot), orange (HC
 mode), red (pre-reset snapshot), blue (reset/power/clock), violet (CMD1),
 pale cyan (take-over done), pink (8-bit HS), white (partition), grey (before
 log), brown (log started).
+
+### 2026-11-14: 0203 panic is a `%s%s` bug, not a hang in take-over
+
+The 0203 boot painted the touch bands to white and then panicked. The dump
+the user transcribed:
+
+```
+esr: 0x96000005  far: 0x0000000000000001
+pc:  0xfffffe00073695b4  lr: 0xfffffe00073695c8
+x23: 0x0000000000000001  x19: 0  x26: 0
+```
+
+The repo-local kernel is a Mach-O whose `__TEXT` starts at
+`0xfffffe0007004000`, not at `0xfffffff007...`:
+
+```
+llvm-symbolizer --obj=/tmp/opencode/xnu-kernel.43545987044 0xfffffe00073695b4
+-> vprintf_internal
+```
+
+Disassembly at that address is `ldrsb w0, [x23, x26]`, i.e. `*("%s" arg)`
+with `x23 = 1`. So the format string asked for one more `%s` than the call
+supplied, and the missing argument was register value `1`. That is exactly
+`santoni_touch_early()`:
+
+```c
+printf("WHYRED TOUCH: early done at %llu ms, F12 %s%s",
+    (unsigned long long)dsx_early_end_ms, dsx_f12_found ? "found" : "missing");
+```
+
+Two `%s`, one string, and the abort happens before the probe's `return`, so
+`TOUCH_PHASE_MARK(0, ...)` and the whole eMMC take-over never ran. This also
+explains why the ring always stayed at `flush #208`: the panic precedes
+`santoni_log_start()`.
+
+0204 replaces the format with a single `%s` and a comment; the remaining
+suffix lines are already separate `printf()` calls. The white band in 0203
+was therefore the last touch band, not a phase band - the bright colours
+were never reached.
+
+Band readout rule from now on: white is band 19 and means "early probe
+finished the F12 setup"; the phase bands only start *below* it, after the
+fixed printf returns.
