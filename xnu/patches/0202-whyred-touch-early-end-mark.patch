@@ -1,0 +1,138 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -1646,26 +1646,40 @@
+ #define TOUCH_FB_PHYS	0x9d400000ULL
+ #define TOUCH_FB_STRIDE	4320u	/* bytes, 32 bpp */
+ #define TOUCH_FB_ROW0	40u
+-#define TOUCH_FB_ROWS	1450u	/* 20 bands, 70 rows apart, 50 rows tall */
++/*
++ * 0202: map the whole frame once. 0201 mapped a second window for the eMMC
++ * phase bands, and that boot still ended at the white touch band, so either
++ * the probe never returned or the second mapping never happened. A single
++ * window removes the second variable; it costs the rest of the 9 MiB
++ * scanout buffer, and this already runs before eMMC.
++ */
++#define TOUCH_FB_ROWS	2160u	/* the whole 1080x2160 panel */
++
++static volatile uint32_t *
++touch_fb(void)
++{
++	static volatile uint32_t *fb;
++
++	if (!fb) {
++		fb = (volatile uint32_t *)ml_io_map_unmappable(TOUCH_FB_PHYS,
++		    (vm_size_t)TOUCH_FB_ROWS * TOUCH_FB_STRIDE, VM_WIMG_IO);
++	}
++	return fb;
++}
+ 
+ static void
+ touch_early_mark(int step, uint32_t color)
+ {
+-	static volatile uint32_t *fb;
++	volatile uint32_t *fb = touch_fb();
+ 	uint32_t y0 = TOUCH_FB_ROW0 + (uint32_t)step * 70u;
+ 	uint32_t x, y;
+ 
+-	if (!fb) {
+-		fb = (volatile uint32_t *)ml_io_map_unmappable(
+-		    TOUCH_FB_PHYS + (uint64_t)TOUCH_FB_ROW0 * TOUCH_FB_STRIDE,
+-		    (vm_size_t)TOUCH_FB_ROWS * TOUCH_FB_STRIDE, VM_WIMG_IO);
+-		if (!fb) {
+-			return;
+-		}
++	if (fb == NULL) {
++		return;
+ 	}
+ 	for (y = y0; y < y0 + 50u; y++) {
+ 		volatile uint32_t *line = fb +
+-		    (uint64_t)(y - TOUCH_FB_ROW0) * (TOUCH_FB_STRIDE / 4u);
++		    (uint64_t)y * (TOUCH_FB_STRIDE / 4u);
+ 
+ 		for (x = 80; x < 980; x++) {
+ 			line[x] = color;
+@@ -1679,35 +1693,26 @@
+  * ring still only starts after eMMC init. A boot that hangs between the
+  * early probe and santoni_log_start() is therefore just as silent as the
+  * 0198 one, and the white band alone cannot tell the eMMC phases apart.
+- * Paint a second block below the touch bands, one mark per phase of
+- * santoni_sdhci_init()/sdhci_take_over(). It is mapped on its own: 11 marks,
+- * rows 1450..2136, about 3 MiB instead of the whole frame.
++ * Paint one mark per phase of santoni_sdhci_init()/sdhci_take_over() below
++ * the touch bands. Same mapping as the touch bands (0202).
+  */
+ #define TOUCH_PHASE_ROW0	1450u
+ #define TOUCH_PHASE_STEP	64u
+ #define TOUCH_PHASE_TALL	46u
+-#define TOUCH_PHASE_ROWS	710u
+ 
+ static void
+ touch_phase_mark(int step, uint32_t color)
+ {
+-	static volatile uint32_t *fb;
++	volatile uint32_t *fb = touch_fb();
+ 	uint32_t y0 = TOUCH_PHASE_ROW0 + (uint32_t)step * TOUCH_PHASE_STEP;
+ 	uint32_t x, y;
+ 
+-	if (!fb) {
+-		fb = (volatile uint32_t *)ml_io_map_unmappable(
+-		    TOUCH_FB_PHYS + (uint64_t)TOUCH_PHASE_ROW0 *
+-		    TOUCH_FB_STRIDE,
+-		    (vm_size_t)TOUCH_PHASE_ROWS * TOUCH_FB_STRIDE,
+-		    VM_WIMG_IO);
+-		if (!fb) {
+-			return;
+-		}
++	if (fb == NULL) {
++		return;
+ 	}
+ 	for (y = y0; y < y0 + TOUCH_PHASE_TALL; y++) {
+ 		volatile uint32_t *line = fb +
+-		    (uint64_t)(y - TOUCH_PHASE_ROW0) * (TOUCH_FB_STRIDE / 4u);
++		    (uint64_t)y * (TOUCH_FB_STRIDE / 4u);
+ 
+ 		for (x = 80; x < 980; x++) {
+ 			line[x] = color;
+@@ -1717,6 +1722,33 @@
+ }
+ 
+ /*
++ * 0202: the white band is painted before the last printf, the timestamps and
++ * the return, so a boot that stops at white cannot say whether the probe
++ * ever returned. Paint in the gap between the last touch band and the first
++ * eMMC phase, after those statements, so it only shows if the function
++ * really fell through to its return.
++ */
++static void
++touch_end_mark(void)
++{
++	volatile uint32_t *fb = touch_fb();
++	uint32_t x, y;
++
++	if (fb == NULL) {
++		return;
++	}
++	for (y = 1425; y < 1445; y++) {
++		volatile uint32_t *line = fb +
++		    (uint64_t)y * (TOUCH_FB_STRIDE / 4u);
++
++		for (x = 80; x < 980; x++) {
++			line[x] = 0xff00ff40;	/* lime: early probe returned */
++		}
++	}
++	printf("WHYRED TOUCH: end mark\n");
++}
++
++/*
+  * Called by the eMMC driver after the early probe. No-op when the probe
+  * never ran (other boot args, other boards), so a normal boot keeps the
+  * framebuffer exactly as SweetFramebuffer left it.
+@@ -1806,6 +1838,7 @@
+ 		    dsx_f12_report_ctrl, dsx_f12_touch_reg);
+ 	}
+ 	printf("\n");
++	touch_end_mark();
+ 	return 0;
+ }
+ 

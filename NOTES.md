@@ -5611,3 +5611,29 @@ from CI run `43541108154`, sha256
 `bdcdbb8a747c313f08af2c1833d66894538c4b8f3fd36c67420896d6e52e7724`,
 6,119,424 B), built with `SWEETEARLY=1000 SWEETI2C=0 SWEETRESET=0` and the
 muted console so the bands are the only thing on the panel.
+
+### 2026-11-14: 0201 ended at white too, so 0202 separates return from mapping
+
+The cold boot of the 0201 image showed the touch bands up to white and nothing
+in the phase block (rows 1450+). The ring pulled from recovery was unchanged
+(`flush #208`, total 26365), so no new boot reached `santoni_log_start()`. The
+stale ring is still useful: it is a boot without the early probe, and that
+boot completed CMD1, EXT_CSD, the 8-bit switch, the partition scan and the log
+flusher - the eMMC path itself is fine.
+
+That leaves two candidates for "white with no phase 0": the early probe never
+actually returns past its last `printf()`, or it returns but the second
+framebuffer window (rows 1450..2160, mapped separately in 0201) never maps, so
+every phase mark silently does nothing.
+
+0202 removes the second window and the console of the answer:
+
+* `touch_fb()` maps the whole 1080x2160 frame once and both the touch bands
+  and the phase bands use it;
+* `touch_end_mark()` paints rows 1425..1445 lime (`0xff00ff40`) after the
+  final `printf()`/timestamp and immediately before `return 0`, in the gap
+  between the white band (ends at 1419) and phase 0 (starts at 1450).
+
+If the lime band appears, the probe returned and the phase block must follow;
+if it does not, the probe dies in its own last statements and the eMMC code is
+never at fault.

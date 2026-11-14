@@ -1488,6 +1488,36 @@ assert '\n \tsantoni_log_start();\n+\tTOUCH_PHASE_MARK(10' in src
 PY2
 echo "ok   0201 marks eleven eMMC-init phases below the touch bands"
 
+echo "== TOUCH: 0202 proves the early probe returned =="
+P202="xnu/patches/0202-whyred-touch-early-end-mark.patch"
+python3 tools/check_patch.py "$P202" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:touch_fb' \
+	--added-contains 'bsd/dev/santoni_touch.c:touch_end_mark' \
+	--added-contains 'bsd/dev/santoni_touch.c:TOUCH_FB_ROWS' \
+	--added-contains 'bsd/dev/santoni_touch.c:2160u' \
+	--added-contains 'bsd/dev/santoni_touch.c:0xff00ff40'
+python3 - <<'PY2'
+src = open('xnu/patches/0202-whyred-touch-early-end-mark.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# One mapping for the whole frame: the 0201 second window is exactly the
+# variable this patch removes, so the added code must map only once.
+assert body.count('ml_io_map_unmappable') == 1, body.count('ml_io_map_unmappable')
+assert 'TOUCH_FB_PHYS +' not in body
+# The end mark sits after the last printf and before the return, in the gap
+# between the white band (ends at row 1419) and phase 0 (starts at 1450).
+# The call is added immediately before the function's return, so a band at
+# that row can only come from code that fell through to the return.
+assert '\n+\ttouch_end_mark();\n \treturn 0;' in src
+assert '1425' in body and '1445' in body
+# The phase block still has to fit on the panel: last row (step 10).
+assert 1450 + 10 * 64 + 46 <= 2160
+PY2
+echo "ok   0202 maps once and paints a return band before the first phase"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
