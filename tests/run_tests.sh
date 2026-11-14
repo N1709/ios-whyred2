@@ -1377,6 +1377,36 @@ assert 'dsx_f12_touch_reg ? (uint16_t)dsx_f12_touch_reg :' in body
 assert 'dsx.f12_data = dsx_f12_touch_reg ?' in body
 PY
 echo "ok   0198 parses query_5/query_8, writes RPT_DEFAULT and polls data0+1"
+echo "== TOUCH: 0199 leaves visible breadcrumbs before the ring exists =="
+P199="xnu/patches/0199-whyred-touch-early-marks.patch"
+python3 tools/check_patch.py "$P199" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:touch_early_mark(int step, uint32_t color)' \
+	--added-contains 'bsd/dev/santoni_touch.c:PE_state.video.v_baseAddr' \
+	--added-contains 'bsd/dev/santoni_touch.c:TOUCH_FB_PHYS'
+python3 - <<'PY2'
+src = open('xnu/patches/0199-whyred-touch-early-marks.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The markers exist because the ring is only flushed after eMMC init, so a
+# hang inside the early probe leaves no new ring at all.
+assert 'touch_early_mark(1, 0xffff0000);' in body
+assert 'touch_early_mark(2, 0xffff8000);' in body
+assert 'touch_early_mark(3, 0xffffff00);' in body
+assert 'touch_early_mark(4, 0xff00ff00);' in body
+assert 'touch_early_mark(5, 0xff00ffff);' in body
+assert 'touch_early_mark(6, 0xff0000ff);' in body
+assert 'touch_early_mark(7, 0xffff00ff);' in body
+assert 'touch_early_mark(8, 0xffffffff);' in body
+# Use the console mapping when it exists; never require a new VM mapping.
+assert 'if (PE_state.video.v_baseAddr && PE_state.video.v_rowBytes)' in body
+assert 'ml_io_map_unmappable(TOUCH_FB_PHYS' in body
+# Marks are drawn at distinct rows so the highest visible row is the step.
+assert '40 + step * 70' in body
+PY2
+echo "ok   0199 paints one band per early-probe step on the boot framebuffer"
 
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old

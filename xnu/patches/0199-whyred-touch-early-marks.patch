@@ -1,0 +1,97 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -1594,6 +1594,54 @@
+ }
+ 
+ /*
++ * 0199: breadcrumbs that survive a hang before the ring flusher starts.
++ * The ring lives on SYSTEM and is only written after eMMC init, so a probe
++ * that runs before eMMC and hangs leaves no new ring at all - exactly what
++ * the 0198 boot did. These bands are written straight into the boot
++ * framebuffer ABL left on screen, one row per step, so the panel shows how
++ * far the early probe got even when nothing else is reachable.
++ */
++#define TOUCH_FB_PHYS	0x9d400000ULL
++#define TOUCH_FB_WIDTH	1080u
++#define TOUCH_FB_HEIGHT	2160u
++
++static void
++touch_early_mark(int step, uint32_t color)
++{
++	static uint32_t *fb;
++	static uint32_t stride;
++	uint32_t *p;
++	int y, x;
++
++	if (!fb) {
++		/*
++		 * Prefer the console's own mapping: with DIAG_CONSOLE=1 the
++		 * text console already draws into it, so it exists and needs no
++		 * new VM mapping this early.
++		 */
++		if (PE_state.video.v_baseAddr && PE_state.video.v_rowBytes) {
++			fb = (uint32_t *)(uintptr_t)PE_state.video.v_baseAddr;
++			stride = PE_state.video.v_rowBytes / 4;
++		} else {
++			fb = (uint32_t *)ml_io_map_unmappable(TOUCH_FB_PHYS,
++			    (vm_size_t)TOUCH_FB_WIDTH * TOUCH_FB_HEIGHT * 4,
++			    VM_WIMG_IO);
++			stride = TOUCH_FB_WIDTH;
++		}
++	}
++	if (!fb || stride < 1000) {
++		return;
++	}
++	for (y = 40 + step * 70; y < 40 + step * 70 + 50; y++) {
++		p = fb + (uint32_t)y * stride + 80;
++		for (x = 0; x < 900; x++) {
++			p[x] = color;
++		}
++	}
++	printf("WHYRED TOUCH: early mark %d\n", step);
++}
++
++/*
+  * The early probe: same bit-bang setup the late probe does, but placed inside
+  * the 0.9-3.2 s window instead of after eMMC init. It only reads: reset, read
+  * F01 status, walk the PDT, dump F12 query/control/data. The touch poll and
+@@ -1618,11 +1666,14 @@
+ 		at = 4000;
+ 	}
+ 	dsx_early_ran = 1;
++	touch_early_mark(1, 0xffff0000);	/* red: entered */
+ 	whyred_arm_reboot_watchdog();
++	touch_early_mark(2, 0xffff8000);	/* orange: watchdog armed */
+ 	touch_wait_until_ms(at);
+ 	dsx_early_start_ms = touch_now_ms();
+ 	printf("WHYRED TOUCH: early probe requested %u ms, starts at %llu ms "
+ 	    "kernel time\n", at, (unsigned long long)dsx_early_start_ms);
++	touch_early_mark(3, 0xffffff00);	/* yellow: past the wait */
+ 
+ 	south = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_SOUTH,
+ 	    0x10000, VM_WIMG_IO);
+@@ -1634,18 +1685,23 @@
+ 		return ENOMEM;
+ 	}
+ 	(void)north;
++	touch_early_mark(4, 0xff00ff00);	/* green: TLMM mapped */
+ 	pin_setup(&touch_sda, south, WHYRED_SDA);
+ 	pin_setup(&touch_scl, south, WHYRED_SCL);
+ 	printf("WHYRED TOUCH: early sda%d scl%d idle sda %d scl %d\n",
+ 	    WHYRED_SDA, WHYRED_SCL, pin_read(&touch_sda),
+ 	    pin_read(&touch_scl));
++	touch_early_mark(5, 0xff00ffff);	/* cyan: pins set */
+ 	(void)i2c_clear_bus();
++	touch_early_mark(6, 0xff0000ff);	/* blue: bus cleared */
+ 	dsx_page = -1;
+ 	dsx_reset_probe();
++	touch_early_mark(7, 0xffff00ff);	/* magenta: PDT walked */
+ 	dsx_early_found = dsx_f12_found;
+ 	if (dsx_f12_found) {
+ 		(void)dsx_f12_program();
+ 	}
++	touch_early_mark(8, 0xffffffff);	/* white: done */
+ 	dsx_early_end_ms = touch_now_ms();
+ 	printf("WHYRED TOUCH: early done at %llu ms, F12 %s%s",
+ 	    (unsigned long long)dsx_early_end_ms, dsx_f12_found ?

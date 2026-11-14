@@ -5450,3 +5450,38 @@ If the early window is real, this boot should print `F01 ... 00 06 0d 11`,
 show touch data changing with a finger. If the window is not real, the gate
 prints `not programming F12` and the ring still contains the full early dump
 that tells us where the part really is.
+
+### 2026-11-14: 0198 hung before the ring existed, so 0199 paints breadcrumbs
+
+The first 0198 boot (console image with `sweetouchearly=1000`) did not produce
+a new ring: `tools/sweet-log-pull.sh` still returns flush #208, total 26365
+bytes, the same snapshot as the 0196 boot, with no `early probe` line. The log
+ring is only written after eMMC init and `santoni_log_start()`, so this means
+the boot never reached either - the early probe (or something before it) hung
+with no output channel at all. The phone stayed unusable until recovery.
+
+The reason the ring cannot help here is structural: `santoni_log_append()` is
+fed by the console, but the ring's backing store is flushed to the SYSTEM
+partition only after eMMC enumeration. Everything printed before that is
+buffered in RAM and lost on a panic/hang.
+
+`0199-whyred-touch-early-marks.patch` adds `touch_early_mark()`: a filled
+band in the boot framebuffer, one row per early-probe step, using
+`PE_state.video.v_baseAddr` (the console mapping the DIAG_CONSOLE image
+already has) and falling back to a direct `ml_io_map_unmappable()` only if
+that is empty. The rows are 70 px apart, so the highest band on the panel is
+the last completed step:
+
+    1 red      entered santoni_touch_early()
+    2 orange   reboot watchdog armed
+    3 yellow   waited until sweetouchearly=MS
+    4 green    TLMM mapped
+    5 cyan     SDA/SCL muxed and idle read
+    6 blue     bus cleared
+    7 magenta  reset + PDT walk done
+    8 white    F12 programming done
+
+The same steps also print `WHYRED TOUCH: early mark N` for the case where the
+boot survives and the ring catches up. A boot that shows nothing at all says
+the image never reached BSD init (shim/loader problem), which the previous
+ring could not distinguish from an early hang.
