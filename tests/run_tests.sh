@@ -1518,6 +1518,39 @@ assert 1450 + 10 * 64 + 46 <= 2160
 PY2
 echo "ok   0202 maps once and paints a return band before the first phase"
 
+echo "== TOUCH: 0203 makes every eMMC phase band readable =="
+P203="xnu/patches/0203-whyred-touch-emmc-phases-bright.patch"
+python3 tools/check_patch.py "$P203" -q \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TOUCH_PHASE_MARK(3, 0xff00ff00)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TOUCH_PHASE_MARK(4, 0xffff8000)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TOUCH_PHASE_MARK(5, 0xffff0000)' \
+	--added-contains 'bsd/dev/santoni_touch.c:TOUCH_PHASE_STEP' \
+	--added-contains 'bsd/dev/santoni_touch.c:TOUCH_PHASE_TALL'
+python3 - <<'PY2'
+import re
+src = open('xnu/patches/0203-whyred-touch-emmc-phases-bright.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# 0201 ended at lime: the first three phase colours were navy/olive/dark
+# green, which read as black, so a hang there was indistinguishable from no
+# phase band at all. Every phase now has a bright colour.
+assert '0xff000080' not in body
+assert '0xff00ff00' in body and '0xffff8000' in body
+marks = re.findall(r'TOUCH_PHASE_MARK\((\d+), (0x[0-9a-f]+)\)', body)
+nums = [int(n) for n, _ in marks]
+cols = [c for _, c in marks]
+# 0..12: take-over is split into entry, core-check, HC mode, pre-reset and
+# the reset/power/clock block, so a hang inside it now names the step.
+assert sorted(nums) == list(range(13)), nums
+assert len(cols) == len(set(cols)), cols
+# The extra four phases still fit above the bottom of the panel.
+assert 1450 + 12 * 54 + 40 <= 2160
+PY2
+echo "ok   0203 uses bright colours and splits take-over into five bands"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

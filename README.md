@@ -645,6 +645,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0200 | Split the one band that never appeared into the steps inside `dsx_reset_probe()`: reset command, F01 status, each of the first six PDT records, the F12 block reads and the return, bands 7..19, painted only while the early probe sets `dsx_early_marks_on` so the late probe never repaints them |
 | 0201 | Paint the eMMC phases that follow the early touch probe below the touch bands (early return, DT/maps/DMA, take-over entry, HC mode, reset/power/clock, CMD1, take-over return, 8-bit HS verify, partition, before/after `santoni_log_start()`), because the ring only starts in the last of them and a boot that hangs before it otherwise shows nothing above the white band; `santoni_touch_mark()` is a no-op unless the early probe ran |
 | 0202 | Map the whole framebuffer once and paint a lime band in the gap after the early probe's last `printf()` but before its `return`, because the 0201 boot still stopped at the white band: either the probe never returned or the second window never mapped, and one window plus a return band separates those two |
+| 0203 | Make every eMMC phase band bright and split take-over into entry, core check, HC mode, pre-reset snapshot and reset/power/clock, because the boot ended at the lime return band while the first phase colours (navy/olive/dark green) read as black on the panel, so a hang inside take-over looked the same as no phase band at all |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

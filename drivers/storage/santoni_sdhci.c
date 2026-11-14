@@ -2137,7 +2137,7 @@ sdhci_take_over(void)
 	    "args decide whether the HFS+ root comes from eMMC)\n",
 	    se.part, se.writable ? "enabled" : "read-only");
 
-	TOUCH_PHASE_MARK(2, 0xff008000);	/* dark green: take-over */
+	TOUCH_PHASE_MARK(2, 0xffffff00);	/* yellow: take-over entry */
 	error = sdhci_core_check();
 	if (error) {
 		return error;
@@ -2145,6 +2145,7 @@ sdhci_take_over(void)
 
 	/* Probe step 0: the only true pre-write snapshot. */
 	sdhci_snapshot_untouched();
+	TOUCH_PHASE_MARK(3, 0xff00ff00);	/* green: core check + snapshot */
 
 #if !defined(ARM64_BOARD_CONFIG_LAVENDER)
 	/* Disable power IRQ generation on GIC while polled */
@@ -2179,10 +2180,11 @@ sdhci_take_over(void)
 	if (error) {
 		return error;
 	}
+	TOUCH_PHASE_MARK(4, 0xffff8000);	/* orange: HC mode entered */
 
 	/* Step 0b: standard window is decoded now, but RESET_ALL is not run. */
 	sdhci_snapshot_standard("(post-HC-mode, pre-reset)");
-	TOUCH_PHASE_MARK(3, 0xff8000ff);	/* purple: HC mode entered */
+	TOUCH_PHASE_MARK(5, 0xffff0000);	/* red: pre-reset snapshot */
 
 	/* Drain any stale PWRCTL request firmware or reset left behind */
 	(void)sdhci_pwrctl_ack("stale", false);
@@ -2287,7 +2289,7 @@ sdhci_take_over(void)
 		    "was set: data went to the CMDQ FIFO, not SDHCI" :
 		    "already clear");
 	}
-	TOUCH_PHASE_MARK(4, 0xff0080ff);	/* sky: reset/power/clock */
+	TOUCH_PHASE_MARK(6, 0xff0000ff);	/* blue: reset/power/clock */
 
 #if defined(ARM64_BOARD_CONFIG_LAVENDER)
 	printf("WHYRED SDHCI: takeover complete (VENDOR_SPEC 0x%08x, "
@@ -2459,7 +2461,7 @@ sdhci_take_over(void)
 	    "OCR 0x%08x\n", err_cmd1, probe_ocr);
 	se.cmd1_error = err_cmd1;
 	se.cmd1_ocr = probe_ocr;
-	TOUCH_PHASE_MARK(5, 0xffff0080);	/* rose: CMD1 answered */
+	TOUCH_PHASE_MARK(7, 0xff8080ff);	/* violet: CMD1 answered */
 
 	if (err_cmd1 == 0) {
 		error = sdhci_enumerate_card();
@@ -4231,7 +4233,7 @@ santoni_sdhci_init(void)
 #if defined(ARM64_BOARD_CONFIG_WHYRED)
 	santoni_touch_early();
 #endif
-	TOUCH_PHASE_MARK(0, 0xff000080);	/* navy: early probe returned */
+	TOUCH_PHASE_MARK(0, 0xffff00ff);	/* magenta: early probe returned */
 	if (SecureDTLookupEntry(NULL, "/santoni-sdhci", &node) != kSuccess ||
 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
 	    size < 2 * sizeof(uintptr_t)) {
@@ -4272,22 +4274,22 @@ santoni_sdhci_init(void)
 		return ENOMEM;
 	}
 	se.dma_pa = ptoa_64(pn);
-	TOUCH_PHASE_MARK(1, 0xff808000);	/* olive: DT/maps/DMA done */
+	TOUCH_PHASE_MARK(1, 0xff00ffff);	/* cyan: DT/maps/DMA done */
 
 	lck_mtx_lock(&santoni_sdhci_lock);
 	stage = "take-over";
 	error = sdhci_take_over();
-	TOUCH_PHASE_MARK(6, 0xff80ff80);	/* pale green: take-over done */
+	TOUCH_PHASE_MARK(8, 0xff80ffff);	/* pale cyan: take-over done */
 	if (!error) {
 		stage = "EXT_CSD 8-bit verify";
 		error = sdhci_verify_highspeed_bus(se.sec_count);
 	}
-	TOUCH_PHASE_MARK(7, 0xffffd700);	/* gold: 8-bit HS verified */
+	TOUCH_PHASE_MARK(9, 0xffff80ff);	/* pink: 8-bit HS verified */
 	if (!error) {
 		stage = "GPT partition";
 		error = santoni_sdhci_find_partition(se.part);
 	}
-	TOUCH_PHASE_MARK(8, 0xffff4000);	/* orange-red: partition */
+	TOUCH_PHASE_MARK(10, 0xffffffff);	/* white: partition */
 	lck_mtx_unlock(&santoni_sdhci_lock);
 	if (error) {
 		/*
@@ -4339,9 +4341,9 @@ santoni_sdhci_init(void)
 	    se.writable ? "writable (emmcrw=1)" : "read-only");
 
 	/* Private console log area on SYSTEM, if the partition is there. */
-	TOUCH_PHASE_MARK(9, 0xff006060);	/* dark cyan: before log */
+	TOUCH_PHASE_MARK(11, 0xffa0a0a0);	/* grey: before log */
 	santoni_log_start();
-	TOUCH_PHASE_MARK(10, 0xff8b4513);	/* brown: ring started */
+	TOUCH_PHASE_MARK(12, 0xff8b4513);	/* brown: ring started */
 	/* After the log: the WHYRED FB lines belong in the SYSTEM ring. */
 	santoni_fb_test();
 #if defined(ARM64_BOARD_CONFIG_WHYRED)

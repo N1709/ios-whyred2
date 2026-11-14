@@ -5644,3 +5644,29 @@ from CI run `43543738549`, sha256
 6,119,424 B), same knobs and muted console. The lime band at rows 1425..1445
 is the only new channel: it is painted after the probe's final printf and
 immediately before its return.
+
+### 2026-11-14: 0202 says the probe returns; the hang is inside take-over
+
+The 0202 boot showed the white band and, right below it, a bright bar. The
+ring pulled afterwards was still `flush #208`, total 26365: no new log, so
+the boot still stops before `santoni_log_start()`. The bright bar can only be
+the lime `touch_end_mark()` at rows 1425..1445, which is painted after the
+probe's final `printf()` and immediately before `return 0`. So the probe does
+return, and the single full-frame mapping works - the 0201 failure was the
+second window, not the probe.
+
+Everything below lime was dark because the first three phase colours were
+navy `0xff000080`, olive `0xff808000` and dark green `0xff008000`, which are
+indistinguishable from the black framebuffer on this panel. The boot is
+therefore somewhere in phase 0..2 (after the return, the DT/maps/DMA block,
+or the first lines of `sdhci_take_over()`), and the panel could not say where.
+
+0203 fixes the readout and refines the suspect:
+
+* every phase band uses a bright colour (magenta, cyan, yellow, green,
+  orange, red, blue, violet, pale cyan, pink, white, grey, brown);
+* take-over is split into five bands: entry, `sdhci_core_check()` +
+  pre-write snapshot, HC mode, the post-HC-mode snapshot, and the
+  reset/power/clock/FIFO block;
+* the 13 bands use 54-row spacing from row 1450, so the last one ends at
+  row 2138, still on the 2160-row panel.
