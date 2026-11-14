@@ -510,6 +510,11 @@ One trap for anyone repeating this on the recovery side: unbinding `1-0020`
 which also feeds the external I2C pull-ups. Every read after that is random or
 `ff` and says nothing about the chip; keep the driver bound.
 
+The `novatek@62` node in the vendor DT is a variant entry, not this hardware.
+Its reset GPIO 66 already sits high, and `0x62` does not ACK on any scan even
+after a reset pulse, while `0x20` ACKs on the bit-bang scan every time. Do not
+pivot the touch work to the Novatek protocol and do not pulse GPIO 66 again.
+
 
 Patch `0184` (`bsd/dev/santoni_touch.c`) re-muxes the two bus lines as GPIO
 and bit-bangs I2C, because neither a TLMM GPIO driver nor a QUP I2C master
@@ -636,7 +641,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0196 | Issue the vendor software reset (`F01 command 0x06 <- 0x01`, 300 ms) after the write was proven to ACK in 0195, then walk the PDT downwards in addressed six-byte records with a forced page select, take the F01/F12 bases from the records, configure F01 only after the scan, and page-select before every F12 sample |
 | 0197 | Probe inside the only window where the DSX answers: add `santoni_touch_early()` at the top of `santoni_sdhci_init()` (before eMMC and the framebuffer), wait until `sweetouchearly=MS` kernel time, run the 0196 reset + PDT walk there, print the real timestamps, cache the F12 bases for the late poll/touch test, and add `SWEETEARLY` to `tools/build-touch-diag.sh` |
 | 0198 | Parse F12 `query_5`/`query_8`, refuse to program unless F01 is the real `00 06 0D 11` record, write `RPT_DEFAULT (0x1F)` to control 28, and poll the 2D block at `data_base + data0 present` - the vendor reference sequence, not the fork's `0x01`/all-data-registers variant |
-| 0199 | Paint one framebuffer band per early-probe step (red/orange/yellow/green/cyan/blue/magenta/white) plus a matching `early mark N` line, because the SYSTEM ring is only flushed after eMMC init and a hang before it leaves no log at all |
+| 0199 | Paint one framebuffer band per early-probe step (red/orange/yellow/green/cyan/blue/magenta/white) plus a matching `early mark N` line, because the SYSTEM ring is only flushed after eMMC init and a hang before it leaves no log at all; the bands map their own 2.6 MiB window because the boot `v_baseAddr` is physical, not a pointer |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.

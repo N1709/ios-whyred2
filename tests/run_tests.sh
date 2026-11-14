@@ -1381,7 +1381,6 @@ echo "== TOUCH: 0199 leaves visible breadcrumbs before the ring exists =="
 P199="xnu/patches/0199-whyred-touch-early-marks.patch"
 python3 tools/check_patch.py "$P199" -q \
 	--added-contains 'bsd/dev/santoni_touch.c:touch_early_mark(int step, uint32_t color)' \
-	--added-contains 'bsd/dev/santoni_touch.c:PE_state.video.v_baseAddr' \
 	--added-contains 'bsd/dev/santoni_touch.c:TOUCH_FB_PHYS'
 python3 - <<'PY2'
 src = open('xnu/patches/0199-whyred-touch-early-marks.patch',
@@ -1400,11 +1399,14 @@ assert 'touch_early_mark(5, 0xff00ffff);' in body
 assert 'touch_early_mark(6, 0xff0000ff);' in body
 assert 'touch_early_mark(7, 0xffff00ff);' in body
 assert 'touch_early_mark(8, 0xffffffff);' in body
-# Use the console mapping when it exists; never require a new VM mapping.
-assert 'if (PE_state.video.v_baseAddr && PE_state.video.v_rowBytes)' in body
-assert 'ml_io_map_unmappable(TOUCH_FB_PHYS' in body
+# PE_state.video.v_baseAddr is the physical ABL address at this point, not a
+# virtual pointer: 0199's first build dereferenced it and hung before the first
+# band appeared. The window must come from an explicit IO mapping.
+assert '(uintptr_t)PE_state' not in body
+assert 'fb = (volatile uint32_t *)ml_io_map_unmappable(' in body
+assert 'TOUCH_FB_PHYS + (uint64_t)TOUCH_FB_ROW0 * TOUCH_FB_STRIDE' in body
 # Marks are drawn at distinct rows so the highest visible row is the step.
-assert '40 + step * 70' in body
+assert 'TOUCH_FB_ROW0 + (uint32_t)step * 70u' in body
 PY2
 echo "ok   0199 paints one band per early-probe step on the boot framebuffer"
 

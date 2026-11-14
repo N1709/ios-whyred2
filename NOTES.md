@@ -5466,11 +5466,13 @@ partition only after eMMC enumeration. Everything printed before that is
 buffered in RAM and lost on a panic/hang.
 
 `0199-whyred-touch-early-marks.patch` adds `touch_early_mark()`: a filled
-band in the boot framebuffer, one row per early-probe step, using
-`PE_state.video.v_baseAddr` (the console mapping the DIAG_CONSOLE image
-already has) and falling back to a direct `ml_io_map_unmappable()` only if
-that is empty. The rows are 70 px apart, so the highest band on the panel is
-the last completed step:
+band in the boot framebuffer, one row per early-probe step. The first build
+dereferenced `PE_state.video.v_baseAddr`, which still holds the physical ABL
+address at this point rather than a virtual pointer; that write is exactly the
+kind of fault that hangs before any band is painted, so the function now maps
+its own window: `ml_io_map_unmappable(TOUCH_FB_PHYS + 40 * 4320, 640 * 4320)`,
+i.e. only the ~2.6 MiB the bands occupy, not the whole 9 MiB frame. The rows
+are 70 px apart, so the highest band on the panel is the last completed step:
 
     1 red      entered santoni_touch_early()
     2 orange   reboot watchdog armed
@@ -5485,3 +5487,30 @@ The same steps also print `WHYRED TOUCH: early mark N` for the case where the
 boot survives and the ring catches up. A boot that shows nothing at all says
 the image never reached BSD init (shim/loader problem), which the previous
 ring could not distinguish from an early hang.
+
+### 2026-11-14: the touch really is the Synaptics at 0x20, not the Novatek
+
+The recovery DT enables both touch nodes (`synaptics_dsx@20` with no `status`
+property, `novatek@62` with `status = "ok"` and `novatek,reset-gpio = 66`),
+and the Novatek probe fails with `-16` because the Synaptics driver already
+owns the shared IRQ GPIO 67. That looked like proof the real part was the
+Novatek and the 0x20 device was a ghost. It is the other way round.
+
+Read-only checks in recovery say so:
+
+* GPIO 66 (the Novatek reset) is already high at rest: exporting it as an
+  input reads `1`, so the Novatek is out of reset and still does not ACK.
+  Pulsing it low/high changes nothing, and `0x62` never answers a scan.
+* `0x20` ACKs on every bus scan, and at cold boot the vendor driver used it
+  successfully: it walked the PDT, logged `input: synaptics_dsx as input2` at
+  0.921 s, found the F34 image records and compared firmware IDs. Garbage
+  from 0x20 only appears through raw `/dev/i2c-1` reads *after* the driver has
+  suspended the part into wakeup-gesture mode (the driver itself logs
+  `I2C retry` on resume), so those reads prove nothing about identity.
+* The `0x04..0x07` ACKs in the recovery scan are noise from the QUP adapter,
+  not devices: the bit-bang scan in XNU finds exactly one address, `0x20`.
+
+So the DSX work stays on `0x20`; the Novatek node is an unused variant entry
+and `novatek,reset-gpio` must not be pulsed again. The remaining problem is
+unchanged and is a timing one: the vendor driver owns the chip in the
+0.9-3.2 s window after boot, and XNU's probe runs after eMMC init.

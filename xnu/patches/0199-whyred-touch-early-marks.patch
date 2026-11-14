@@ -1,7 +1,7 @@
 diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 --- a/bsd/dev/santoni_touch.c
 +++ b/bsd/dev/santoni_touch.c
-@@ -1594,6 +1594,54 @@
+@@ -1594,6 +1594,50 @@
  }
  
  /*
@@ -9,44 +9,40 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
 + * The ring lives on SYSTEM and is only written after eMMC init, so a probe
 + * that runs before eMMC and hangs leaves no new ring at all - exactly what
 + * the 0198 boot did. These bands are written straight into the boot
-+ * framebuffer ABL left on screen, one row per step, so the panel shows how
++ * framebuffer ABL left on screen, one band per step, so the panel shows how
 + * far the early probe got even when nothing else is reachable.
++ *
++ * PE_state.video.v_baseAddr still holds the physical ABL address at this
++ * point and is not a usable pointer, so the band window is mapped here. Only
++ * the rows the bands occupy are mapped: the whole 1080x2160 frame is 9 MiB
++ * and this runs before eMMC init.
 + */
 +#define TOUCH_FB_PHYS	0x9d400000ULL
-+#define TOUCH_FB_WIDTH	1080u
-+#define TOUCH_FB_HEIGHT	2160u
++#define TOUCH_FB_STRIDE	4320u	/* bytes, 32 bpp */
++#define TOUCH_FB_ROW0	40u
++#define TOUCH_FB_ROWS	640u	/* 9 bands, 70 rows apart, 50 rows tall */
 +
 +static void
 +touch_early_mark(int step, uint32_t color)
 +{
-+	static uint32_t *fb;
-+	static uint32_t stride;
-+	uint32_t *p;
-+	int y, x;
++	static volatile uint32_t *fb;
++	uint32_t y0 = TOUCH_FB_ROW0 + (uint32_t)step * 70u;
++	uint32_t x, y;
 +
 +	if (!fb) {
-+		/*
-+		 * Prefer the console's own mapping: with DIAG_CONSOLE=1 the
-+		 * text console already draws into it, so it exists and needs no
-+		 * new VM mapping this early.
-+		 */
-+		if (PE_state.video.v_baseAddr && PE_state.video.v_rowBytes) {
-+			fb = (uint32_t *)(uintptr_t)PE_state.video.v_baseAddr;
-+			stride = PE_state.video.v_rowBytes / 4;
-+		} else {
-+			fb = (uint32_t *)ml_io_map_unmappable(TOUCH_FB_PHYS,
-+			    (vm_size_t)TOUCH_FB_WIDTH * TOUCH_FB_HEIGHT * 4,
-+			    VM_WIMG_IO);
-+			stride = TOUCH_FB_WIDTH;
++		fb = (volatile uint32_t *)ml_io_map_unmappable(
++		    TOUCH_FB_PHYS + (uint64_t)TOUCH_FB_ROW0 * TOUCH_FB_STRIDE,
++		    (vm_size_t)TOUCH_FB_ROWS * TOUCH_FB_STRIDE, VM_WIMG_IO);
++		if (!fb) {
++			return;
 +		}
 +	}
-+	if (!fb || stride < 1000) {
-+		return;
-+	}
-+	for (y = 40 + step * 70; y < 40 + step * 70 + 50; y++) {
-+		p = fb + (uint32_t)y * stride + 80;
-+		for (x = 0; x < 900; x++) {
-+			p[x] = color;
++	for (y = y0; y < y0 + 50u; y++) {
++		volatile uint32_t *line = fb +
++		    (uint64_t)(y - TOUCH_FB_ROW0) * (TOUCH_FB_STRIDE / 4u);
++
++		for (x = 80; x < 980; x++) {
++			line[x] = color;
 +		}
 +	}
 +	printf("WHYRED TOUCH: early mark %d\n", step);
@@ -56,7 +52,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
   * The early probe: same bit-bang setup the late probe does, but placed inside
   * the 0.9-3.2 s window instead of after eMMC init. It only reads: reset, read
   * F01 status, walk the PDT, dump F12 query/control/data. The touch poll and
-@@ -1618,11 +1666,14 @@
+@@ -1618,11 +1662,14 @@
  		at = 4000;
  	}
  	dsx_early_ran = 1;
@@ -71,7 +67,7 @@ diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
  
  	south = ml_io_map_unmappable(WHYRED_TLMM_BASE + WHYRED_TLMM_SOUTH,
  	    0x10000, VM_WIMG_IO);
-@@ -1634,18 +1685,23 @@
+@@ -1634,18 +1681,23 @@
  		return ENOMEM;
  	}
  	(void)north;
