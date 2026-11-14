@@ -5514,3 +5514,14 @@ So the DSX work stays on `0x20`; the Novatek node is an unused variant entry
 and `novatek,reset-gpio` must not be pulsed again. The remaining problem is
 unchanged and is a timing one: the vendor driver owns the chip in the
 0.9-3.2 s window after boot, and XNU's probe runs after eMMC init.
+
+The fixed 0199 is built as `images/shim-boot-touch-early-marks.img` (kernel
+`e180c4e` from CI run `43536079730`, sha256
+`e752afd06aab44870fb569e729c2feae70ae3893a36efc9e9822f1f61e871838`,
+6,119,424 B) with `SWEETEARLY=1000 SWEETI2C=0 SWEETRESET=0`. The console is
+muted (`sweetfb_noconsole=1`), so nothing repaints over the bands; the panel
+memory is cleared by `SweetFramebuffer` before `santoni_sdhci_init()` runs
+(ring: `SWEET FB: AppleCLCD ...` precedes `WHYRED SDHCI: probe step 0`), which
+is why painting there is safe. `sweetfbtest=1` only fills the four bars at the
+end of the same init, so it cannot erase the bands of a boot that hangs in the
+early probe.
