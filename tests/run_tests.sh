@@ -1445,6 +1445,49 @@ assert '1450u' in body
 PY2
 echo "ok   0200 adds per-transaction bands 7..19 inside the early probe"
 
+echo "== TOUCH: 0201 paints the eMMC phases after the early probe =="
+P201="xnu/patches/0201-whyred-touch-emmc-phases.patch"
+python3 tools/check_patch.py "$P201" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:santoni_touch_mark' \
+	--added-contains 'bsd/dev/santoni_touch.c:touch_phase_mark' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TOUCH_PHASE_MARK(0, 0xff000080)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TOUCH_PHASE_MARK(10, 0xff8b4513)' \
+	--added-contains 'bsd/dev/santoni_sdhci.c:TOUCH_PHASE_MARK(9, 0xff006060)'
+python3 - <<'PY2'
+import re
+src = open('xnu/patches/0201-whyred-touch-emmc-phases.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# The bands are only for the early-probe boot: a normal boot must not paint.
+assert 'if (!dsx_early_ran)' in body
+assert 'return;' in body
+# The marks must cover the whole eMMC init, not just its entry.
+for phase in ('0,', '1,', '2,', '3,', '4,', '5,', '6,', '7,', '8,',
+              '9,', '10,'):
+    assert 'TOUCH_PHASE_MARK(' + phase in body, phase
+# The last phase (ring started) must follow the first (probe returned).
+assert body.index('TOUCH_PHASE_MARK(0') < body.index('TOUCH_PHASE_MARK(10')
+# One colour per phase, so the highest band is unambiguous.
+cols = re.findall(r'TOUCH_PHASE_MARK\(\d+, (0x[0-9a-f]+)\)', body)
+assert len(cols) == 11, cols
+assert len(cols) == len(set(cols)), cols
+# 11 marks at 64 rows, 46 tall, from row 1450 must stay on the panel.
+assert '1450u' in body and '64u' in body and '46u' in body
+assert 1450 + 10 * 64 + 46 <= 2160
+# The mark before santoni_log_start() proves eMMC init finished; the one
+# after it proves the ring started (that is where the four bars are painted).
+i9 = body.index('TOUCH_PHASE_MARK(9')
+i10 = body.index('TOUCH_PHASE_MARK(10')
+assert i9 < i10
+# Phase 9 is added immediately before santoni_log_start(), phase 10 right
+# after it (both are anchored on that context line in the patch).
+assert '\n \tsantoni_log_start();\n+\tTOUCH_PHASE_MARK(10' in src
+PY2
+echo "ok   0201 marks eleven eMMC-init phases below the touch bands"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail

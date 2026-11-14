@@ -5575,3 +5575,33 @@ recovery, or the boot really stops between the early probe and
 `524a89e134f2a7ead15b6fd79690e729ae7006a398a8c8751f1363b64f1d8078`) keeps the
 text console on the panel so the next boot shows where the log stops without
 needing a recovery round trip.
+
+### 2026-11-14: 0201 marks the eMMC phases after the early probe
+
+The detail image reached white, so the early probe finishes; the console image
+then showed no new text and the ring stayed at flush #208. That leaves the gap
+between `santoni_touch_early()` returning and `santoni_log_start()`: DT lookup,
+the two MMIO maps and the bounce buffer, `sdhci_take_over()` (HC mode,
+RESET_ALL, bus power, card clock, CMD13/CMD5/CMD0, CMD1, enumeration), the
+8-bit HS verify, the GPT partition and finally the ring start. None of those
+can print anywhere the panel can see before the ring exists.
+
+`0201` adds `santoni_touch_mark()` (a no-op unless `dsx_early_ran`) and paints
+one band per phase in a second block below the touch bands, rows 1450..2136,
+so the 0200 bands keep their colours and position. The 11 phases are:
+
+    0  navy        santoni_touch_early() returned
+    1  olive       DT node, register maps and bounce buffer ready
+    2  dark green  sdhci_take_over() entered (core check starts)
+    3  purple      HC mode entered, pre-reset snapshot taken
+    4  sky         RESET_ALL, bus power, card clock and FIFO done
+    5  rose        CMD1 answered (before enumeration)
+    6  pale green  take-over returned
+    7  gold        8-bit High-Speed EXT_CSD verify done
+    8  orange-red  GPT partition found
+    9  dark cyan   just before santoni_log_start()
+    10 brown       santoni_log_start() returned (the four bars follow)
+
+A boot that stops between two bands names the exact step; if it reaches brown,
+the ring is running and the next pull will contain the early probe's own PDT
+and F12 lines.

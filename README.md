@@ -643,6 +643,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0198 | Parse F12 `query_5`/`query_8`, refuse to program unless F01 is the real `00 06 0D 11` record, write `RPT_DEFAULT (0x1F)` to control 28, and poll the 2D block at `data_base + data0 present` - the vendor reference sequence, not the fork's `0x01`/all-data-registers variant |
 | 0199 | Paint one framebuffer band per early-probe step (red/orange/yellow/green/cyan/blue/magenta/white) plus a matching `early mark N` line, because the SYSTEM ring is only flushed after eMMC init and a hang before it leaves no log at all; the bands map their own 2.6 MiB window because the boot `v_baseAddr` is physical, not a pointer |
 | 0200 | Split the one band that never appeared into the steps inside `dsx_reset_probe()`: reset command, F01 status, each of the first six PDT records, the F12 block reads and the return, bands 7..19, painted only while the early probe sets `dsx_early_marks_on` so the late probe never repaints them |
+| 0201 | Paint the eMMC phases that follow the early touch probe below the touch bands (early return, DT/maps/DMA, take-over entry, HC mode, reset/power/clock, CMD1, take-over return, 8-bit HS verify, partition, before/after `santoni_log_start()`), because the ring only starts in the last of them and a boot that hangs before it otherwise shows nothing above the white band; `santoni_touch_mark()` is a no-op unless the early probe ran |
 
 The earlier 0080-0141 topaz/santoni patches remain in the series for the
 other devices.
