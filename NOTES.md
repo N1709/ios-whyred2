@@ -5525,3 +5525,35 @@ memory is cleared by `SweetFramebuffer` before `santoni_sdhci_init()` runs
 is why painting there is safe. `sweetfbtest=1` only fills the four bars at the
 end of the same init, so it cannot erase the bands of a boot that hangs in the
 early probe.
+
+### 2026-11-14: the boot stops between "bus cleared" and "PDT walked"
+
+Cold boot of `shim-boot-touch-early-marks.img` (kernel `e180c4e`) showed the
+bands from red to blue and nothing above them. Blue is step 6, painted right
+after `i2c_clear_bus()`; magenta (step 7) is painted after `dsx_reset_probe()`
+returns. So the early probe gets through the TLMM map, the pin mux and the bus
+clear, and then never finishes `dsx_reset_probe()`: the software reset write,
+the F01 status read or the downward PDT walk. This is the same point where the
+console-only 0198 image stopped, which is why both looked identical.
+
+`0200` therefore paints bands 7..19 inside that call:
+
+    7  maroon        before dsx_sw_reset()
+    8  purple        reset command written
+    9  grey          F01 status read back
+    10 salmon        PDT record 0
+    11 light yellow  PDT record 1
+    12 pink          PDT record 2
+    13 light cyan    PDT record 3
+    14 violet        PDT record 4
+    15 light grey    PDT record 5
+    16 dark grey     PDT walk returned
+    17 teal          F12 query/ctrl/data blocks read
+    18 charcoal      dsx_reset_probe() returned
+    19 white         F12 programmed, early probe done
+
+The marks are gated on `dsx_early_marks_on`, which only the early probe sets,
+because the late probe calls the same helpers after eMMC init and would paint
+over the bands long after the panel is readable. The framebuffer window grows
+to rows 40..1490 for the 20 bands. A boot that stops at, say, purple names the
+transaction that never returns instead of the whole function.

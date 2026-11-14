@@ -1,0 +1,102 @@
+diff --git a/bsd/dev/santoni_touch.c b/bsd/dev/santoni_touch.c
+--- a/bsd/dev/santoni_touch.c
++++ b/bsd/dev/santoni_touch.c
+@@ -973,6 +973,16 @@
+  * part a second time.
+  */
+ static int dsx_early_ran;
++/*
++ * 0200: band 6 (blue) showed the early probe stops inside dsx_reset_probe().
++ * The late probe runs the same helper happily, so the marks are only painted
++ * when the early probe sets this flag: one band per reset step and per PDT
++ * record read tells which single bit-bang transaction never returns.
++ */
++static int dsx_early_marks_on;
++
++/* Painted before any eMMC I/O exists; defined with the early probe below. */
++static void touch_early_mark(int step, uint32_t color);
+ static int dsx_early_found;
+ static int dsx_f12_touch_reg;	/* data base + data0 offset, for polling */
+ static int dsx_f12_report_ctrl;	/* control base + ctrl28 offset */
+@@ -1085,6 +1095,18 @@
+ 		printf("WHYRED TOUCH: %s pdt[0x%04x] %02x %02x %02x %02x "
+ 		    "%02x %02x fn %02x\n", tag, addr, e[0], e[1], e[2], e[3],
+ 		    e[4], e[5], e[5] & 0x3f);
++		if (dsx_early_marks_on && i < 6) {
++			static const uint32_t early_pdt_colour[6] = {
++				0xffff8080,	/* 10 salmon */
++				0xffffff40,	/* 11 light yellow */
++				0xffff40ff,	/* 12 pink */
++				0xff40ffff,	/* 13 light cyan */
++				0xff4040ff,	/* 14 violet */
++				0xffc0c0c0,	/* 15 light grey */
++			};
++
++			touch_early_mark(10 + i, early_pdt_colour[i]);
++		}
+ 		found++;
+ 		if ((e[5] & 0x3f) == 0x00 || e[5] == 0xff) {
+ 			printf("WHYRED TOUCH: %s end of PDT at 0x%04x\n", tag,
+@@ -1129,13 +1151,25 @@
+ {
+ 	uint8_t v = 0;
+ 
++	if (dsx_early_marks_on) {
++		touch_early_mark(7, 0xff800000);	/* maroon: before reset */
++	}
+ 	dsx_sw_reset();
++	if (dsx_early_marks_on) {
++		touch_early_mark(8, 0xff800080);	/* purple: reset command done */
++	}
+ 	if (dsx_read_page(DSX_ADDR, DSX_F01_DATA, &v, 1) == 0) {
+ 		printf("WHYRED TOUCH: f01 status 0x%02x\n", v);
+ 	} else {
+ 		printf("WHYRED TOUCH: f01 status read failed\n");
+ 	}
++	if (dsx_early_marks_on) {
++		touch_early_mark(9, 0xff808080);	/* grey: F01 status read */
++	}
+ 	dsx_pdt_walk("after reset");
++	if (dsx_early_marks_on) {
++		touch_early_mark(16, 0xff606060);	/* dark grey: walk done */
++	}
+ 	if (!dsx_f01_ctrl) {
+ 		printf("WHYRED TOUCH: no F01 control base, skipping configure\n");
+ 	} else if (dsx_read_page(DSX_ADDR, (uint16_t)dsx_f01_ctrl, &v, 1) ==
+@@ -1153,6 +1187,9 @@
+ 		dsx_block("f12 ctrl", (uint16_t)dsx_f12_ctrl, 32);
+ 		dsx_block("f12 data", (uint16_t)dsx_f12_data, 1);
+ 	}
++	if (dsx_early_marks_on) {
++		touch_early_mark(17, 0xff008080);	/* teal: F12 blocks read */
++	}
+ }
+ 
+ /*
+@@ -1609,7 +1646,7 @@
+ #define TOUCH_FB_PHYS	0x9d400000ULL
+ #define TOUCH_FB_STRIDE	4320u	/* bytes, 32 bpp */
+ #define TOUCH_FB_ROW0	40u
+-#define TOUCH_FB_ROWS	640u	/* 9 bands, 70 rows apart, 50 rows tall */
++#define TOUCH_FB_ROWS	1450u	/* 20 bands, 70 rows apart, 50 rows tall */
+ 
+ static void
+ touch_early_mark(int step, uint32_t color)
+@@ -1691,13 +1728,15 @@
+ 	(void)i2c_clear_bus();
+ 	touch_early_mark(6, 0xff0000ff);	/* blue: bus cleared */
+ 	dsx_page = -1;
++	dsx_early_marks_on = 1;
+ 	dsx_reset_probe();
+-	touch_early_mark(7, 0xffff00ff);	/* magenta: PDT walked */
++	dsx_early_marks_on = 0;
++	touch_early_mark(18, 0xff404040);	/* charcoal: probe returned */
+ 	dsx_early_found = dsx_f12_found;
+ 	if (dsx_f12_found) {
+ 		(void)dsx_f12_program();
+ 	}
+-	touch_early_mark(8, 0xffffffff);	/* white: done */
++	touch_early_mark(19, 0xffffffff);	/* white: done */
+ 	dsx_early_end_ms = touch_now_ms();
+ 	printf("WHYRED TOUCH: early done at %llu ms, F12 %s%s",
+ 	    (unsigned long long)dsx_early_end_ms, dsx_f12_found ?

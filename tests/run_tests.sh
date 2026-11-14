@@ -1410,6 +1410,41 @@ assert 'TOUCH_FB_ROW0 + (uint32_t)step * 70u' in body
 PY2
 echo "ok   0199 paints one band per early-probe step on the boot framebuffer"
 
+echo "== TOUCH: 0200 splits the band that never appeared =="
+P200="xnu/patches/0200-whyred-touch-early-marks-detail.patch"
+python3 tools/check_patch.py "$P200" -q \
+	--added-contains 'bsd/dev/santoni_touch.c:dsx_early_marks_on' \
+	--added-contains 'bsd/dev/santoni_touch.c:touch_early_mark(7, 0xff800000)' \
+	--added-contains 'bsd/dev/santoni_touch.c:early_pdt_colour[i]' \
+	--added-contains 'bsd/dev/santoni_touch.c:TOUCH_FB_ROWS'
+python3 - <<'PY2'
+import re
+src = open('xnu/patches/0200-whyred-touch-early-marks-detail.patch',
+           encoding='utf-8').read()
+added = [l[1:] for l in src.splitlines()
+         if l.startswith('+') and not l.startswith('+++')]
+body = '\n'.join(added)
+
+# Band 6 (blue) was the last one visible, so 0200 refines exactly the step
+# between "bus cleared" and "PDT walked", and says so in the patch.
+assert 'band 6 (blue)' in body
+# The extra bands are only for the early probe: the late probe runs the same
+# helpers and would repaint them long after anyone can read the panel.
+assert 'if (dsx_early_marks_on)' in body
+assert 'dsx_early_marks_on = 1;' in body and 'dsx_early_marks_on = 0;' in body
+# Every step must have its own colour, or "highest band" is ambiguous.
+steps = [(int(n), int(c, 16)) for n, c in
+         re.findall(r'touch_early_mark\((\d+), (0x[0-9a-f]+)\)', body)]
+steps += [(10 + i, int(c, 16)) for i, c in
+          enumerate(re.findall(r'(0x[0-9a-f]+),\t/\* (?:10|11|12|13|14|15)', body))]
+colours = [c for _, c in steps]
+assert len(colours) == len(set(colours)), colours
+assert max(n for n, _ in steps) == 19
+# The window must still cover the last band row (40 + 19*70 + 50).
+assert '1450u' in body
+PY2
+echo "ok   0200 adds per-transaction bands 7..19 inside the early probe"
+
 echo "== LOG PULL: the by-name symlink decides the SYSTEM branch =="
 # SYSTEM is /dev/block/bootdevice/by-name/system -> mmcblk0p61, so the old
 # "grep system $resolved_path" check always fell through to the userdata tail
