@@ -5557,3 +5557,9 @@ because the late probe calls the same helpers after eMMC init and would paint
 over the bands long after the panel is readable. The framebuffer window grows
 to rows 40..1490 for the 20 bands. A boot that stops at, say, purple names the
 transaction that never returns instead of the whole function.
+
+The 0200 image is `images/shim-boot-touch-early-marks-detail.img` (kernel
+`7f520ca` from CI run `43537845468`, sha256
+`e9afbc6c7faf0708875d6eb0c42680ba64faacf45ea0402f2a5db4dbc2ab2d9e`,
+6,119,424 B), built with the same knobs
+(`SWEETEARLY=1000 SWEETI2C=0 SWEETRESET=0`) and the muted console.
