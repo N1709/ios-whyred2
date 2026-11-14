@@ -5637,3 +5637,10 @@ every phase mark silently does nothing.
 If the lime band appears, the probe returned and the phase block must follow;
 if it does not, the probe dies in its own last statements and the eMMC code is
 never at fault.
+
+The 0202 image is `images/shim-boot-touch-early-return.img` (kernel `7afa32e`
+from CI run `43543738549`, sha256
+`ca8ad3edfc7baca4b3f401c95b31700ad071f728f89f229e659e885768a2cfdf`,
+6,119,424 B), same knobs and muted console. The lime band at rows 1425..1445
+is the only new channel: it is painted after the probe's final printf and
+immediately before its return.
