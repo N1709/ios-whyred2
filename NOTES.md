@@ -5605,3 +5605,9 @@ so the 0200 bands keep their colours and position. The 11 phases are:
 A boot that stops between two bands names the exact step; if it reaches brown,
 the ring is running and the next pull will contain the early probe's own PDT
 and F12 lines.
+
+The 0201 image is `images/shim-boot-touch-emmc-phases.img` (kernel `02fce27`
+from CI run `43541108154`, sha256
+`bdcdbb8a747c313f08af2c1833d66894538c4b8f3fd36c67420896d6e52e7724`,
+6,119,424 B), built with `SWEETEARLY=1000 SWEETI2C=0 SWEETRESET=0` and the
+muted console so the bands are the only thing on the panel.
