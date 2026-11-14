@@ -5670,3 +5670,13 @@ or the first lines of `sdhci_take_over()`), and the panel could not say where.
   reset/power/clock/FIFO block;
 * the 13 bands use 54-row spacing from row 1450, so the last one ends at
   row 2138, still on the 2160-row panel.
+
+The 0203 image is `images/shim-boot-touch-emmc-phases-bright.img` (kernel
+`31a73bd` from CI run `43545987044`, sha256
+`acbdbcbbbb2a5254a49c090ac4d035020c0ba24ddefd7fed5992b06aca07965f`,
+6,119,424 B), same knobs and muted console. Phase colour order, top to
+bottom after the lime return band: magenta (probe returned), cyan (DT/maps/
+DMA), yellow (take-over entry), green (core check + snapshot), orange (HC
+mode), red (pre-reset snapshot), blue (reset/power/clock), violet (CMD1),
+pale cyan (take-over done), pink (8-bit HS), white (partition), grey (before
+log), brown (log started).
